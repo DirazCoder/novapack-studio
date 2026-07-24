@@ -1,4 +1,3 @@
-// [NBOSP_APP-PACKAGE_TEST_JS] -- from NovaByte OS Platform (NBOSP), not NovaPack Studio
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const nobleHashesMock = {

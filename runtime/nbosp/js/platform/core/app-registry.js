@@ -39,6 +39,8 @@ const AppRegistry = (() => {
     'contacts:read', 'contacts:write', 'contacts:delete',
     'device:notifications', 'device:geolocation', 'device:camera', 'device:microphone',
     'system:info', 'system:settings', 'system:apps', 'system:events',
+    'system:background', 'system:background:live', 'system:autostart',
+    'sandbox:nested-webview', 'sandbox:same-origin',
     'admin:apps', 'admin:users', 'admin:system', 'admin:audit',
   ]);
 

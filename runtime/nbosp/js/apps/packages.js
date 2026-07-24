@@ -1,4 +1,3 @@
-// [NBOSP_PACKAGES_JS] -- from NovaByte OS Platform (NBOSP), not NovaPack Studio
 registerApp({
   id: 'packages',
   name: 'Packages',

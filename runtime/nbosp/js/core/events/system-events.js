@@ -379,9 +379,13 @@ async function uninstallApp(app) {
     }
 
     // Best-effort cleanup of per-app storage and data dirs — failures here
-    // shouldn't abort the uninstall.
+    // shouldn't abort the uninstall. clearAppPartition wipes the webview's
+    // own storage partition; storageClear wipes the separate nova:storage
+    // IndexedDB (see storageClear in app-sandbox.js) that clearAppPartition
+    // never touches.
     await Promise.allSettled([
       AppSandbox?.clearAppPartition?.(app.id),
+      AppSandbox?.storageClear?.(app.id),
       AppDirs?.removeAppData?.(app.id),
     ]);
 

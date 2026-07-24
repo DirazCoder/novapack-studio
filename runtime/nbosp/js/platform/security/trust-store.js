@@ -1,4 +1,3 @@
-// [NBOSP_TRUST-STORE_JS] -- from NovaByte OS Platform (NBOSP), not NovaPack Studio
 /**
  * NovaByte - Trust Store
  * ────────────────────────────────────────────────────────────

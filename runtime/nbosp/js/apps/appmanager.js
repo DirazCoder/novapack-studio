@@ -1877,6 +1877,13 @@ registerApp({
           console.warn('[AppManager] Failed to clear storage partition for', appId, e);
         }
         try {
+          if (typeof AppSandbox !== 'undefined' && AppSandbox.storageClear) {
+            await AppSandbox.storageClear(appId);
+          }
+        } catch (e) {
+          console.warn('[AppManager] Failed to clear nova:storage for', appId, e);
+        }
+        try {
           if (typeof AppDirs !== 'undefined' && AppDirs.removeAppData) {
             await AppDirs.removeAppData(appId);
           }

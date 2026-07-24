@@ -379,7 +379,42 @@ const WM = window.WM = (() => {
       }
 
       try {
-        if (!reattached && app.init) app.init(content, state, options);
+        if (!reattached && app.init) {
+          const initResult = app.init(content, state, options);
+          // app.init is a generic hook: built-in apps call it as a plain
+          // sync function with no meaningful return, but AppSandbox-backed
+          // apps route it through AppRegistry.launchApp, which is async and
+          // resolves to { cleanup: () => destroy(sandboxId), ... } (or
+          // null on an early-return path like a denied-permission or
+          // disabled-app launch). Without this, that cleanup was silently
+          // discarded — closeWindow's cleanup loop below never ran
+          // destroy() for any sandboxed app, so no storage partition was
+          // ever wiped on a normal window close.
+          if (initResult && typeof initResult.then === 'function') {
+            initResult.then(result => {
+              if (!result || typeof result.cleanup !== 'function') return;
+              const current = OS.windows.get(id);
+              if (current === state) {
+                // Window is still open — register normally so the
+                // existing close path (closeWindow's cleanup loop) runs
+                // this exactly once, same as every other cleanup.
+                state.cleanups.push(result.cleanup);
+              } else {
+                // Window already closed before launchApp resolved (fast
+                // close). closeWindow's cleanup loop for this id has
+                // already run and will never run again, so push()'ing
+                // here would silently strand this cleanup forever — call
+                // it directly instead.
+                try { result.cleanup(); } catch (err) { console.warn(`[WM] ${appId} late cleanup error:`, err); }
+              }
+            }).catch(err => {
+              console.warn(`[WM] ${appId}.init rejected:`, err);
+              if (typeof EventLog !== 'undefined') {
+                EventLog.log({ app: 'WM', category: 'window', severity: 'error', message: `${appId}.init rejected: ${err?.message || err}`, data: { windowId: id, appId } });
+              }
+            });
+          }
+        }
       } catch (err) {
         console.warn(`[WM] ${appId}.init error:`, err);
         if (typeof EventLog !== 'undefined') {

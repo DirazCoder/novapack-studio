@@ -110,6 +110,13 @@ const MyAppsManager = (() => {
         console.warn('[MyAppsManager] Failed to clear storage partition for', appId, err);
       }
       try {
+        if (typeof AppSandbox !== 'undefined' && AppSandbox.storageClear) {
+          await AppSandbox.storageClear(appId);
+        }
+      } catch (err) {
+        console.warn('[MyAppsManager] Failed to clear nova:storage for', appId, err);
+      }
+      try {
         if (typeof AppDirs !== 'undefined' && AppDirs.removeAppData) {
           await AppDirs.removeAppData(appId);
         }

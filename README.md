@@ -322,7 +322,7 @@ Permissions are declared in `manifest.json` and checked before the app loads. Th
 | `vfs:write` | Filesystem | High | Saving files, exports, generated output |
 | `vfs:delete` | Filesystem | Critical | File managers, cleanup tools |
 | `vfs:metadata` | Filesystem | Low | Listing/sizing files without reading contents |
-| `net:internal` | Network | Low | Calling this OS's own API/server endpoints |
+| `net:internal` | Network | High | Calling this OS's own API/server endpoints — also reaches private-network and cloud metadata addresses (169.254.169.254), not just same-origin |
 | `net:external` | Network | Medium | Calling any third-party HTTP API (REST, webhooks, AI providers) |
 | `net:websocket` | Network | Medium | Live/streaming connections (chat, realtime data feeds) |
 | `mail:read` | Email | High | Inbox viewers, search, unread-count widgets |
@@ -950,6 +950,7 @@ Apps can declare a minimum OS security patch level required to run. The OS check
 | `vfs:delete` | Critical |
 | `device:geolocation` | High |
 | `system:settings` | High |
+| `net:internal` | High |
 | `admin:system` | Critical |
 
 **Explicit declaration** — add `minSecurityPatch` to your manifest to require a specific date. Recommended for any app that handles passwords, tokens, encryption keys, or personal data:

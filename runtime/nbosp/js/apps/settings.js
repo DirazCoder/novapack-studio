@@ -1365,6 +1365,17 @@ registerApp({
               await AppSandbox.clearAppPartitions(appIds);
             }
           } catch { /* app partition wipe best-effort */ }
+          // nova:storage is yet another separate store (NovaByte_AppStorage,
+          // a third IndexedDB — not either of the two names deleted above)
+          // that apps read/write via window.nova.ipc('nova:storage:*', …).
+          // Not scoped to the currently-installed appIds list above, since a
+          // full wipe should also catch any rows left behind by an app
+          // that's already been uninstalled.
+          try {
+            if (typeof AppSandbox !== 'undefined' && AppSandbox.clearAllStorage) {
+              await AppSandbox.clearAllStorage();
+            }
+          } catch { /* nova:storage wipe best-effort */ }
           location.reload();
         }
       });

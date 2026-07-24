@@ -99,7 +99,7 @@ const AppPermissionManager = (() => {
     'vfs:write'         : { category: 'filesystem', risk: 'high',     label: 'Write files' },
     'vfs:delete'        : { category: 'filesystem', risk: 'critical', label: 'Delete files' },
     'vfs:metadata'      : { category: 'filesystem', risk: 'low',      label: 'File metadata' },
-    'net:internal'      : { category: 'network',    risk: 'low',      label: 'Internal network' },
+    'net:internal'      : { category: 'network',    risk: 'high',     label: 'Internal network' },
     'net:external'      : { category: 'network',    risk: 'medium',   label: 'External network' },
     'net:websocket'     : { category: 'network',    risk: 'medium',   label: 'WebSocket connections' },
     'mail:read'         : { category: 'email',      risk: 'high',     label: 'Read emails' },
