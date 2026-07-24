@@ -281,6 +281,35 @@ If your app just needs data to survive across launches — settings, save state,
 
 Both gates are required; declaring one without the other still gets you a stripped `<webview>`. This is `critical` risk since a nested `<webview>` is effectively a second, unsandboxed renderer surface — expect extra scrutiny if you're submitting for verification.
 
+> ⚠️ **Delay the first navigation on a nested `<webview>` by ~1 second, or it can crash the renderer.**
+>
+> Creating a nested `<webview>` and setting its `.src` immediately — on the same tick, right after `document.createElement('webview')` — is a reproducible way to crash the guest's renderer process outright. This isn't a catchable JS error: no `window` `'error'` event fires, and DevTools attached to that webview dies along with it, so it can look like the whole app crashed rather than a script bug.
+>
+> Waiting before the first navigation avoids it. In testing, creating the element and navigating on the very next tick reliably crashed; a ~1000ms delay before the first `.src` assignment reliably didn't. This has only been confirmed as a working mitigation, not root-caused against NW.js/Chromium internals — treat 1000ms as a tested safe margin, not a proven minimum, and don't shorten it without re-testing an actual crash-free launch.
+>
+> This only applies to the *first* navigation right after creating a nested `<webview>` — once it's up and showing content, normal navigation (URL bar, back/forward, `.reload()`) is unaffected. It has no bearing on `net:external`/other permissions, and doesn't apply to the platform's own outer sandbox webview (the one that loads your app's own HTML) — only to a nested `<webview>` your own app code creates.
+>
+> ```javascript
+> function main() {
+>   var container = document.getElementById('webview-container');
+>   // Show a loading state immediately; don't leave a blank pane during the delay.
+>   setTimeout(createWebview, 1000);
+>
+>   function createWebview() {
+>     var view = document.createElement('webview');
+>     container.appendChild(view);
+>     view.src = 'https://example.com'; // first navigation — safe here, after the delay
+>   }
+> }
+> if (document.readyState === 'loading') {
+>   document.addEventListener('DOMContentLoaded', main);
+> } else {
+>   main();
+> }
+> ```
+>
+> See the [Browser template](#templates) for a complete working example (loading state, disabled toolbar during the wait, URL bar, back/forward).
+
 ### Launch — window.nova bridge
 
 Before your app's HTML executes, the runtime injects `window.nova` into the guest's page. You don't need to request it, import it, or wait for a handshake — it's there as soon as your script runs:
