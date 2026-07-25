@@ -821,17 +821,40 @@ await window.nova.ipc('nova:settings:set', { key: 'theme', value: 'dark' });
 
 This is a shared, OS-wide key space, not per-app storage — if you want isolated data scoped to your own app, use [Private Storage](#private-storage) (`nova:storage:*`) instead.
 
+A small set of security-sensitive keys — `lockPin`, `pinSalt`, `biometricCredentialId`, `lockoutUntil`, `wrongPinCount`, and `bootPassword` — are blocked from **both** get and set, regardless of permission. No app can read or write these through the settings API; both calls fail with `INVALID_ARGS`. This exists so that holding `system:info` (a low-risk permission) can't be used to read the user's PIN hash, and holding `system:settings` can't be used to reset `lockoutUntil` and bypass the lock screen.
+
 ### Event bus — `nova:events:*`
 
 Use `window.nova.onEvent`, which handles the subscribe call and dispatches pushed events to your callback:
 
 ```javascript
-window.nova.onEvent('theme:change', (data) => {
+window.nova.onEvent('system:themeChanged', (data) => {
   console.log('theme changed:', data);
 });
 ```
 
-Calling `nova.ipc('nova:events:unsubscribe', { event: 'theme:change' })` directly still works if you need to unsubscribe explicitly.
+Calling `nova.ipc('nova:events:unsubscribe', { event: 'system:themeChanged' })` directly still works if you need to unsubscribe explicitly.
+
+**Event names are restricted to a fixed allowlist** — subscribing to any name outside this list fails with `INVALID_ARGS`, even if you hold `system:events`. This isn't a permission gate you can request your way past; it's a fixed set of events the OS actually emits for app consumption:
+
+| Event | Fires when |
+|---|---|
+| `system:notification` | A system notification is shown |
+| `system:volumeChanged` | Volume is changed |
+| `system:themeChanged` | Light/dark theme is switched |
+| `system:workspaceChanged` | The active workspace changes |
+| `system:power` | Power state changes (e.g. battery/charging) |
+| `system:network` | Network connectivity changes |
+| `app:installed` | An app is installed |
+| `app:uninstalled` | An app is uninstalled |
+| `app:launched` | An app is launched |
+| `mail:new` | New mail arrives |
+| `mail:updated` | Mail state changes |
+| `calendar:reminder` | A calendar reminder fires |
+| `calendar:updated` | Calendar data changes |
+| `contacts:updated` | Contacts data changes |
+
+There's no event for arbitrary custom app-to-app messaging — the bus is OS-to-app only, not app-to-app.
 
 ### Background execution — `nova:background:*`
 
