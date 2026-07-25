@@ -639,6 +639,15 @@ const AppPackage = (() => {
 
   // ─── Manifest validation ────────────────────────────────────────────────────
 
+  // Icons are a small UI asset — a legitimate high-res PNG/SVG as a data:
+  // URI comfortably fits well under this. Anything past it is either a
+  // mistake (wrong file embedded) or a deliberate attempt to bloat the
+  // manifest / waste memory on every render of the app list, launcher,
+  // taskbar, etc. — icon strings get parsed and rendered repeatedly across
+  // many UI surfaces (see appmanager.js svgIcon()/createEl() call sites),
+  // so an oversized one has an outsized cost relative to its purpose.
+  const MAX_ICON_DATA_URI_BYTES = 512 * 1024; // 512KB
+
   function validateManifest(manifest) {
     const errors = [], warnings = [];
     if (!manifest || typeof manifest !== 'object') {
@@ -658,6 +667,14 @@ const AppPackage = (() => {
       manifest.permissions.forEach(p => {
         if (valid.length > 0 && !valid.includes(p)) warnings.push(`Unknown permission: ${p}`);
       });
+    }
+    if (typeof manifest.icon === 'string' && manifest.icon.startsWith('data:')) {
+      // .length on a data: URI string is a fine proxy for its encoded byte
+      // size here — off by a small constant factor at most (base64 framing
+      // overhead), nowhere near enough to matter against a 512KB cap.
+      if (manifest.icon.length > MAX_ICON_DATA_URI_BYTES) {
+        errors.push(`Icon data URI exceeds ${MAX_ICON_DATA_URI_BYTES} byte limit (got ~${manifest.icon.length} bytes) — use a smaller image or reference a file in the package instead`);
+      }
     }
     if (manifest.defaultSize &&
         (!Array.isArray(manifest.defaultSize) || manifest.defaultSize.length !== 2))

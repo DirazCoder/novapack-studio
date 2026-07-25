@@ -33,6 +33,7 @@ const AppRegistry = (() => {
 
   const KNOWN_PERMISSIONS = new Set([
     'vfs:read', 'vfs:write', 'vfs:delete', 'vfs:metadata',
+    'clipboard:read', 'clipboard:write',
     'net:internal', 'net:external', 'net:websocket',
     'mail:read', 'mail:write', 'mail:send', 'mail:delete',
     'calendar:read', 'calendar:write', 'calendar:delete',
@@ -40,7 +41,7 @@ const AppRegistry = (() => {
     'device:notifications', 'device:geolocation', 'device:camera', 'device:microphone',
     'system:info', 'system:settings', 'system:apps', 'system:events',
     'system:background', 'system:background:live', 'system:autostart',
-    'sandbox:nested-webview', 'sandbox:same-origin',
+    'sandbox:nested-webview', 'sandbox:same-origin', 'sandbox:escape-popups',
     'admin:apps', 'admin:users', 'admin:system', 'admin:audit',
   ]);
 

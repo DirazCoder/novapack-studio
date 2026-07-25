@@ -339,7 +339,11 @@ Permissions are declared in `manifest.json` and checked before the app loads. Th
 
 ### Full permission list
 
-32 permissions across 8 categories, plus one further permission (`sandbox:nested-webview`) in a 9th category — see the note below the table, since it works differently from the rest. This mirrors `app-permission-manager.js` exactly — if you're hand-writing a manifest, these are the only strings `validateManifest` recognizes without a warning. (`data:export`/`data:backup`, previously listed here, don't exist as real permissions — they were dead metadata with no backing handler and have been removed from the OS entirely; the export feature in Settings isn't permission-gated.)
+36 permissions across 10 categories. This mirrors `app-permission-manager.js` exactly — if you're hand-writing a manifest, these are the only strings `validateManifest` recognizes without a warning. (`data:export`/`data:backup`, previously listed here, don't exist as real permissions — they were dead metadata with no backing handler and have been removed from the OS entirely; the export feature in Settings isn't permission-gated.)
+
+All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, `sandbox:escape-popups`) work differently from every other permission in this table: the permission grant alone does nothing. Each also requires a matching manifest flag — `allowNestedWebview`, `sandbox.allowSameOrigin`, and `allowPopupsToEscapeSandbox` respectively — and both the grant and the flag must be present or the underlying sandbox attribute is never added. See each row's description below for the exact manifest key.
+
+`clipboard:read`/`clipboard:write` are a similar case worth calling out: they used to be gated behind `vfs:read` (a misleading label, since the clipboard is a shared, ambient, cross-app channel with nothing to do with your app's own files). They're now their own permissions, but `vfs:read` is still honored as a fallback — any app already holding `vfs:read` keeps clipboard access without needing to request the new permissions, so this wasn't a breaking change for existing installs. New manifests should request `clipboard:read`/`clipboard:write` directly rather than relying on the fallback.
 
 `vfs:metadata` is worth calling out specifically: it existed in the permission registry from the start, but the handler behind it (`nova:vfs:stat`) checked `vfs:read` instead — declaring `vfs:metadata` alone in a manifest silently did nothing. That's now fixed; `vfs:metadata` genuinely gates `nova:vfs:stat` on its own (an app with `vfs:read` still works too, since full read is a superset of metadata-only access).
 
@@ -368,7 +372,9 @@ Permissions are declared in `manifest.json` and checked before the app loads. Th
 | `device:geolocation` | Device | High | Maps, weather, location-tagged content |
 | `device:camera` | Device | Critical | Photo capture, video chat, QR/barcode scanning |
 | `device:microphone` | Device | Critical | Voice recording, voice chat, dictation |
-| `system:info` | System | Low | Diagnostics, "about this device" panels |
+| `clipboard:read` | Clipboard | High | Paste-in tools, import-from-clipboard features — can expose whatever any other app or the user copied, not just your own app's data |
+| `clipboard:write` | Clipboard | Medium | Copy-to-clipboard buttons, share/export shortcuts |
+| `system:info` | System | Medium | Diagnostics, "about this device" panels — also gates reading settings values like `username`, `region`, `timezone`, and `devMode` |
 | `system:settings` | System | Medium | Preference sync, theme/settings dashboards |
 | `system:apps` | System | Medium | Launchers, app-store-style installers, dock/dashboard replacements |
 | `system:events` | System | Medium | Reacting to OS-level events (theme change, etc.) |
@@ -380,6 +386,8 @@ Permissions are declared in `manifest.json` and checked before the app loads. Th
 | `admin:system` | Admin | Critical | Security-policy dashboards, lockout/IP-block tuning (needs admin mode) |
 | `admin:audit` | Admin | High | Security/activity log viewers (needs admin mode) |
 | `sandbox:nested-webview` | Sandbox | Critical | Apps that create their own `<webview>` for in-app browsing (browser-style apps). Also requires `"allowNestedWebview": true` in the manifest — the permission alone does nothing. |
+| `sandbox:same-origin` | Sandbox | High | Apps that need a stable origin for cross-tab logic or an IPC bridge depending on `window.location.origin` matching, or that need `localStorage`/cookies to survive relaunch (see [Launch — sandbox](#launch--sandbox)). Also requires `"sandbox": { "allowSameOrigin": true }` in the manifest — the permission alone does nothing. |
+| `sandbox:escape-popups` | Sandbox | High | Apps whose popups need to open as normal, unsandboxed browser windows (e.g. OAuth flows, external checkout). Also requires `"allowPopupsToEscapeSandbox": true` in the manifest — the permission alone does nothing. |
 
 `admin:*` additionally requires the machine itself to be in admin mode — a separate, local-only toggle in Settings → Privacy & Security → Admin Access. Granting an app one of the four `admin:*` permissions doesn't put the machine in admin mode by itself; both gates have to pass, or the call is denied with a message telling you the machine isn't in admin mode. `mail:*` requires an email account to already be connected via the Email app — there's no way for a sandboxed app to supply its own account credentials; `mail:*` always acts on whatever account the user has connected, and calls fail with a clear error if nothing's connected.
 

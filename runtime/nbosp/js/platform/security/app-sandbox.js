@@ -170,6 +170,19 @@ const AppSandbox = (() => {
     }
   }
 
+  // Cloud metadata endpoints — checked ahead of, and independent of, the
+  // internal/external classification below. isInternalHost correctly
+  // classifies these as internal (they're link-local), which means any app
+  // holding an ordinary net:internal grant (intended for talking to
+  // api.novabyte.internal) could also reach them directly and pull
+  // instance credentials. There's no legitimate reason a third-party
+  // sandboxed app should ever reach these regardless of what network
+  // permission it holds, so they get a hard deny here rather than being
+  // bundled into the same grant as first-party internal services.
+  // 169.254.169.254 covers AWS/GCP/Azure/DigitalOcean's IMDS; fd00:ec2::254
+  // is AWS's IPv6 equivalent.
+  const BLOCKED_METADATA_HOSTS = new Set(['169.254.169.254', 'fd00:ec2::254']);
+
   // Resolve a URL string against the current origin and classify it as
   // internal or external. Handles protocol-relative URLs (//host/path) safely
   // by always resolving through new URL(rawUrl, window.location.origin).
@@ -189,6 +202,9 @@ const AppSandbox = (() => {
     }
     if (!ALLOWED_WEB_PROTOCOLS.has(resolved.protocol)) {
       return { valid: false, error: 'Only http and https URLs are allowed' };
+    }
+    if (BLOCKED_METADATA_HOSTS.has(resolved.hostname.toLowerCase())) {
+      return { valid: false, error: 'Cloud metadata endpoints are not reachable from apps' };
     }
     return {
       valid: true,
@@ -219,7 +235,17 @@ const AppSandbox = (() => {
   // range — i.e. anything that isn't routable "external" address space.
   // Covers: 127.0.0.0/8 (all loopback, not just .1), 10.0.0.0/8,
   // 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 (link-local, which
-  // includes the 169.254.169.254 cloud metadata endpoint), and 0.0.0.0.
+  // includes the 169.254.169.254 cloud metadata endpoint), 0.0.0.0/8, and
+  // 100.64.0.0/10 (RFC 6598 shared address space — used internally by some
+  // cloud providers, so it isn't public/routable either even though it
+  // isn't classic RFC1918).
+  //
+  // The 0.0.0.0 check used to only match the literal all-zero address
+  // (0.0.0.0), not the wider /8. That mattered because Linux resolves any
+  // 0.x.x.x address to loopback — http://0.1.2.3/ reaches the same place
+  // as 127.0.0.1 on a Linux host, so treating only 0.0.0.0 as internal left
+  // the rest of that /8 misclassified as external and routable via a plain
+  // net:external grant.
   function isPrivateIPv4(octets) {
     const [a, b] = octets;
     if (a === 127) return true;
@@ -227,7 +253,8 @@ const AppSandbox = (() => {
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     if (a === 169 && b === 254) return true;
-    if (a === 0 && b === 0 && octets[2] === 0 && octets[3] === 0) return true;
+    if (a === 0) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
     return false;
   }
 
@@ -275,9 +302,17 @@ const AppSandbox = (() => {
   }
 
   // Sanitize an app id for safe interpolation into a /data/ path segment.
-  // Strips anything that isn't word char, dash, dot, or underscore.
+  // Strips anything that isn't a word char or dash — notably including dots
+  // now, since a bare '..' previously survived this unchanged (the old
+  // pattern allowed dots and dashes both, so '..' matched every character
+  // and passed through as-is). The one path that constructs an appId here
+  // (handleAppInstall) requires signature verification before an id ever
+  // reaches this function, so '..' isn't reachable through it today — but
+  // this is the last line of defense if a future sideload/dev-install path
+  // ever skips that check, so it strips dots regardless of current
+  // reachability.
   function sanitizeAppIdSegment(appId) {
-    return String(appId || 'default').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    return String(appId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
   }
 
   // Notification gateway helpers
@@ -432,7 +467,10 @@ const AppSandbox = (() => {
         data: { appId, type, code },
       });
     }
-    respond(webview, type, requestId, null, { code, message });
+    // Coerce message to a string so a non-Error value (e.g. an object
+    // thrown by an upstream caller that didn't use Error) doesn't surface
+    // as "[object Object]" in the guest-side error handler.
+    respond(webview, type, requestId, null, { code, message: String(message ?? '') });
   }
 
   // Filesystem helpers
@@ -772,7 +810,7 @@ const AppSandbox = (() => {
           });
         } catch (e) {
           closeDialog();
-          respondError(webview, type, requestId, 'WRITE_ERROR', e.message || 'Failed to write file');
+          respondError(webview, type, requestId, 'WRITE_ERROR', e?.message || 'Failed to write file');
         }
       }
     });
@@ -854,7 +892,7 @@ const AppSandbox = (() => {
       return respondError(webview, 'nova:vfs:write', requestId, 'PERMISSION_DENIED', 'vfs:write permission required');
     }
     const { path, content, mimeType } = payload ?? {};
-    if (!path || content === undefined) {
+    if (!path || content === undefined || content === null) {
       return respondError(webview, 'nova:vfs:write', requestId, 'INVALID_ARGS', 'path and content are required');
     }
     const resolvedPath = rewriteDataPath(path, app.id);
@@ -888,8 +926,9 @@ const AppSandbox = (() => {
       return respondError(webview, 'nova:vfs:write', requestId, 'PERMISSION_DENIED', 'Parent folder is outside this app\'s data directory');
     }
     // Coerce content to a string for FS.createFile. Strings pass through;
-    // anything else is JSON-stringified so structured data round-trips
-    // cleanly rather than becoming "[object Object]".
+    // null/undefined is rejected above; anything else (objects, arrays,
+    // numbers) is JSON-stringified so structured data round-trips cleanly
+    // rather than becoming "[object Object]".
     const fileContent = typeof content === 'string' ? content : JSON.stringify(content);
     const newNode = await FS.createFile(parent.id, fileName, fileContent, mimeType || 'text/plain');
     return respond(webview, 'nova:vfs:write', requestId, {
@@ -938,9 +977,11 @@ const AppSandbox = (() => {
       return respondError(webview, 'nova:vfs:mkdir', requestId, 'PERMISSION_DENIED', 'vfs:write permission required');
     }
     const { path, name } = payload ?? {};
-    if (!name) {
+    if (!name || typeof name !== 'string') {
       return respondError(webview, 'nova:vfs:mkdir', requestId, 'INVALID_ARGS', 'name is required');
     }
+    // rewriteDataPath returns '' for null/undefined path; treat that as
+    // "root" so a caller can mkdir directly under the app's /data/<appId>/.
     const resolvedPath = rewriteDataPath(path, app.id);
     let parent;
     if (resolvedPath) {
@@ -1026,7 +1067,11 @@ const AppSandbox = (() => {
       return respondError(webview, 'nova:notifications:show', requestId, 'PERMISSION_DENIED', 'device:notifications permission required');
     }
     // Notify may be absent in headless test environments. Report UNAVAILABLE
-    // rather than silently claiming success — apps deserve to know.
+    // rather than silently claiming success — apps deserve to know. Check
+    // this BEFORE the rate limit counter, otherwise an environment without
+    // Notify would still burn a rate-limit slot for every call, eventually
+    // throttling the app for "spamming" notifications that never actually
+    // rendered anywhere.
     if (typeof Notify === 'undefined' || typeof Notify.show !== 'function') {
       return respondError(webview, 'nova:notifications:show', requestId, 'UNAVAILABLE', 'Notification service not available');
     }
@@ -1057,8 +1102,9 @@ const AppSandbox = (() => {
   // system:background before spinning it up, and this call does nothing
   // more than flip a flag the scheduler is already polling for.
   async function handleBackgroundWakeDone({ requestId, app, webview }) {
-    if (typeof AppScheduler !== 'undefined' && AppScheduler._markWakeDone) {
-      AppScheduler._markWakeDone(webview.dataset.sandboxId);
+    const sandboxId = webview?.dataset?.sandboxId;
+    if (sandboxId && typeof AppScheduler !== 'undefined' && typeof AppScheduler._markWakeDone === 'function') {
+      AppScheduler._markWakeDone(sandboxId);
     }
     return respond(webview, 'nova:background:wake-done', requestId, { success: true });
   }
@@ -1094,7 +1140,53 @@ const AppSandbox = (() => {
     return respond(webview, 'nova:background:stay-alive', requestId, { success: true, enabled: sandbox.wantsBackgroundLive });
   }
 
-  // Settings
+  // Settings keys apps holding system:info may read. This used to be a
+  // denylist (block these specific sensitive keys, allow everything else by
+  // default) — structurally fragile, since every new sensitive settings key
+  // added later had to be remembered and added here manually, or it was
+  // exposed to any app with system:info by default. Flipped to an allowlist
+  // so new keys fail closed instead of open.
+  //
+  // This list was built by grepping every OS.settings.get()/.set() call
+  // site in the codebase (including the sGet() alias used in boot.js) as of
+  // this change — it's a snapshot, not derived automatically, so it will
+  // drift if a new settings key is added without updating this list too.
+  // A key missing from here isn't a bug in itself (it fails closed, the
+  // safe direction) but will make legitimate new settings silently
+  // unreadable by apps until this list is updated.
+  //
+  // Deliberately excluded (must stay unreadable regardless of system:info):
+  // lockPin, pinSalt, biometricCredentialId, bootPassword — credentials or
+  // auth material the OS itself needs to keep private. lockoutUntil and
+  // wrongPinCount are also excluded, though for a different reason: they
+  // live on the in-memory OS object directly (OS.lockoutUntil,
+  // OS.wrongPinCount in kernel.js/system-events.js), never through
+  // OS.settings at all, so they were never reachable through this handler
+  // in the first place — excluded here only for defense-in-depth in case
+  // that ever changes.
+  // NOTE: read (system:info) and write (system:settings) are separate,
+  // higher/lower-trust grants, so they don't have to share one list.
+  // osVersion is the one key here that's fine to read but shouldn't be
+  // app-writable: boot.js uses it purely to track the running OS build
+  // (`if (sGet('osVersion') !== codeVer) OS.settings.set('osVersion',
+  // codeVer)`), and an app overwriting it via nova:settings:set could
+  // interfere with that version-detection logic for no legitimate benefit.
+  // SETTINGS_WRITABLE_KEYS below is SETTINGS_READABLE_KEYS minus osVersion;
+  // every other key is both readable and writable, same as before this
+  // split.
+  const SETTINGS_READABLE_KEYS = new Set([
+    '_hiddenDevIconPositions', 'accentColor', 'autoLock', 'browserPartitionId',
+    'clockFormat', 'cursorSize', 'customWallpaper', 'debugOverlayVisible',
+    'desktopGridSpacing', 'desktopIconPositions', 'desktopIconSize', 'devMode',
+    'filesViewOnly', 'highContrast', 'osVersion', 'pinnedApps',
+    'prohibitWallpaperChange', 'reduceMotion', 'region', 'removeTransparency',
+    'showDesktopIcons', 'showTaskbarClock', 'taskbarAutoHide', 'taskbarPosition',
+    'taskbarSize', 'theme', 'timezone', 'username', 'wallpaperId',
+  ]);
+
+  const SETTINGS_WRITABLE_KEYS = new Set(
+    [...SETTINGS_READABLE_KEYS].filter((k) => k !== 'osVersion')
+  );
 
   async function handleSettingsGet({ payload, requestId, app, webview }) {
     // system:info gates read access — otherwise any app could read credentials
@@ -1102,7 +1194,14 @@ const AppSandbox = (() => {
     if (!AppPermissionManager.isGranted('system:info', app.id)) {
       return respondError(webview, 'nova:settings:get', requestId, 'PERMISSION_DENIED', 'system:info permission required');
     }
-    const value = OS?.settings?.get(payload.key);
+    const key = payload?.key;
+    if (typeof key !== 'string' || !key) {
+      return respondError(webview, 'nova:settings:get', requestId, 'INVALID_ARGS', 'key is required');
+    }
+    if (!SETTINGS_READABLE_KEYS.has(key)) {
+      return respondError(webview, 'nova:settings:get', requestId, 'PERMISSION_DENIED', `Settings key '${key}' is not readable by apps`);
+    }
+    const value = OS?.settings?.get(key);
     return respond(webview, 'nova:settings:get', requestId, { success: true, value });
   }
 
@@ -1110,7 +1209,14 @@ const AppSandbox = (() => {
     if (!AppPermissionManager.isGranted('system:settings', app.id)) {
       return respondError(webview, 'nova:settings:set', requestId, 'PERMISSION_DENIED', 'system:settings permission required');
     }
-    OS?.settings?.set(payload.key, payload.value);
+    const key = payload?.key;
+    if (typeof key !== 'string' || !key) {
+      return respondError(webview, 'nova:settings:set', requestId, 'INVALID_ARGS', 'key is required');
+    }
+    if (!SETTINGS_WRITABLE_KEYS.has(key)) {
+      return respondError(webview, 'nova:settings:set', requestId, 'PERMISSION_DENIED', `Settings key '${key}' is not writable by apps`);
+    }
+    OS?.settings?.set(key, payload?.value);
     return respond(webview, 'nova:settings:set', requestId, { success: true });
   }
 
@@ -1128,7 +1234,7 @@ const AppSandbox = (() => {
       });
       return respond(webview, 'nova:request-permission', requestId, { granted });
     } catch (e) {
-      return respondError(webview, 'nova:request-permission', requestId, 'ERROR', e.message || 'Permission request failed');
+      return respondError(webview, 'nova:request-permission', requestId, 'ERROR', e?.message || 'Permission request failed');
     }
   }
 
@@ -1144,7 +1250,7 @@ const AppSandbox = (() => {
       const status = AppPermissionManager.isRateLimited(permission, app.id);
       return respond(webview, 'nova:permission-rate-limited', requestId, status);
     } catch (e) {
-      return respondError(webview, 'nova:permission-rate-limited', requestId, 'ERROR', e.message || 'Rate limit check failed');
+      return respondError(webview, 'nova:permission-rate-limited', requestId, 'ERROR', e?.message || 'Rate limit check failed');
     }
   }
 
@@ -1180,10 +1286,13 @@ const AppSandbox = (() => {
 
   async function handleWindowSetTitle({ payload, requestId, sandbox, webview }) {
     const windowId = sandbox?.windowId;
-    if (windowId) {
+    if (windowId && OS?.windows?.get) {
       const state = OS.windows.get(windowId);
       if (state && state.titleText) {
-        state.titleText.textContent = String(payload?.title ?? '');
+        // Cap the title so an app can't blow the title bar's layout or
+        // OOM the WM's title-state tracking with a multi-megabyte string.
+        const title = String(payload?.title ?? '').slice(0, 200);
+        state.titleText.textContent = title;
       }
     }
     return respond(webview, 'nova:window:setTitle', requestId, { success: true });
@@ -1191,7 +1300,7 @@ const AppSandbox = (() => {
 
   async function handleWindowResize({ payload, requestId, sandbox, webview }) {
     const windowId = sandbox?.windowId;
-    if (windowId) {
+    if (windowId && OS?.windows?.get) {
       const state = OS.windows.get(windowId);
       if (state && state.element) {
         // parseInt with explicit radix and a minimum bound to prevent
@@ -1213,7 +1322,7 @@ const AppSandbox = (() => {
 
   async function handleWindowGetState({ requestId, sandbox, webview }) {
     const windowId = sandbox?.windowId;
-    const state = windowId ? OS.windows.get(windowId) : null;
+    const state = windowId && OS?.windows?.get ? OS.windows.get(windowId) : null;
     if (!state) {
       return respondError(webview, 'nova:window:getState', requestId, 'NOT_FOUND', 'Window not found');
     }
@@ -1229,11 +1338,35 @@ const AppSandbox = (() => {
 
   // Clipboard
 
+  // The system clipboard is a shared, ambient, cross-app channel — it can
+  // contain whatever any other app, or the user, copied moments ago from
+  // anywhere, including outside this sandbox model entirely. Gating it on
+  // vfs:read ("read files") was a misleading label for "also read whatever's
+  // currently on the system clipboard," and meant granting file access
+  // silently granted clipboard snooping too.
+  //
+  // Now gated on its own clipboard:read/clipboard:write permissions instead.
+  // vfs:read is kept as a fallback ONLY for apps that were already granted
+  // it before this change shipped — those grants live in each user's local
+  // permission store, which this patch has no way to inspect or migrate, so
+  // a hard cutover would silently break clipboard access for any app that
+  // already had file access and expected clipboard to come with it. Any
+  // newly-installed app, or any app whose permissions are re-requested,
+  // should be prompted for clipboard:read/clipboard:write directly rather
+  // than relying on this fallback — treat the vfs:read branch as removable
+  // once existing installs have had a chance to re-consent.
+  function clipboardReadPermitted(appId) {
+    return AppPermissionManager.isGranted('clipboard:read', appId)
+      || AppPermissionManager.isGranted('vfs:read', appId);
+  }
+  function clipboardWritePermitted(appId) {
+    return AppPermissionManager.isGranted('clipboard:write', appId)
+      || AppPermissionManager.isGranted('vfs:read', appId);
+  }
+
   async function handleClipboardRead({ requestId, app, webview }) {
-    // Clipboard is gated on vfs:read — intentional design choice from the
-    // original code (clipboard contents often include file paths).
-    if (!AppPermissionManager.isGranted('vfs:read', app.id)) {
-      return respondError(webview, 'nova:clipboard:read', requestId, 'PERMISSION_DENIED', 'vfs:read permission required for clipboard access');
+    if (!clipboardReadPermitted(app.id)) {
+      return respondError(webview, 'nova:clipboard:read', requestId, 'PERMISSION_DENIED', 'clipboard:read permission required for clipboard access');
     }
     let text = null;
     try {
@@ -1251,10 +1384,12 @@ const AppSandbox = (() => {
   }
 
   async function handleClipboardWrite({ payload, requestId, app, webview }) {
-    if (!AppPermissionManager.isGranted('vfs:read', app.id)) {
-      return respondError(webview, 'nova:clipboard:write', requestId, 'PERMISSION_DENIED', 'vfs:read permission required for clipboard access');
+    if (!clipboardWritePermitted(app.id)) {
+      return respondError(webview, 'nova:clipboard:write', requestId, 'PERMISSION_DENIED', 'clipboard:write permission required for clipboard access');
     }
-    const text = payload.text || '';
+    // ?? not || — a payload of { text: 0 } or { text: false } should still
+    // write a real value, not silently become the empty-string default.
+    const text = payload?.text ?? '';
     try {
       // Actually write to the real system clipboard. navigator.clipboard
       // requires a secure context + (usually) a recent user gesture; if it
@@ -1380,9 +1515,22 @@ const AppSandbox = (() => {
           finish(() => respond(webview, 'nova:download', requestId, { success: false, cancelled: true }));
           return;
         }
-        require('fs').writeFile(savePath, buffer, (err) => {
+        // Lazy-require fs: this handler only runs in the top-level shell
+        // window (a Node frame), so require() is expected to exist. If it
+        // doesn't (test/headless env missing Node integration), surface
+        // that as an explicit error rather than a ReferenceError.
+        if (typeof require !== 'function') {
+          finish(() => respondError(webview, 'nova:download', requestId, 'UNAVAILABLE', 'Node fs module not available in this context'));
+          return;
+        }
+        let fs;
+        try { fs = require('fs'); } catch (e) {
+          finish(() => respondError(webview, 'nova:download', requestId, 'UNAVAILABLE', `Could not load fs module: ${e?.message || e}`));
+          return;
+        }
+        fs.writeFile(savePath, buffer, (err) => {
           if (err) {
-            finish(() => respondError(webview, 'nova:download', requestId, 'IO_ERROR', err.message || 'Failed to write file'));
+            finish(() => respondError(webview, 'nova:download', requestId, 'IO_ERROR', err?.message || 'Failed to write file'));
           } else {
             if (typeof EventLog !== 'undefined') {
               EventLog.log({
@@ -1419,8 +1567,8 @@ const AppSandbox = (() => {
     if (!appId) {
       return respondError(webview, 'nova:app:launch', requestId, 'INVALID_ARGS', 'appId is required');
     }
-    if (!OS.settings.get('devMode')) {
-      const target = OS.apps[appId];
+    if (!OS?.settings?.get?.('devMode')) {
+      const target = OS?.apps?.[appId];
       if (target?.devOnly) {
         return respondError(webview, 'nova:app:launch', requestId, 'PERMISSION_DENIED', 'Developer Mode must be enabled to launch this app');
       }
@@ -1435,11 +1583,14 @@ const AppSandbox = (() => {
         windowId: win ? win.id : null,
       });
     } catch (e) {
-      return respondError(webview, 'nova:app:launch', requestId, 'ERROR', e.message);
+      return respondError(webview, 'nova:app:launch', requestId, 'ERROR', e?.message || 'Launch failed');
     }
   }
 
   async function handleAppInfo({ requestId, app, webview }) {
+    if (!app) {
+      return respondError(webview, 'nova:app:info', requestId, 'UNAVAILABLE', 'No app context');
+    }
     return respond(webview, 'nova:app:info', requestId, {
       success: true,
       id: app.id,
@@ -1517,7 +1668,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:admin:audit', requestId, { success: true, logs: json.data, pagination: json.pagination, statistics: json.statistics });
     } catch (e) {
-      return respondError(webview, 'nova:admin:audit', requestId, 'UNAVAILABLE', e.message || 'Audit request failed');
+      return respondError(webview, 'nova:admin:audit', requestId, 'UNAVAILABLE', e?.message || 'Audit request failed');
     }
   }
 
@@ -1542,7 +1693,7 @@ const AppSandbox = (() => {
       }
       // action === 'set'
       const updates = payload?.settings;
-      if (!updates || typeof updates !== 'object') {
+      if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
         return respondError(webview, 'nova:admin:system', requestId, 'INVALID_ARGS', 'settings object is required for action "set"');
       }
       const { status, json } = await authedJsonFetch('/api/security/settings', { method: 'PUT', body: updates });
@@ -1554,7 +1705,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:admin:system', requestId, { success: true, updated: json.updated });
     } catch (e) {
-      return respondError(webview, 'nova:admin:system', requestId, 'UNAVAILABLE', e.message || 'Admin system request failed');
+      return respondError(webview, 'nova:admin:system', requestId, 'UNAVAILABLE', e?.message || 'Admin system request failed');
     }
   }
 
@@ -1597,7 +1748,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:admin:users', requestId, { success: true, revoked: true });
     } catch (e) {
-      return respondError(webview, 'nova:admin:users', requestId, 'UNAVAILABLE', e.message || 'Admin users request failed');
+      return respondError(webview, 'nova:admin:users', requestId, 'UNAVAILABLE', e?.message || 'Admin users request failed');
     }
   }
 
@@ -1721,7 +1872,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:mail:read', requestId, { success: true, action, data: json });
     } catch (e) {
-      return respondError(webview, 'nova:mail:read', requestId, 'UNAVAILABLE', e.message || 'Mail read request failed');
+      return respondError(webview, 'nova:mail:read', requestId, 'UNAVAILABLE', e?.message || 'Mail read request failed');
     }
   }
 
@@ -1760,7 +1911,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:mail:write', requestId, { success: true, action, op });
     } catch (e) {
-      return respondError(webview, 'nova:mail:write', requestId, 'UNAVAILABLE', e.message || 'Mail write request failed');
+      return respondError(webview, 'nova:mail:write', requestId, 'UNAVAILABLE', e?.message || 'Mail write request failed');
     }
   }
 
@@ -1791,7 +1942,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:mail:send', requestId, { success: true, messageId: json.messageId });
     } catch (e) {
-      return respondError(webview, 'nova:mail:send', requestId, 'UNAVAILABLE', e.message || 'Send request failed');
+      return respondError(webview, 'nova:mail:send', requestId, 'UNAVAILABLE', e?.message || 'Send request failed');
     }
   }
 
@@ -1814,7 +1965,7 @@ const AppSandbox = (() => {
       }
       return respond(webview, 'nova:mail:delete', requestId, { success: true, deleted: uids.length });
     } catch (e) {
-      return respondError(webview, 'nova:mail:delete', requestId, 'UNAVAILABLE', e.message || 'Mail delete request failed');
+      return respondError(webview, 'nova:mail:delete', requestId, 'UNAVAILABLE', e?.message || 'Mail delete request failed');
     }
   }
 
@@ -1896,7 +2047,7 @@ const AppSandbox = (() => {
     // it. Each cleanup step is independently best-effort (matching the
     // manual path's own try/catch-per-step), since a failure in one
     // (e.g. partition already cleared) shouldn't block the others.
-    if (typeof WM !== 'undefined' && WM.closeWindow && typeof OS !== 'undefined' && OS.windows) {
+    if (typeof WM !== 'undefined' && WM.closeWindow && OS?.windows && typeof OS.windows[Symbol.iterator] === 'function') {
       const openWindowIds = [];
       for (const [wid, wstate] of OS.windows) {
         if (wstate.appId === appId) openWindowIds.push(wid);
@@ -1986,7 +2137,7 @@ const AppSandbox = (() => {
           // effort, since a human is still there to react to whatever
           // comes next), but this unattended path has no human backstop,
           // so an inconclusive scan blocks install instead.
-          return respondError(webview, 'nova:app:install', requestId, 'SCAN_FAILED', `Could not scan "${relPath}": ${err.message}`);
+          return respondError(webview, 'nova:app:install', requestId, 'SCAN_FAILED', `Could not scan "${relPath}": ${err?.message || err}`);
         }
       }
     }
@@ -2060,11 +2211,51 @@ const AppSandbox = (() => {
         version: registered.version,
       });
     } catch (e) {
-      return respondError(webview, 'nova:app:install', requestId, 'ERROR', e.message);
+      return respondError(webview, 'nova:app:install', requestId, 'ERROR', e?.message || 'Unknown error');
     }
   }
 
   // Events
+  //
+  // Apps holding system:events may subscribe to OS-wide event bus messages.
+  // Without an allowlist, an app could subscribe to internal channels like
+  // 'settings:changed' (which fires for every settings write, including
+  // password/PIN updates from system code) or 'os:volumeChanged' purely for
+  // reconnaissance. Limit subscriptions to the public event surface — names
+  // the OS explicitly emits for app consumption — and reject anything else
+  // rather than forwarding it.
+  const ALLOWED_EVENT_NAMES = new Set([
+    'system:notification', 'system:volumeChanged', 'system:themeChanged',
+    'system:workspaceChanged', 'system:power', 'system:network',
+    'app:installed', 'app:uninstalled', 'app:launched',
+    // As of this comment, nothing in the codebase calls OS.events.emit()
+    // for any of the five names below — subscribing today is a no-op, not
+    // a live leak. Pre-declared for whoever wires up mail/calendar/contacts
+    // sync, gated on the same *:read permission each domain's actual data
+    // access already requires (see EVENT_DOMAIN_PERMISSIONS below), rather
+    // than being reachable through the flat system:events grant alone. An
+    // app that can already read your mail gains nothing new from mail:new
+    // notifications; an app that only holds system:events (for volume/
+    // theme/power — genuinely low-stakes) can't piggyback into mail
+    // metadata just because these names exist in this set. Whoever
+    // implements the emit side should still double check the actual
+    // payload shape against this gate once it's real, since this was
+    // designed against the *names* only — no payload existed to review.
+    'mail:new', 'mail:updated',
+    'calendar:reminder', 'calendar:updated',
+    'contacts:updated',
+  ]);
+
+  // Domain-gated events: subscribing requires system:events AND the listed
+  // permission, not system:events alone. Events not listed here only need
+  // system:events, same as before this split.
+  const EVENT_DOMAIN_PERMISSIONS = new Map([
+    ['mail:new', 'mail:read'],
+    ['mail:updated', 'mail:read'],
+    ['calendar:reminder', 'calendar:read'],
+    ['calendar:updated', 'calendar:read'],
+    ['contacts:updated', 'contacts:read'],
+  ]);
 
   async function handleEventsSubscribe({ payload, requestId, app, webview, sandbox }) {
     if (!AppPermissionManager.isGranted('system:events', app.id)) {
@@ -2073,6 +2264,13 @@ const AppSandbox = (() => {
     const { event } = payload ?? {};
     if (!event) {
       return respondError(webview, 'nova:events:subscribe', requestId, 'INVALID_ARGS', 'event name is required');
+    }
+    if (typeof event !== 'string' || !ALLOWED_EVENT_NAMES.has(event)) {
+      return respondError(webview, 'nova:events:subscribe', requestId, 'INVALID_ARGS', `Event '${event}' is not in the subscribable allowlist`);
+    }
+    const domainPermission = EVENT_DOMAIN_PERMISSIONS.get(event);
+    if (domainPermission && !AppPermissionManager.isGranted(domainPermission, app.id)) {
+      return respondError(webview, 'nova:events:subscribe', requestId, 'PERMISSION_DENIED', `${domainPermission} permission required to subscribe to '${event}'`);
     }
     const sandboxId = webview.dataset.sandboxId;
     const subs = eventSubscriptions.get(sandboxId);
@@ -2128,6 +2326,26 @@ const AppSandbox = (() => {
     if (!AppPermissionManager.isGranted(netPerm, app.id)) {
       return respondError(webview, 'nova:net:fetch', requestId, 'PERMISSION_DENIED', `${netPerm} permission required`);
     }
+    // Normalize headers to a plain object — apps can pass a Headers instance,
+    // an array of pairs, or a plain object. Same conversion the shim does
+    // client-side; redo here so the proxy path doesn't choke on a non-plain
+    // value getting JSON.stringify'd.
+    const headerObj = {};
+    if (headers && typeof headers === 'object') {
+      if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+        headers.forEach((v, k) => { headerObj[k] = v; });
+      } else if (Array.isArray(headers)) {
+        for (const pair of headers) {
+          if (Array.isArray(pair) && pair.length >= 2) {
+            headerObj[String(pair[0])] = String(pair[1]);
+          }
+        }
+      } else {
+        for (const k of Object.keys(headers)) {
+          headerObj[k] = String(headers[k]);
+        }
+      }
+    }
     try {
       let resStatus, resStatusText, resHeaders, resBody;
 
@@ -2135,8 +2353,8 @@ const AppSandbox = (() => {
         // Same-origin requests don't hit CORS, so go direct.
         const res = await fetch(classified.url, {
           method: safeMethod,
-          headers: headers || {},
-          body: body || null,
+          headers: headerObj,
+          body: body ?? null,
         });
         resBody = await res.text();
         resStatus = res.status;
@@ -2149,7 +2367,7 @@ const AppSandbox = (() => {
         // so we hand the request to /api/proxy, which makes it server-to-server.
         const { status: proxyStatus, ok, json: proxyJson } = await authedJsonFetch('/api/proxy', {
           method: 'POST',
-          body: { url: classified.url, method: safeMethod, headers: headers || {}, body: body || null },
+          body: { url: classified.url, method: safeMethod, headers: headerObj, body: body ?? null },
         });
         if (!ok) {
           return respondError(webview, 'nova:net:fetch', requestId, 'NETWORK_ERROR', proxyJson?.error || `Proxy request failed (${proxyStatus})`);
@@ -2168,7 +2386,7 @@ const AppSandbox = (() => {
         body: resBody,
       });
     } catch (e) {
-      return respondError(webview, 'nova:net:fetch', requestId, 'NETWORK_ERROR', e.message);
+      return respondError(webview, 'nova:net:fetch', requestId, 'NETWORK_ERROR', e?.message || String(e));
     }
   }
 
@@ -2191,7 +2409,7 @@ const AppSandbox = (() => {
         ? new WebSocket(url, protocols)
         : new WebSocket(url);
     } catch (e) {
-      return respondError(webview, 'nova:net:websocket', requestId, 'INVALID_ARGS', e.message);
+      return respondError(webview, 'nova:net:websocket', requestId, 'INVALID_ARGS', e?.message || 'Unknown error');
     }
     const wsId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     // Track the WebSocket so destroy() can close it when the sandbox is torn
@@ -2221,6 +2439,9 @@ const AppSandbox = (() => {
     if (typeof WebSocket === 'undefined') {
       return respondError(webview, 'nova:net:ws:send', requestId, 'UNAVAILABLE', 'WebSocket not supported');
     }
+    if (!wsId || typeof wsId !== 'string') {
+      return respondError(webview, 'nova:net:ws:send', requestId, 'INVALID_ARGS', 'wsId is required');
+    }
     const wsState = sandbox?.wsConnections?.get(wsId);
     if (!wsState) {
       return respondError(webview, 'nova:net:ws:send', requestId, 'NOT_FOUND', 'WebSocket connection not found');
@@ -2228,7 +2449,18 @@ const AppSandbox = (() => {
     if (wsState.ws.readyState !== WebSocket.OPEN) {
       return respondError(webview, 'nova:net:ws:send', requestId, 'INVALID_STATE', 'WebSocket is not open');
     }
-    wsState.ws.send(data ?? '');
+    // Coerce data to a string — ws.send accepts strings, ArrayBuffers,
+    // and Blobs, but IPC values come through JSON.parse so anything
+    // non-string here is probably an object the app meant to JSON-encode.
+    let payload2send = data;
+    if (payload2send == null) payload2send = '';
+    else if (typeof payload2send === 'object') payload2send = JSON.stringify(payload2send);
+    else payload2send = String(payload2send);
+    try {
+      wsState.ws.send(payload2send);
+    } catch (e) {
+      return respondError(webview, 'nova:net:ws:send', requestId, 'INVALID_STATE', e?.message || 'Failed to send');
+    }
     return respond(webview, 'nova:net:ws:send', requestId, { success: true });
   }
 
@@ -2450,8 +2682,14 @@ const AppSandbox = (() => {
     }
     // Enforce a per-value size cap, and storageSet enforces the per-app quota
     // against real existing usage in the DB (not just a per-call check).
+    // IndexedDB stores structured values directly, so an object value's real
+    // on-disk size is its JSON representation — measure that, not the
+    // '[object Object]' that String(value) would give, otherwise the quota
+    // check is silently too lenient for any non-string value.
     const value = payload?.value ?? '';
-    const valueBytes = sharedTextEncoder.encode(String(value)).length;
+    const valueBytes = sharedTextEncoder.encode(
+      typeof value === 'string' ? value : JSON.stringify(value)
+    ).length;
     if (valueBytes > STORAGE_VALUE_MAX_BYTES) {
       return respondError(webview, 'nova:storage:set', requestId, 'STORAGE_FULL', `Value exceeds ${STORAGE_VALUE_MAX_BYTES} byte limit`);
     }
@@ -2475,7 +2713,7 @@ const AppSandbox = (() => {
       await storageDelete(app.id, rawKey);
       return respond(webview, 'nova:storage:delete', requestId, { success: true });
     } catch (e) {
-      return respondError(webview, 'nova:storage:delete', requestId, 'ERROR', e.message);
+      return respondError(webview, 'nova:storage:delete', requestId, 'ERROR', e?.message || 'Unknown error');
     }
   }
 
@@ -2484,7 +2722,7 @@ const AppSandbox = (() => {
       await storageClear(app.id);
       return respond(webview, 'nova:storage:clear', requestId, { success: true });
     } catch (e) {
-      return respondError(webview, 'nova:storage:clear', requestId, 'ERROR', e.message);
+      return respondError(webview, 'nova:storage:clear', requestId, 'ERROR', e?.message || 'Unknown error');
     }
   }
 
@@ -2493,7 +2731,7 @@ const AppSandbox = (() => {
       const keys = await storageKeys(app.id);
       return respond(webview, 'nova:storage:keys', requestId, { success: true, keys });
     } catch (e) {
-      return respondError(webview, 'nova:storage:keys', requestId, 'ERROR', e.message);
+      return respondError(webview, 'nova:storage:keys', requestId, 'ERROR', e?.message || 'Unknown error');
     }
   }
 
@@ -2522,7 +2760,7 @@ const AppSandbox = (() => {
         },
         timestamp: pos.timestamp,
       }),
-      (err) => respondError(webview, 'nova:device:geolocation', requestId, 'GEOLOCATION_ERROR', err.message),
+      (err) => respondError(webview, 'nova:device:geolocation', requestId, 'GEOLOCATION_ERROR', err?.message || 'Geolocation error'),
       payload.options || {}
     );
   }
@@ -2722,13 +2960,14 @@ const AppSandbox = (() => {
     if (!AppPermissionManager.isGranted('system:info', app.id)) {
       return respondError(webview, 'nova:system:info', requestId, 'PERMISSION_DENIED', 'system:info permission required');
     }
+    const bootTime = OS?._bootTime || Date.now();
     return respond(webview, 'nova:system:info', requestId, {
       success: true,
       os: {
-        version: OS.version,
-        securityPatch: OS.securityPatch,
-        username: OS.username,
-        uptime: Date.now() - (OS._bootTime || Date.now()),
+        version: OS?.version,
+        securityPatch: OS?.securityPatch,
+        username: OS?.username,
+        uptime: Date.now() - bootTime,
       },
     });
   }
@@ -2736,20 +2975,21 @@ const AppSandbox = (() => {
   // Ready handshake
 
   async function handleReady({ requestId, app, webview }) {
+    if (!app) {
+      return respondError(webview, 'nova:ready', requestId, 'UNAVAILABLE', 'No app context for ready handshake');
+    }
     const mgr = typeof AppPermissionManager !== 'undefined' ? AppPermissionManager : null;
-    const granted = mgr
-      ? (app.permissions || []).filter(p => mgr.isGranted(p, app.id))
-      : (app.permissions || []);
-    const optionalGranted = mgr
-      ? (app.optionalPermissions || []).filter(p => mgr.isGranted(p, app.id))
-      : (app.optionalPermissions || []);
+    const appPerms = app.permissions || [];
+    const appOptional = app.optionalPermissions || [];
+    const granted = mgr ? appPerms.filter(p => mgr.isGranted(p, app.id)) : appPerms;
+    const optionalGranted = mgr ? appOptional.filter(p => mgr.isGranted(p, app.id)) : appOptional;
     const payload = {
       success: true,
       appId: app.id,
       permissions: granted,
       optionalPermissions: optionalGranted,
-      osVersion: OS.version,
-      securityPatch: OS.securityPatch,
+      osVersion: OS?.version,
+      securityPatch: OS?.securityPatch,
     };
     // Some apps (see the capability shim / createDefaultAppShell) read the
     // handshake fields directly off the top-level response object rather
@@ -2853,14 +3093,16 @@ const AppSandbox = (() => {
   // 30 seconds.
 
   async function handleAuditEval({ app, payload, requestId, webview }) {
-    log('warn', `${app.name} called eval():`, payload?.preview);
+    const appName = app?.name || app?.id || 'unknown';
+    const appId = app?.id || 'unknown';
+    log('warn', `${appName} called eval():`, payload?.preview);
     if (typeof EventLog !== 'undefined') {
       EventLog.log({
         app: 'AppSandbox',
         category: 'security',
         severity: 'warn',
-        message: `${app.name} called eval()`,
-        data: { appId: app.id, preview: payload?.preview },
+        message: `${appName} called eval()`,
+        data: { appId, preview: payload?.preview },
       });
     }
     return respond(webview, 'nova:audit:eval', requestId, { success: true });
@@ -2951,12 +3193,17 @@ const AppSandbox = (() => {
       }
       await handler({ payload, requestId, app, webview, sandbox });
     } catch (err) {
+      // Error.isError (ES2026) is the cross-realm-safe check; fall back to
+      // instanceof for older runtimes. Either way, extract a real message
+      // string for both the log and the guest-side error response.
+      const isError = typeof Error.isError === 'function' ? Error.isError(err) : err instanceof Error;
+      const msg = isError ? err.message : String(err);
       log('error', `Error handling ${type}:`, err);
       // Guard against a webview that's been destroyed between the call
       // arriving and an async handler throwing — respond would log a
       // spurious error on top of the real one.
       if (webview && typeof webview.executeScript === 'function') {
-        respondError(webview, type, requestId, 'INTERNAL_ERROR', err.message || 'Internal error');
+        respondError(webview, type, requestId, 'INTERNAL_ERROR', msg || 'Internal error');
       }
     }
   }
@@ -3035,15 +3282,24 @@ const AppSandbox = (() => {
       // __novaOutboxPull directly anymore). executeScript's default
       // (isolated world) is what reaches it.
       const idLiteral = JSON.stringify(requestId);
+      // Bail out early if the sandbox has already been destroyed between
+      // the consolemessage firing and this host-initiated read landing.
+      // Without this guard, handleAPICall would run against a stale
+      // webview reference and produce confusing log noise rather than
+      // silently dropping the orphaned call.
+      if (!activeSandboxes.has(sandboxId)) return;
       webview.executeScript({
         code: `(function(){ var m = window.__novaOutboxPull || {}; var p = m[${idLiteral}]; delete m[${idLiteral}]; return JSON.stringify(p === undefined ? null : p); })()`,
       }, (results) => {
+        // Second guard: the executeScript callback is async and may fire
+        // after destroy() has torn this sandbox down.
+        if (!activeSandboxes.has(sandboxId)) return;
         let payload = null;
         try {
           const raw = Array.isArray(results) ? results[0] : results;
           payload = raw ? JSON.parse(raw) : null;
         } catch (e) {
-          log('warn', `Failed to retrieve IPC payload for ${type} from ${app?.id || 'unknown app'}: ${e.message}`);
+          log('warn', `Failed to retrieve IPC payload for ${type} from ${app?.id || 'unknown app'}: ${e?.message || e}`);
           return;
         }
         const sandbox = activeSandboxes.get(sandboxId);
@@ -3209,13 +3465,19 @@ const AppSandbox = (() => {
     }
   }
 
-  // Marker used on the postMessage bridge between the isolated transport
-  // script and the main-world capability shim. Deliberately distinct from
-  // IPC_MARKER (the guest->host console.log marker) — this one never
-  // leaves the guest's own window, it just tags same-window postMessage
-  // traffic so the transport/shim pair can tell their own messages apart
-  // from anything else that might call postMessage on this window.
+  // Marker used ONLY on the one-shot handshake that hands a MessagePort
+  // from the isolated transport script to the main-world capability shim.
+  // Deliberately distinct from IPC_MARKER (the guest->host console.log
+  // marker). Unlike the previous design, this marker does NOT authenticate
+  // ongoing request/response traffic — see the handshake comment below for
+  // why a tagged window.postMessage alone is forgeable by any main-world
+  // script and can't be trusted for anything beyond the initial port handoff.
   const BRIDGE_MARKER = '__NOVA_BRIDGE__';
+
+  // Cache for buildIsolatedTransportScript — the script is identical for
+  // every sandbox, so build it once and reuse the string. Reset by tests
+  // via _internal._resetState.
+  let _isolatedTransportScriptCache = null;
 
   // Builds the isolated-world transport content script. This owns the
   // ONLY code path that can produce a valid guest->host IPC message
@@ -3226,23 +3488,65 @@ const AppSandbox = (() => {
   // "isolated world", same mechanism as Chrome extension content
   // scripts) that the guest's own page script cannot reach, patch, or
   // race against. See JavaScript Contexts in NW.js docs: isolated and
-  // main-world scripts share the DOM but not JS globals, so this talks
-  // to the main-world capability shim (buildCapabilityShim below) purely
-  // via same-window postMessage, tagged with BRIDGE_MARKER.
+  // main-world scripts share the DOM but not JS globals.
   //
-  // Concretely, this closes two things the old single-realm shim could
-  // not: (1) a guest page redefining console.log before the shim's IIFE
-  // ran could previously blind or spoof the IPC channel — now that
-  // channel lives in a realm the guest's console.log override never
-  // touches; (2) window.__novaInbox / window.__novaOutboxPull used to be
-  // plain globals on the guest's own window, readable/writable by any
-  // guest script — now they're closures inside this isolated script,
-  // invisible to window.* lookups from the main world.
+  // Ongoing traffic with the main-world capability shim (buildCapabilityShim
+  // below) goes over a dedicated MessageChannel, not tagged window.postMessage.
+  // This is a deliberate correction: window.postMessage with a __novaBridge
+  // tag authenticates "this arrived on this window" but NOT "this actually
+  // came from the isolated script" — any main-world code (including an
+  // attacker who achieved script execution in the guest's own page, e.g. via
+  // an XSS bug in the app itself) can call
+  // window.postMessage(sameShapeObject, ...) and a listener keyed only on the
+  // tag has no way to tell the difference. Concretely, that let a compromised
+  // guest forge a fake "response" for one of its OWN in-flight requestIds and
+  // win the race against the real host response, corrupting whatever the
+  // guest's own app code does with that result.
+  //
+  // A MessagePort is what authenticates a message now: holding a reference
+  // to port2 is only possible for code that received it in the one-shot
+  // handshake below, and the isolated script stops listening for further
+  // handshake requests the instant one is claimed — so nothing that runs
+  // afterward (including later-injected or dynamically-eval'd guest script)
+  // can obtain a second reference to it. A message arriving on
+  // `port1.onmessage` can only have been sent via `port2.postMessage`, so no
+  // tag/marker is needed to trust port traffic — possession of the port is
+  // the credential.
+  //
+  // This still closes what the window.postMessage version closed relative to
+  // the original single-realm shim: (1) a guest page redefining console.log
+  // before the shim's IIFE ran could previously blind or spoof the IPC
+  // channel — that channel lives in a realm the guest's console.log override
+  // never touches; (2) window.__novaInbox / window.__novaOutboxPull used to
+  // be plain globals on the guest's own window — now they're closures inside
+  // this isolated script, invisible to window.* lookups from the main world.
+  // It additionally closes the response-forgery gap the tagged-postMessage
+  // bridge itself introduced.
   function buildIsolatedTransportScript() {
-    return `(function() {
+    // Cached: the transport script is identical for every sandbox, so build
+    // it once. The original code regenerated a multi-KB string template on
+    // every launch — measurable on cold boot when several apps launch back
+    // to back.
+    if (_isolatedTransportScriptCache) return _isolatedTransportScriptCache;
+    _isolatedTransportScriptCache = `(function() {
   'use strict';
   const IPC_MARKER = ${JSON.stringify(IPC_MARKER)};
   const BRIDGE_MARKER = ${JSON.stringify(BRIDGE_MARKER)};
+
+  // The MessagePort this isolated script keeps for itself once the
+  // handshake completes. port2 (the other end) is handed to the
+  // main-world shim exactly once, below. Until the handshake fires,
+  // outbound messages queue in pendingOutbound rather than being lost.
+  let mainWorldPort = null;
+  let pendingOutbound = [];
+
+  function sendToMainWorld(msg) {
+    if (mainWorldPort) {
+      try { mainWorldPort.postMessage(msg); } catch (e) { /* torn-down guest window */ }
+    } else {
+      pendingOutbound.push(msg);
+    }
+  }
 
   // Host->guest responses land here, pushed to by respond() in
   // app-sandbox.js via executeScript targeting this isolated world
@@ -3273,15 +3577,16 @@ const AppSandbox = (() => {
     } catch (e) {
       // Deliver a synthetic error back to the main world so its pending
       // promise doesn't hang forever if console.log itself throws.
-      deliverToMainWorld({ __novaBridge: BRIDGE_MARKER, kind: 'response', requestId: requestId,
-        type: type + ':response', result: null, error: { code: 'TRANSPORT_ERROR', message: String(e && e.message || e) } });
+      deliverToMainWorld({ kind: 'response', requestId: requestId,
+        type: type + ':response', result: null, error: { code: 'TRANSPORT_ERROR', message: String((e && e.message) || e) } });
     }
   }
 
-  // Forward a host response (or pushed event) to the main-world shim.
+  // Forward a host response (or pushed event) to the main-world shim, over
+  // the dedicated port rather than tagged window.postMessage — see the
+  // module-level comment above buildIsolatedTransportScript for why.
   function deliverToMainWorld(msg) {
-    try { window.postMessage(msg, window.location.origin); }
-    catch (e) { /* best-effort — a torn-down guest window can throw here */ }
+    sendToMainWorld(msg);
   }
 
   // Same idle-backoff poller design as the original shim, just relocated:
@@ -3308,7 +3613,7 @@ const AppSandbox = (() => {
     for (let i = 0; i < drained.length; i++) {
       const msg = drained[i];
       if (!msg || typeof msg.type !== 'string') continue;
-      deliverToMainWorld(Object.assign({ __novaBridge: BRIDGE_MARKER, kind: 'response' }, msg));
+      deliverToMainWorld(Object.assign({ kind: 'response' }, msg));
     }
   }
 
@@ -3317,21 +3622,60 @@ const AppSandbox = (() => {
   }
   scheduleNextPoll();
 
-  // Requests arrive from the main-world shim via postMessage. event.source
-  // === window is the load-bearing check here: this isolated script and
-  // the main-world shim share the same window object (same document,
-  // different JS realm), so a same-window, same-origin postMessage is
-  // exactly what a legitimate call from our own shim looks like. Nothing
-  // outside this window (no nested iframe, no opener) can produce an
-  // event.source === window match against this window's own identity.
-  window.addEventListener('message', function(event) {
-    if (event.source !== window) return;
+  // Requests arrive from the main-world shim over the dedicated port once
+  // the handshake below completes.
+  function handlePortMessage(event) {
     const data = event.data;
-    if (!data || data.__novaBridge !== BRIDGE_MARKER || data.kind !== 'request') return;
+    if (!data || data.kind !== 'request') return;
     if (typeof data.type !== 'string' || typeof data.requestId !== 'string') return;
     sendToHost(data.type, data.payload, data.requestId);
+  }
+
+  // One-shot handshake: create a MessageChannel and hand port2 to the
+  // main-world shim. This is the ONLY message this script ever sends via
+  // window.postMessage — everything after this point goes over the port.
+  //
+  // handshakeClaimed makes the handoff strictly one-time: the instant a
+  // valid claim request is processed, the listener stops accepting further
+  // claims (even a same-tick duplicate call), so no later script — however
+  // it got main-world execution — can obtain a second reference to port2.
+  // A legitimate shim always wins this because buildCapabilityShim is
+  // guaranteed to run as the very first script in the guest's document
+  // (see injectCapabilityShim's unconditional prepend), before any guest
+  // HTML/script has had a chance to execute at all; run_at: 'document_start'
+  // on this content script additionally guarantees this listener exists
+  // before that first script tag runs. So the race this is closing is not
+  // "can a guest script beat the shim to the handshake" (it can't — the shim
+  // runs first, full stop) but "can a guest script REPLAY or FORGE the claim
+  // message after the fact" — handshakeClaimed defeats that by making the
+  // claim single-use regardless of timing.
+  let handshakeClaimed = false;
+  window.addEventListener('message', function(event) {
+    if (handshakeClaimed) return;
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.__novaBridge !== BRIDGE_MARKER || data.kind !== 'claim-port') return;
+    handshakeClaimed = true;
+
+    const channel = new MessageChannel();
+    mainWorldPort = channel.port1;
+    mainWorldPort.onmessage = handlePortMessage;
+    mainWorldPort.start();
+
+    // Flush anything queued before the shim claimed its port (there
+    // shouldn't be much — host pushes are rare this early — but this
+    // avoids silently dropping a pushed event that raced the handshake).
+    const queued = pendingOutbound;
+    pendingOutbound = [];
+    for (let i = 0; i < queued.length; i++) mainWorldPort.postMessage(queued[i]);
+
+    // Transfer port2 to the shim. This is a structured-clone transfer, not
+    // a copy — after this call, this script no longer holds any reference
+    // to port2, and neither does anything else that isn't the recipient.
+    event.source.postMessage({ __novaBridge: BRIDGE_MARKER, kind: 'claim-port-ack' }, event.origin, [channel.port2]);
   });
 })();`;
+    return _isolatedTransportScriptCache;
   }
 
   // Builds the capability shim string for a given app. `nestedWebviewAllowed`
@@ -3372,8 +3716,48 @@ const AppSandbox = (() => {
   // buildIsolatedTransportScript(). This shim never touches IPC_MARKER or
   // console.log directly anymore — that channel now lives entirely inside
   // the isolated-world transport script (injected separately via
-  // addContentScripts), which this shim can only reach by postMessage.
+  // addContentScripts). BRIDGE_MARKER is used ONLY to claim this shim's
+  // MessagePort at startup (see the handshake below) — once claimed, all
+  // request/response traffic goes over the port itself, which needs no tag
+  // because possession of the port is what proves a message is legitimate.
+  // A tagged window.postMessage is forgeable by any main-world script; a
+  // port reference isn't, since nothing outside this handshake ever gets one.
   const BRIDGE_MARKER = '__NOVA_BRIDGE__';
+
+  // Set once the one-shot handshake below completes. Requests made before
+  // this resolves are queued and flushed the instant the port arrives —
+  // in practice this window is essentially zero since this script is
+  // guaranteed to run before any other guest code (see
+  // injectCapabilityShim's unconditional prepend) and the isolated
+  // transport script's claim listener is armed by run_at: 'document_start'
+  // before that.
+  let hostPort = null;
+  let pendingPortMessages = [];
+  function sendOverPort(msg) {
+    if (hostPort) {
+      hostPort.postMessage(msg);
+    } else {
+      pendingPortMessages.push(msg);
+    }
+  }
+  window.addEventListener('message', function claimHandshake(event) {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.__novaBridge !== BRIDGE_MARKER || data.kind !== 'claim-port-ack') return;
+    window.removeEventListener('message', claimHandshake);
+    const port = event.ports && event.ports[0];
+    if (!port) return;
+    hostPort = port;
+    hostPort.onmessage = function(portEvent) { handleInboxMessage(portEvent.data); };
+    hostPort.start();
+    const queued = pendingPortMessages;
+    pendingPortMessages = [];
+    for (let i = 0; i < queued.length; i++) hostPort.postMessage(queued[i]);
+  });
+  // Ask the isolated transport script for a port. Sent exactly once; the
+  // isolated script's handshake listener is single-use on its end too, so
+  // a duplicate/replayed claim from anywhere else is a no-op.
+  window.postMessage({ __novaBridge: BRIDGE_MARKER, kind: 'claim-port' }, window.location.origin);
 
   function generateId() {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -3395,11 +3779,10 @@ const AppSandbox = (() => {
   // unchanged: same Promise, same resolve/reject shape, same timeouts —
   // only the transport underneath moved.
   //
-  // event.source === window is the check that matters on the receiving
-  // end (see the 'message' listener below and the isolated script's own
-  // listener) — a same-window postMessage can only originate from code
-  // that shares this exact window object, i.e. this shim or the isolated
-  // transport script, never a nested iframe or external page.
+  // Requests go out over hostPort (see the claim-port handshake above),
+  // not window.postMessage — the port itself is what authenticates this
+  // as a legitimate call; see the BRIDGE_MARKER comment above for why a
+  // tagged window.postMessage wasn't sufficient on its own.
   function ipc(type, payload) {
     return new Promise(function(resolve, reject) {
       const id = generateId();
@@ -3412,7 +3795,7 @@ const AppSandbox = (() => {
       }, timeoutMs);
       pendingRequests.set(id, { resolve: resolve, reject: reject, timer: timer });
       try {
-        window.postMessage({ __novaBridge: BRIDGE_MARKER, kind: 'request', type: type, payload: payload, requestId: id }, window.location.origin);
+        sendOverPort({ kind: 'request', type: type, payload: payload, requestId: id });
       } catch (e) {
         clearTimeout(timer);
         pendingRequests.delete(id);
@@ -3421,18 +3804,14 @@ const AppSandbox = (() => {
     });
   }
 
-  // Responses (and pushed events) arrive via postMessage from the
-  // isolated-world transport script — see buildIsolatedTransportScript()
-  // in app-sandbox.js, which drains window.__novaInbox on its own poll
-  // loop and forwards each message here. This shim no longer touches
-  // window.__novaInbox itself (it lives in a different JS realm now), so
-  // there's nothing left to poll on this side — just a listener.
-  //
-  // Same event.source === window check as ipc()'s send path: only
-  // same-window postMessage traffic is accepted, which in practice means
-  // only the isolated transport script (or this shim itself) can be the
-  // source, since both share this window object but nothing outside it
-  // does.
+  // Responses (and pushed events) arrive via hostPort.onmessage — see the
+  // claim-port handshake above. The isolated transport script drains
+  // window.__novaInbox on its own poll loop and forwards each message over
+  // the port. This shim no longer touches window.__novaInbox itself (it
+  // lives in a different JS realm now), so there's nothing left to poll on
+  // this side — just a listener, and one that trusts its input by
+  // construction: only the isolated script ever held a reference to the
+  // other end of this port, so nothing else could be the source.
   function handleInboxMessage(msg) {
     if (!msg || typeof msg.type !== 'string') return;
 
@@ -3523,18 +3902,14 @@ const AppSandbox = (() => {
     }
   }
 
-  // Listens for postMessage traffic from the isolated-world transport
-  // script. Replaces the old setInterval-based drainInbox() poller — this
-  // is push-based now (the transport script only posts when it actually
-  // has something), so there's no idle-backoff tuning needed on this side
-  // anymore; that trade lives in the transport script's own poll of
-  // window.__novaInbox, which this shim can no longer see directly.
-  window.addEventListener('message', function(event) {
-    if (event.source !== window) return;
-    const data = event.data;
-    if (!data || data.__novaBridge !== BRIDGE_MARKER || data.kind !== 'response') return;
-    handleInboxMessage(data);
-  });
+  // Responses (and pushed events) arrive on hostPort.onmessage, wired up
+  // in the claim-port-ack handshake above the moment the port is received —
+  // no separate listener needed here. Replaces the old setInterval-based
+  // drainInbox() poller (push-based now, via the isolated script's own
+  // poll of window.__novaInbox forwarding over the port) and the tagged
+  // window.postMessage listener this shim used before the MessageChannel
+  // handoff (forgeable by any main-world script — see the BRIDGE_MARKER
+  // comment above for why that mattered).
 
   // Download interceptor
   // <webview> tags can't hand a blob: URL to the host — blob URLs are
@@ -3556,7 +3931,17 @@ const AppSandbox = (() => {
   // as if it were a fetchable resource, which always fails. This
   // interceptor needs the real, unpatched fetch to read blob bytes
   // in-context, so grab it now while it's still native.
-  const nativeFetchForDownloads = window.fetch.bind(window);
+  // Guarded: this shim's IIFE has no outer try/catch, and this line runs
+  // unconditionally near the very top of the guest's first script — if
+  // window.fetch isn't available yet at this exact point (confirmed
+  // reproducible: a TypeError here throws with nothing to catch it,
+  // which aborts the rest of this script, including the IPC bridge setup
+  // that runs after it), the whole shim silently fails to initialize.
+  // Falling back to a no-op means blob: downloads via <a download> won't
+  // work until fetch exists, but everything else in the shim still loads.
+  const nativeFetchForDownloads = (typeof window.fetch === 'function')
+    ? window.fetch.bind(window)
+    : function() { return Promise.reject(new TypeError('fetch unavailable at shim init time')); };
   HTMLAnchorElement.prototype.click = function() {
     const href = this.href || '';
     const filename = this.download;
@@ -3767,8 +4152,7 @@ const AppSandbox = (() => {
   });
 
   // Override fetch — route through the IPC bridge.
-  const originalFetch = window.fetch;
-  window.fetch = function(input, init) {
+  const novaFetchImpl = function(input, init) {
     init = init || {};
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const method = (init.method || (input && input.method) || 'GET').toUpperCase();
@@ -3797,11 +4181,22 @@ const AppSandbox = (() => {
       });
   };
 
+  // fetch/XMLHttpRequest/WebSocket are locked down with defineProperty
+  // (writable: false, configurable: false) after both are defined below,
+  // rather than plain 'window.fetch = ...' assignment. A plain assignment
+  // is trivially reversible with 'delete window.fetch', since fetch isn't
+  // a native own-property of window (it lives on Window.prototype) — the
+  // delete just unshadows the real implementation underneath. Locking
+  // these down doesn't change behavior for any app going through the
+  // override normally; it only stops an app from un-shadowing the native
+  // fetch/XHR/WebSocket to bypass nova:net:* permission checks entirely.
+
   // Minimal XMLHttpRequest override that routes through the fetch shim.
   // Covers the common API surface (open/send/setRequestHeader/onload/onerror/
   // onreadystatechange/status/responseText). Advanced features (upload
-  // events, progress, responseType blob) are not implemented — apps needing
-  // those should use fetch directly.
+  // events, progress, responseType blob, the timeout property's auto-fire
+  // of a 'timeout' event) are not implemented — apps needing those should
+  // use fetch directly.
   function NovaXHR() {
     const xhr = this;
     let method = 'GET', url = '', headers = {}, body = null;
@@ -3813,7 +4208,7 @@ const AppSandbox = (() => {
     // resolved and overwrote everything, so abort was effectively a no-op
     // for any request that had already been sent).
     let aborted = false;
-    const listeners = { load: [], error: [], readystatechange: [], loadend: [], abort: [], timeout: [] };
+    const listeners = { load: [], error: [], readystatechange: [], loadend: [], abort: [] };
 
     Object.defineProperty(this, 'readyState', { get: function() { return state; }, configurable: true });
     Object.defineProperty(this, 'status', { get: function() { return xhr._status || 0; }, configurable: true });
@@ -3838,7 +4233,7 @@ const AppSandbox = (() => {
 
     this.send = function(b) {
       body = b;
-      window.fetch(url, { method: method, headers: headers, body: typeof body === 'string' ? body : null })
+      novaFetchImpl(url, { method: method, headers: headers, body: typeof body === 'string' ? body : null })
         .then(function(res) {
           if (aborted) return; // caller cancelled — drop silently
           state = 2;
@@ -3871,14 +4266,104 @@ const AppSandbox = (() => {
         });
     };
   }
-  window.XMLHttpRequest = NovaXHR;
+  // Override WebSocket — route through the IPC bridge instead of letting
+  // the guest open a raw socket unmediated. This closes the gap where
+  // 'new WebSocket(...)' bypassed nova:net:websocket's permission check
+  // entirely: the fetch/XHR overrides below only ever covered fetch()/XHR,
+  // never the native WebSocket constructor, so an app with zero granted
+  // permissions could still open a live socket to any host RELAXED_CSP_META's
+  // connect-src allows. Reuses the same wsId/wsEventListeners plumbing the
+  // nova.websocket() convenience wrapper already uses (see setupAPIBridge),
+  // so host-side event delivery (nova:net:ws:message/error/close) needs no
+  // changes — this just gives the *native* constructor the same routing the
+  // wrapper already had.
+  function NovaWebSocket(url, protocols) {
+    const self = this;
+    let wsId = null;
+    let readyState = 0; // CONNECTING
+    const listeners = { open: [], message: [], error: [], close: [] };
+    const bufferedBeforeOpen = []; // sends attempted before the IPC round-trip resolves
 
-  // Fire-and-forget send: same postMessage bridge as ipc(), but with no
+    Object.defineProperty(this, 'readyState', { get: function() { return readyState; }, configurable: true });
+    Object.defineProperty(this, 'url', { value: typeof url === 'string' ? url : String(url), configurable: true });
+
+    this.addEventListener = function(type, handler) { if (listeners[type]) listeners[type].push(handler); };
+    this.removeEventListener = function(type, handler) {
+      if (listeners[type]) listeners[type] = listeners[type].filter(function(h) { return h !== handler; });
+    };
+    // onopen/onmessage/onerror/onclose property-style handlers, mirrored
+    // into the same listener arrays as addEventListener for consistency.
+    ['open', 'message', 'error', 'close'].forEach(function(evt) {
+      let handler = null;
+      Object.defineProperty(self, 'on' + evt, {
+        get: function() { return handler; },
+        set: function(fn) {
+          if (handler) listeners[evt] = listeners[evt].filter(function(h) { return h !== handler; });
+          handler = fn;
+          if (typeof fn === 'function') listeners[evt].push(fn);
+        },
+        configurable: true
+      });
+    });
+
+    this.send = function(data) {
+      if (readyState !== 1) { bufferedBeforeOpen.push(data); return; }
+      ipc('nova:net:ws:send', { wsId: wsId, data: data }).catch(function() { /* best-effort, matches native fire-and-forget semantics */ });
+    };
+    this.close = function(code, reason) {
+      if (readyState === 2 || readyState === 3) return;
+      readyState = 2; // CLOSING
+      ipc('nova:net:ws:close', { wsId: wsId, code: code, reason: reason }).catch(function() { /* best-effort */ });
+    };
+
+    ipc('nova:net:websocket', { url: this.url, protocols: protocols })
+      .then(function(res) {
+        wsId = res.wsId || (res.result && res.result.wsId);
+        if (!wsId) throw new Error('nova:net:websocket resolved without a wsId');
+        readyState = 1; // OPEN
+        wsEventListeners[wsId] = {
+          message: [function(data) { listeners.message.forEach(function(h) { h.call(self, { data: data }); }); }],
+          error: [function() { listeners.error.forEach(function(h) { h.call(self, {}); }); }],
+          close: [function(info) {
+            readyState = 3; // CLOSED
+            listeners.close.forEach(function(h) { h.call(self, info || {}); });
+            delete wsEventListeners[wsId];
+          }]
+        };
+        bufferedBeforeOpen.splice(0).forEach(function(data) { self.send(data); });
+        listeners.open.forEach(function(h) { h.call(self, {}); });
+      })
+      .catch(function() {
+        readyState = 3; // CLOSED — connection never opened; host has no reject
+        // path for this (see nova.websocket()'s NOTE above), so this only
+        // fires once the shim's own IPC timeout elapses.
+        listeners.error.forEach(function(h) { h.call(self, {}); });
+        listeners.close.forEach(function(h) { h.call(self, {}); });
+      });
+  }
+  NovaWebSocket.CONNECTING = 0;
+  NovaWebSocket.OPEN = 1;
+  NovaWebSocket.CLOSING = 2;
+  NovaWebSocket.CLOSED = 3;
+
+  // Lock down fetch/XHR/WebSocket so 'delete window.fetch' etc. can't
+  // unshadow the native implementations underneath (fix #2). Plain
+  // assignment (the old 'window.fetch = ...' / 'window.XMLHttpRequest = ...'
+  // pattern) left these reversible with one line from guest code.
+  [
+    ['fetch', novaFetchImpl],
+    ['XMLHttpRequest', NovaXHR],
+    ['WebSocket', NovaWebSocket]
+  ].forEach(function(pair) {
+    Object.defineProperty(window, pair[0], { value: pair[1], writable: false, configurable: false });
+  });
+
+  // Fire-and-forget send: same port bridge as ipc(), but with no
   // pendingRequests entry since nothing here waits on a reply.
   function ipcFireAndForget(type, payload) {
     try {
       const id = generateId();
-      window.postMessage({ __novaBridge: BRIDGE_MARKER, kind: 'request', type: type, payload: payload, requestId: id }, window.location.origin);
+      sendOverPort({ kind: 'request', type: type, payload: payload, requestId: id });
     } catch { /* best-effort */ }
   }
 
@@ -3939,6 +4424,77 @@ const AppSandbox = (() => {
   //   3. A MutationObserver backstop — catches anything that slips past
   //      1/2 (e.g. a future API, or a parser edge case), by removing any
   //      <webview> element the instant it's actually attached to the DOM.
+  //
+  // Nested-webview navigation delay (permitted apps only)
+  //
+  // Manual testing found that creating a nested <webview> and setting its
+  // .src immediately on page load reproducibly crashes the guest's
+  // renderer process outright — not a catchable JS error (no window
+  // 'error' event fires, DevTools attached to the webview dies with it).
+  // A 1000ms delay between creation and the first navigation reliably
+  // avoided the crash in testing; instant navigation reliably reproduced
+  // it. The underlying cause hasn't been confirmed against NW.js/Chromium
+  // internals — this is a tested mitigation for an observed timing race,
+  // not a proven root-cause fix. If NW.js ever exposes a real readiness
+  // signal for a freshly created <webview>, prefer that over this delay.
+  //
+  // Scoped to ONLY the first .src assignment on a nested webview, and
+  // only when nested webviews are actually permitted for this app —
+  // apps that don't create nested webviews, and the outer sandbox's own
+  // webview (created host-side in app-sandbox.js's createSandbox, a
+  // separate code path from this shim entirely), are unaffected. Every
+  // browser-type app gets this automatically; individual apps don't need
+  // their own delay in app.js.
+  const NESTED_WEBVIEW_NAV_DELAY_MS = 1000;
+
+  if (__NOVA_NESTED_WEBVIEW_ALLOWED__) {
+    const originalCreateElementForNav = Document.prototype.createElement;
+    Document.prototype.createElement = function(tagName, options) {
+      const el = originalCreateElementForNav.call(this, tagName, options);
+      if (typeof tagName === 'string' && tagName.toLowerCase() === 'webview') {
+        const srcDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'src')
+          || Object.getOwnPropertyDescriptor(Element.prototype, 'src');
+        // Fall back to plain attribute get/set if this build's <webview>
+        // doesn't expose src as an accessor property (still functionally
+        // correct, just without the descriptor's own get/set semantics).
+        const nativeGetSrc = srcDesc && srcDesc.get
+          ? function() { return srcDesc.get.call(el); }
+          : function() { return el.getAttribute('src'); };
+        const nativeSetSrc = srcDesc && srcDesc.set
+          ? function(v) { srcDesc.set.call(el, v); }
+          : function(v) { el.setAttribute('src', v); };
+
+        let delayed = false;
+        try {
+          Object.defineProperty(el, 'src', {
+            get: nativeGetSrc,
+            set: function(value) {
+              if (!delayed) {
+                delayed = true;
+                setTimeout(function() { nativeSetSrc(value); }, NESTED_WEBVIEW_NAV_DELAY_MS);
+                return;
+              }
+              // Any navigation after the first goes through immediately —
+              // this only guards the initial create-then-navigate race,
+              // not normal in-app navigation (URL bar, back/forward, etc).
+              nativeSetSrc(value);
+            },
+            configurable: true,
+          });
+        } catch (e) {
+          // If defineProperty fails for any reason (unexpected element
+          // shape, frozen prototype, etc.), fail open to the original,
+          // undelayed behavior rather than leaving .src unusable. Uses
+          // console.warn directly (not the host-side log() helper — this
+          // code runs inside the guest's own injected shim, a different
+          // scope, where that helper doesn't exist).
+          console.warn('Could not wrap nested webview src for nav delay:', e);
+        }
+      }
+      return el;
+    };
+  }
+
   if (!__NOVA_NESTED_WEBVIEW_ALLOWED__) {
     const originalCreateElement = Document.prototype.createElement;
     Document.prototype.createElement = function(tagName, options) {
@@ -4016,7 +4572,24 @@ const AppSandbox = (() => {
   // need this) and eval (the audit hook catches abuse), but blocks all direct
   // network access via connect-src 'none' — forcing network through the IPC
   // bridge where permissions are enforced.
-  const RELAXED_CSP_META = '<meta http-equiv="Content-Security-Policy" content="default-src \'self\' blob: data: \'unsafe-inline\'; script-src \'self\' blob: \'unsafe-inline\'; style-src \'self\' \'unsafe-inline\' blob: data:; img-src \'self\' blob: data: https:; font-src \'self\' blob: data:; connect-src \'self\' blob: http://localhost:* https://localhost:*">';
+  // connect-src no longer carves out http(s)://localhost:* (fix #3). The
+  // IPC bridge itself doesn't need it — it's console.log + executeScript,
+  // not fetch/XHR/WebSocket — so this carve-out existed only as an
+  // (unintentional) escape hatch. With fix #1/#2 closing the WebSocket
+  // bypass and locking fetch/XHR/WebSocket against `delete window.fetch`-
+  // style unshadowing, this line was the only thing that made either
+  // bypass reach anything once triggered. Removing it doesn't change
+  // behavior for any app going through nova.fetch()/nova.websocket() as
+  // intended, since those never touch native connect-src at all (they're
+  // IPC calls, not network requests initiated by this document).
+  // CAVEAT: if any first-party app bundle currently does a direct
+  // `fetch('http://localhost:...')` or `new WebSocket('ws://localhost:...')`
+  // instead of going through nova.fetch()/nova.websocket(), it will break
+  // silently (CSP violation, not a JS error) once this ships. That
+  // couldn't be verified from this file alone — grep first-party app
+  // source for direct localhost fetch/WebSocket calls before deploying,
+  // and migrate any hits to the nova.* wrappers first.
+  const RELAXED_CSP_META = '<meta http-equiv="Content-Security-Policy" content="default-src \'self\' blob: data: \'unsafe-inline\'; script-src \'self\' blob: \'unsafe-inline\'; style-src \'self\' \'unsafe-inline\' blob: data:; img-src \'self\' blob: data: https:; font-src \'self\' blob: data:; connect-src \'self\' blob:">';
 
   // Prepend the capability shim as the very first bytes of the app's HTML,
   // unconditionally — not after a regex-matched <head> tag.
@@ -4039,9 +4612,27 @@ const AppSandbox = (() => {
   // see isNestedWebviewPermitted(). Passing no app is treated as no app
   // (fails closed to "not permitted"), it does not fall back to some
   // shared/cached shim from a previous call.
+  //
+  // One exception to "unconditional": a leading <!DOCTYPE ...>. Per the
+  // HTML spec a doctype is only recognized when it's the very first thing
+  // in the document — it's not executable and doesn't run any guest code,
+  // so it doesn't reopen the script-ordering race this rewrite closed, but
+  // splicing a <script> block before it does knock the parser out of
+  // no-quirks mode (or worse, depending on how the host serves the file),
+  // which is exactly the "whole app fails to load" failure this is fixing.
+  // Matched narrowly (must be at offset 0, case-insensitive) rather than
+  // searched for anywhere in the string, so this can't be tricked by an
+  // app embedding a fake "<!DOCTYPE" later in the body.
+  const LEADING_DOCTYPE_RE = /^\s*<!DOCTYPE\s+html\s*>/i;
   function injectCapabilityShim(html, app) {
     if (typeof html !== 'string') return html;
     const shim = buildCapabilityShim(isNestedWebviewPermitted(app));
+    const doctypeMatch = html.match(LEADING_DOCTYPE_RE);
+    if (doctypeMatch) {
+      const doctype = doctypeMatch[0];
+      const rest = html.slice(doctype.length);
+      return doctype + '\n' + shim + '\n' + RELAXED_CSP_META + '\n' + rest;
+    }
     return shim + '\n' + RELAXED_CSP_META + '\n' + html;
   }
 
@@ -4280,12 +4871,25 @@ const AppSandbox = (() => {
     // Parse the manifest's sandbox config into a token set so we can
     // match exact tokens rather than substring-contains (which would
     // wrongly accept e.g. "allow-scripts-foo" as "allow-scripts").
+    //
+    // allow-popups-to-escape-sandbox used to be granted purely from the
+    // manifest's own self-declaration, with no permission check — unlike
+    // allow-same-origin just above, which requires both the manifest flag
+    // AND a separate grant. A popup that escapes the sandbox is a fully
+    // unrestricted browsing context, arguably comparable risk to
+    // allow-same-origin, so it now goes through the same double-gate:
+    // manifest opt-in AND sandbox:escape-popups granted.
+    const popupsEscapePermitted = isSystemApp
+      || (sandboxConfig && typeof sandboxConfig === 'object'
+          && sandboxConfig.allowPopupsToEscapeSandbox === true
+          && AppPermissionManager?.isGranted('sandbox:escape-popups', appId));
+
     const requestedTokens = new Set();
     if (sandboxConfig && typeof sandboxConfig === 'object') {
       if (sandboxConfig.allowScripts === true) requestedTokens.add('allow-scripts');
       if (sandboxConfig.allowForms === true) requestedTokens.add('allow-forms');
       if (sandboxConfig.allowPopups === true) requestedTokens.add('allow-popups');
-      if (sandboxConfig.allowPopupsToEscapeSandbox === true) requestedTokens.add('allow-popups-to-escape-sandbox');
+      if (popupsEscapePermitted) requestedTokens.add('allow-popups-to-escape-sandbox');
       if (sandboxConfig.allowModals === true) requestedTokens.add('allow-modals');
     } else if (typeof sandboxConfig === 'string') {
       for (const tok of sandboxConfig.split(/\s+/)) {
@@ -4366,9 +4970,17 @@ const AppSandbox = (() => {
     // realm the guest's own scripts cannot reach (see
     // buildIsolatedTransportScript for why that matters).
     //
-    // Scoped to this host's own origin — every app's served files live
-    // under window.location.origin + a per-sandbox baseUrl path (see
-    // loadAppContent), so this never needs to match external content.
+    // Scoped to THIS sandbox's own serving path, not the whole origin.
+    // /api/apps/serve/register (server/core/index.js) always returns
+    // baseUrl = `/api/apps/serve/${sandboxId}` — deterministic from the
+    // sandboxId we already generated above, no need to wait on the async
+    // registration call below to know it. Matching the bare origin would
+    // register this transport against every app's served files on this
+    // host (they all live under window.location.origin), so every
+    // launched app's webview would get every other app's transport
+    // script injected into it — scoping to our own baseUrl keeps this
+    // sandbox's isolated IPC transport from leaking into any other
+    // sandbox's webview.
     // webapp-type apps (external URLs) don't get this at all: they
     // navigate to classified.url directly and were never given
     // window.nova capabilities in the first place.
@@ -4376,7 +4988,7 @@ const AppSandbox = (() => {
       try {
         webview.addContentScripts([{
           name: `nova-ipc-transport-${sandboxId}`,
-          matches: [`${window.location.origin}/*`],
+          matches: [`${window.location.origin}/api/apps/serve/${sandboxId}/*`],
           js: { code: buildIsolatedTransportScript() },
           run_at: 'document_start',
           all_frames: false,
@@ -4481,9 +5093,34 @@ const AppSandbox = (() => {
     const webview = createSandbox(app, container, state);
     container.appendChild(webview);
 
+    // NOTE on timing: createSandbox() calls webview.addContentScripts(...)
+    // to register the isolated IPC transport script. NW.js's
+    // addContentScripts has no Promise, callback, or completion event in
+    // its public API (confirmed against docs.nwjs.io and multiple NW.js
+    // issue threads) — there is no real way to await "registration done."
+    // It's also not guaranteed instantaneous: nwjs/nw.js#7597 reports the
+    // registered content script intermittently missing from a webview's
+    // very first navigation, which is consistent with a registration race
+    // against that navigation rather than a guaranteed-synchronous call.
+    //
+    // Previously this fired addContentScripts and set webview.src (via
+    // loadAppContent, below) back-to-back on the same tick, with nothing
+    // between them. If addContentScripts hadn't been processed by NW.js's
+    // browser process yet when navigation began, the isolated transport
+    // script could fail to attach for that load — and, per manual testing,
+    // could produce a hard renderer failure rather than a clean fallback.
+    // A short deliberate delay before navigation gives that registration
+    // a real window to land first. This is a mitigation for an
+    // undocumented timing gap in NW.js's own API, not a confirmed fix for
+    // its root cause — if NW.js ever exposes a real completion signal for
+    // addContentScripts, switch to that instead of this delay.
+    const CONTENT_SCRIPT_REGISTRATION_DELAY_MS = 250;
+
     // loadAppContent is async (registers files with the server) — fire and
     // let errors surface in the webview via showErrorPage.
-    loadAppContent(webview, app, state);
+    setTimeout(() => {
+      loadAppContent(webview, app, state);
+    }, CONTENT_SCRIPT_REGISTRATION_DELAY_MS);
 
     log('debug', `Launched ${app.name} in sandbox`);
 
@@ -4505,6 +5142,12 @@ const AppSandbox = (() => {
   function destroy(sandboxId) {
     const sandbox = activeSandboxes.get(sandboxId);
     if (!sandbox) return false;
+    // Reentrancy guard: a second caller (e.g. closeWindow racing with
+    // uninstall) could otherwise see the same `sandbox` between our get
+    // and our delete below, run cleanup twice, and double-close
+    // WebSockets / double-remove the dialog overlay. Delete first, then
+    // tear down — sandbox.cleanup is still callable via the local ref.
+    activeSandboxes.delete(sandboxId);
 
     // sandbox.cleanup (set up in createSandbox) does the actual teardown:
     // aborts the message listener, detaches OS event subs, closes WebSockets,
@@ -4566,7 +5209,9 @@ const AppSandbox = (() => {
       });
     }
 
-    activeSandboxes.delete(sandboxId);
+    // activeSandboxes.delete(sandboxId) already ran at the top of this
+    // function — that early delete is the reentrancy guard, see the
+    // comment there for why.
     log('debug', `Destroyed sandbox: ${sandboxId}`);
     if (typeof EventLog !== 'undefined') {
       EventLog.log({ app: 'AppSandbox', category: 'security', severity: 'info', message: `Destroyed sandbox ${sandboxId}`, data: { appId: sandbox.appId, sandboxId } });
@@ -4732,7 +5377,11 @@ const AppSandbox = (() => {
     let baseUrl;
     try {
       const sandboxId = `sandbox_clr_${appId.replace(/[^\w.-]/g, '_')}_${Date.now()}`;
-      const files = { 'index.html': btoa('<!doctype html><html><body></body></html>') };
+      // Use encodeBase64Utf8 rather than bare btoa for consistency with the
+      // rest of this module — btoa throws on non-Latin1 input, and even
+      // though this particular payload is ASCII-only today, the helper is
+      // the convention everywhere else.
+      const files = { 'index.html': encodeBase64Utf8('<!doctype html><html><body></body></html>') };
       const regRes = await fetch('/api/apps/serve/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4835,6 +5484,7 @@ const AppSandbox = (() => {
         openDialogs.clear();
         notifRateLimitLog.clear();
         storageDbPromise = null;
+        _isolatedTransportScriptCache = null;
       },
       _activeSandboxes: activeSandboxes,
       _eventSubscriptions: eventSubscriptions,

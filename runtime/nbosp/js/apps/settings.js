@@ -2278,7 +2278,7 @@ registerApp({
         clickTimeout = setTimeout(() => { clickCount = 0; clickTimeout = null; }, 1500);
       });
       swRows.appendChild(novaVersionRow);
-      swRows.appendChild(mkRow('Source Date',  '2026-07-21'));
+      swRows.appendChild(mkRow('Source Date',  '2026-07-25'));
 
       const secRow      = createEl('div', { style: 'display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:12.5px;border-top:1px solid var(--border-subtle);border-radius:6px;' });
       const secRowLeft  = createEl('div', { style: 'display:flex;align-items:center;gap:6px;' });
@@ -2286,7 +2286,7 @@ registerApp({
       secRow.appendChild(secRowLeft);
       const secRowRight = createEl('div', { style: 'display:flex;align-items:center;gap:6px;' });
       const secBadge    = createEl('span', { style: 'display:inline-flex;align-items:center;gap:5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:20px;padding:2px 10px;font-size:10.5px;font-weight:700;color:#3fb950;' });
-      secBadge.textContent = '\uD83D\uDD12 2026-07-04';
+      secBadge.textContent = '\uD83D\uDD12 2026-07-25';
       secRowRight.appendChild(secBadge);
       secRow.appendChild(secRowRight);
       swRows.appendChild(secRow);

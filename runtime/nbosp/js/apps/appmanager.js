@@ -605,6 +605,7 @@
           }
 
           if (typeof AppSandbox !== 'undefined' && typeof AppSandbox.launch === 'function') {
+            console.log('[AM.init] TAKING AppSandbox.launch branch for', appId);
             const sandboxApp = {
               id: appId,
               name: appData.name,
@@ -619,8 +620,14 @@
               // the 'sandbox:nested-webview' grant; this alone doesn't enable it.
               allowNestedWebview: appData.allowNestedWebview === true,
             };
-            return AppSandbox.launch(sandboxApp, contentEl, state || {}, options || {});
+            try {
+              return await AppSandbox.launch(sandboxApp, contentEl, state || {}, options || {});
+            } catch (launchErr) {
+              console.error('[AM.init] AppSandbox.launch THREW for', appId, '- falling through to legacy path:', launchErr);
+              throw launchErr;
+            }
           }
+          console.log('[AM.init] TAKING LEGACY FALLBACK branch for', appId, '- AppSandbox was', typeof AppSandbox, typeof AppSandbox !== 'undefined' ? '(launch: ' + typeof AppSandbox.launch + ')' : '');
 
           // ── Private data shim injected into iframe ────────────
           const vfsDir = (() => { try { return window.AppDirs?.getVFSDir?.(appId, 'files'); } catch { return null; } })();

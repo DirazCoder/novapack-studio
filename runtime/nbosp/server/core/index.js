@@ -275,9 +275,20 @@ app.get('/api/apps/serve/:sandboxId/{*file}', (req, res) => { // <-- Valid stabl
   };
 
   // Relaxed CSP for third-party apps — unsafe-inline allowed because apps need
-  // inline scripts/styles to function; connect-src is locked to self/localhost
-  // so all real network egress routes through the IPC bridge, where per-app
-  // permissions are actually enforced.
+  // inline scripts/styles to function; connect-src is locked to self/blob only.
+  // This used to also carve out http(s)://localhost:*, matching the identical
+  // string in app-sandbox.js's client-side RELAXED_CSP_META. Removed here for
+  // the same reason it was removed there: the IPC bridge (window.nova.ipc /
+  // fetch / XHR / WebSocket overrides, injected client-side by loadAppContent
+  // before registering with /api/apps/serve/register) never needs raw network
+  // access — every real request routes through nova:net:* and is permission-
+  // checked host-side. The carve-out only ever served as an escape hatch for
+  // whichever client-side override a given app managed to bypass or unshadow.
+  // This header is authoritative for anything served through THIS route
+  // (server-sent CSP overrides whatever's baked into the served HTML's own
+  // meta tag), so both copies needed to change together — fixing only the
+  // client-side meta tag would have left this one still granting localhost
+  // access to any third-party app hitting /api/apps/serve/:sandboxId directly.
   // unsafe-eval was previously granted here on the theory that the runtime
   // audit hook (nova:audit:eval) was enough of a check. It wasn't — logging
   // after the fact doesn't stop the call. eval/new Function are now blocked
@@ -291,7 +302,7 @@ app.get('/api/apps/serve/:sandboxId/{*file}', (req, res) => { // <-- Valid stabl
       "style-src 'self' 'unsafe-inline' blob: data:",
       "img-src 'self' blob: data: https:",
       "font-src 'self' blob: data:",
-      "connect-src 'self' blob: http://localhost:* https://localhost:*"
+      "connect-src 'self' blob:"
     ].join('; '));
   }
   res.setHeader('Content-Type', MIME[ext] || 'application/octet-stream');
