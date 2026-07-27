@@ -761,6 +761,49 @@ if (volumeBtn && volumePopup && volumeSlider && volumeValue) {
 
   volumeSlider.addEventListener('click', (e) => { e.stopPropagation(); });
 
+  // Pushes the current system volume into every <audio>/<video> element inside
+  // every open browser window's webview(s). Exposed on OS so browser.js can
+  // call it for a freshly-created webview too (new tabs/popups otherwise
+  // wouldn't pick up the system volume until the user next touched the slider).
+  OS.applyVolumeToWebviews = function applyVolumeToWebviews(volumePercent, targetWebview) {
+    if (!Number.isFinite(volumePercent)) return;
+    // Clamp and JSON-stringify the volume before injecting it into webview
+    // JavaScript. Never build the executed source by concatenating a value
+    // directly into it — even one that's "supposed" to be a safe number —
+    // because if this pattern gets copied elsewhere with a less-trusted
+    // value, it becomes an injection point.
+    const safeVolume = Math.min(1, Math.max(0, volumePercent / 100));
+    const volumeLiteral = JSON.stringify(safeVolume);
+    const code =
+      `(function(){var v=${volumeLiteral};` +
+      `document.querySelectorAll('audio,video').forEach(function(el){el.volume=v;});})();`;
+
+    // NW.js <webview> exposes executeScript({code}, callback) — there is no
+    // executeJavaScript() (that's Electron's API name, not NW.js's), so a
+    // single specific webview can be targeted directly (e.g. right after
+    // it's created) without waiting for the slider to fire again.
+    const pushTo = (webview) => {
+      if (typeof webview.executeScript !== 'function') return;
+      try {
+        webview.executeScript({ code }, () => {
+          // Swallow chrome.runtime.lastError: an inactive/not-yet-ready
+          // webview rejecting the call shouldn't surface as a console error.
+          void chrome?.runtime?.lastError;
+        });
+      } catch (_) { /* webview not ready yet — ignore */ }
+    };
+
+    if (targetWebview) { pushTo(targetWebview); return; }
+
+    if (!OS.windows) return;
+    for (const state of OS.windows.values()) {
+      if (state.appId !== 'browser') continue;
+      const webviews = state.element?.querySelectorAll?.('webview');
+      if (!webviews) continue;
+      for (const webview of webviews) pushTo(webview);
+    }
+  };
+
   volumeSlider.addEventListener('input', () => {
     // Number() returns NaN for garbage input; parseInt with radix works too but
     // Number() is stricter about rejecting trailing chars. NaN is rejected below.
@@ -771,36 +814,124 @@ if (volumeBtn && volumePopup && volumeSlider && volumeValue) {
     volumeValue.textContent = newVolume + '%';
     OS.events?.emit?.('os:volumeChanged', { volume: newVolume });
 
-    if (!OS.windows) return;
-    // Clamp and JSON-stringify the volume before injecting it into webview
-    // JavaScript. Never build the executed source by concatenating a value
-    // directly into it — even one that's "supposed" to be a safe number —
-    // because if this pattern gets copied elsewhere with a less-trusted
-    // value, it becomes an injection point.
-    const safeVolume = Math.min(1, Math.max(0, newVolume / 100));
-    const volumeLiteral = JSON.stringify(safeVolume);
-    const volumeScript =
-      `(function(){var v=${volumeLiteral};` +
-      `document.querySelectorAll('audio,video').forEach(function(el){el.volume=v;});})();`;
-
-    for (const state of OS.windows.values()) {
-      if (state.appId !== 'browser') continue;
-      const webviews = state.element?.querySelectorAll?.('webview');
-      if (!webviews) continue;
-      for (const webview of webviews) {
-        if (typeof webview.executeJavaScript === 'function') {
-          // Swallow rejection: an inactive webview rejecting executeJavaScript
-          // shouldn't surface as an unhandled promise rejection.
-          webview.executeJavaScript(volumeScript).catch(() => {});
-        }
-      }
-    }
+    OS.applyVolumeToWebviews(newVolume);
   });
 
   volumePopup.addEventListener('click', (e) => { e.stopPropagation(); });
 
   document.addEventListener('click', () => {
     if (!volumePopupPinned) volumePopup.classList.remove('active');
+  });
+}
+
+// TRAY — Calendar
+
+// Guard all elements — any one missing would throw on addEventListener.
+const trayClock = document.getElementById('tray-clock');
+const calendarPopup = document.getElementById('calendar-popup');
+const calendarPopupTitle = document.getElementById('calendar-popup-title');
+const calendarPopupWeekdays = document.getElementById('calendar-popup-weekdays');
+const calendarPopupGrid = document.getElementById('calendar-popup-grid');
+const calendarPopupPrev = document.getElementById('calendar-popup-prev');
+const calendarPopupNext = document.getElementById('calendar-popup-next');
+
+if (trayClock && calendarPopup && calendarPopupTitle && calendarPopupWeekdays &&
+    calendarPopupGrid && calendarPopupPrev && calendarPopupNext) {
+  // The month currently shown in the popup — defaults to today's month and
+  // resets back to it every time the popup is (re)opened, matching the
+  // Windows 11 clock-flyout behavior in the reference screenshot.
+  let viewYear = 0;
+  let viewMonth = 0;
+
+  function renderCalendarPopup() {
+    const today = new Date();
+    const first = new Date(viewYear, viewMonth, 1);
+    calendarPopupTitle.textContent =
+      first.toLocaleDateString([], { month: 'long', year: 'numeric' });
+
+    // Weekday header — Monday-first, matching the reference screenshot
+    // (Mo Tu We Th Fr Sa Su) rather than the US Sunday-first convention.
+    calendarPopupWeekdays.innerHTML = '';
+    // Jan 5 1970 was a Monday — cheap way to get locale-correct short
+    // weekday labels in Monday-first order without hardcoding names.
+    for (let i = 0; i < 7; i++) {
+      const label = new Date(1970, 0, 5 + i).toLocaleDateString([], { weekday: 'short' });
+      calendarPopupWeekdays.appendChild(
+        Object.assign(document.createElement('span'), { textContent: label }));
+    }
+
+    // getDay() is Sunday-first (0-6); convert to Monday-first (0-6) so the
+    // grid lines up under the weekday header above.
+    const firstWeekday = (first.getDay() + 6) % 7;
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const daysInPrevMonth = new Date(viewYear, viewMonth, 0).getDate();
+
+    calendarPopupGrid.innerHTML = '';
+    const addDay = (dayNum, outside) => {
+      const span = document.createElement('span');
+      span.textContent = String(dayNum);
+      if (outside) span.classList.add('is-outside-month');
+      calendarPopupGrid.appendChild(span);
+      return span;
+    };
+
+    // Leading days from the previous month, to fill the grid to a Monday start.
+    for (let i = firstWeekday - 1; i >= 0; i--) {
+      addDay(daysInPrevMonth - i, true);
+    }
+    // Days in the current month — highlight today if it falls in this month.
+    for (let d = 1; d <= daysInMonth; d++) {
+      const span = addDay(d, false);
+      if (viewYear === today.getFullYear() && viewMonth === today.getMonth() && d === today.getDate()) {
+        span.classList.add('is-today');
+      }
+    }
+    // Trailing days from the next month. Always pad out to exactly 6 rows
+    // (42 cells total), not just "however many the month needs" — a 5-row
+    // month (e.g. Sept 2024) and a 6-row month (e.g. Oct 2024) would
+    // otherwise produce different grid heights, which shifts the whole
+    // popup's position on every month change since it's bottom-anchored.
+    const cellsSoFar = firstWeekday + daysInMonth;
+    const trailing = 42 - cellsSoFar;
+    for (let d = 1; d <= trailing; d++) {
+      addDay(d, true);
+    }
+  }
+
+  trayClock.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = !calendarPopup.classList.contains('active');
+    if (opening) {
+      const today = new Date();
+      viewYear = today.getFullYear();
+      viewMonth = today.getMonth();
+      renderCalendarPopup();
+      const rect = trayClock.getBoundingClientRect();
+      calendarPopup.style.left = 'auto';
+      calendarPopup.style.right = (window.innerWidth - rect.right) + 'px';
+      calendarPopup.style.bottom = (window.innerHeight - rect.top) + 'px';
+    }
+    calendarPopup.classList.toggle('active', opening);
+  });
+
+  calendarPopupPrev.addEventListener('click', (e) => {
+    e.stopPropagation();
+    viewMonth -= 1;
+    if (viewMonth < 0) { viewMonth = 11; viewYear -= 1; }
+    renderCalendarPopup();
+  });
+
+  calendarPopupNext.addEventListener('click', (e) => {
+    e.stopPropagation();
+    viewMonth += 1;
+    if (viewMonth > 11) { viewMonth = 0; viewYear += 1; }
+    renderCalendarPopup();
+  });
+
+  calendarPopup.addEventListener('click', (e) => { e.stopPropagation(); });
+
+  document.addEventListener('click', () => {
+    calendarPopup.classList.remove('active');
   });
 }
 

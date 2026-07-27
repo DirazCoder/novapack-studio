@@ -1390,16 +1390,12 @@ registerApp({
             syncUrlForTab(r[0], tabId, 'contentload+executeScript');
           });
         } catch (_) {}
-      });
-
-
-      wv.addEventListener('contentload', () => {
-        try {
-          wv.executeScript({ code: 'location.href' }, r => {
-            if (chrome.runtime?.lastError || !r?.[0]) return;
-            syncUrlForTab(r[0], tabId, 'contentload+executeScript');
-          });
-        } catch (_) {}
+        // New page load — apply the current system volume to whatever
+        // <audio>/<video> it just created, instead of leaving them at
+        // the page's own default until the tray slider is next touched.
+        if (typeof OS !== 'undefined' && typeof OS.applyVolumeToWebviews === 'function') {
+          OS.applyVolumeToWebviews(Number.isFinite(OS.volume) ? OS.volume : 80, wv);
+        }
       });
 
 
@@ -1746,6 +1742,9 @@ registerApp({
                 barTitle.textContent = r[0];
               });
             } catch (_) {}
+            if (typeof OS !== 'undefined' && typeof OS.applyVolumeToWebviews === 'function') {
+              OS.applyVolumeToWebviews(Number.isFinite(OS.volume) ? OS.volume : 80, popWv);
+            }
           });
           popWv.addEventListener('close', closePopup);
           e.window.attach(popWv);

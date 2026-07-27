@@ -316,7 +316,11 @@
         min: '0',
         max: '1',
         step: '0.02',
-        value: String(clampVolume(prefs.volume)),
+        value: String(clampVolume(
+          typeof OS !== 'undefined' && Number.isFinite(OS.volume)
+            ? OS.volume / 100
+            : prefs.volume,
+        )),
         style: 'flex:1;accent-color:var(--accent);height:4px;cursor:pointer;',
       });
       volSlider.setAttribute('aria-label', 'Volume');
@@ -341,9 +345,10 @@
       if (typeof OS !== 'undefined' && OS.events && OS.events.on) {
         OS.events.on('os:volumeChanged', function(evt) {
           const vol = (evt && evt.volume !== undefined) ? evt.volume : 80;
-          audio.volume = clampVolume(vol / 100);
-          if (volSlider) volSlider.value = String(clampVolume(vol / 100));
-          prefs.volume = vol;
+          const normalized = clampVolume(vol / 100);
+          audio.volume = normalized;
+          if (volSlider) volSlider.value = String(normalized);
+          prefs.volume = normalized;
           try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {}
         });
       }

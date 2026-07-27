@@ -60,12 +60,13 @@
     "happy-dom": "^20.11.1",
     "jsdom": "^29.1.1",
     "nw": "^0.114.0-sdk",
-    "nw-builder": "^4.17.13",
+    "nw-builder": "^4.18.0",
     "supertest": "^7.2.2",
     "vitest": "^4.1.10"
   },
   "allowScripts": {
     "nw@0.114.0-sdk": true,
-    "nw-builder@4.17.13": true
+    "nw-builder@4.18.0": true,
+    "better-sqlite3@13.0.1": true
   }
 }

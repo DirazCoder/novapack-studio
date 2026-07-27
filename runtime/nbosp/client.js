@@ -10,4 +10,4 @@ const { bootstrap } = require('./scripts/startup');
     console.error('[NovaByte] Fatal startup error:', err.message);
     process.exit(1);
   }
-})();
+})(); 

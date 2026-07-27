@@ -572,10 +572,10 @@ const WM = window.WM = (() => {
       state.minimized = false;
       state.element.style.display = '';
       state.element.classList.remove('minimizing');
-      state.element.classList.add('window-restoring');
+      state.element.classList.add('restoring');
       wm.focusWindow(id);
       state.element.addEventListener('animationend',
-        () => state.element.classList.remove('window-restoring'), { once: true });
+        () => state.element.classList.remove('restoring'), { once: true });
       wm.updateTaskbar();
     },
 
@@ -679,7 +679,7 @@ const WM = window.WM = (() => {
       if (state.maximized) {
         state.maximized = false;
         state.element.classList.remove('maximized');
-        state.element.classList.add('window-restoring');
+        state.element.classList.add('restoring');
         if (state.preMaxState) {
           const { x, y, w, h } = state.preMaxState;
           state.element.style.left   = `${x}px`;
@@ -689,7 +689,7 @@ const WM = window.WM = (() => {
           state.x = x;  state.y = y;  state.width = w;  state.height = h;
         }
         state.element.addEventListener('animationend',
-          () => state.element.classList.remove('window-restoring'), { once: true });
+          () => state.element.classList.remove('restoring'), { once: true });
       } else {
         state.preMaxState = { x: state.x, y: state.y, w: state.width, h: state.height };
         state.maximized = true;
