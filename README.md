@@ -138,7 +138,11 @@ Every app needs a `manifest.json` at the root of its directory.
   "resizable": true,
   "frame": true,
   "categories": ["utilities"],
-  "minSecurityPatch": "2026-05-01"
+  "minSecurityPatch": "2026-05-01",
+  "handles": {
+    "protocols": [],
+    "extensions": [".mp3", ".flac"]
+  }
 }
 ```
 
@@ -170,6 +174,7 @@ Every app needs a `manifest.json` at the root of its directory.
 | `frame` | boolean | `true` | Whether the window has a title bar |
 | `categories` | array | `[]` | App categories for filtering |
 | `minSecurityPatch` | string | — | Minimum OS patch date (`YYYY-MM-DD`) required to run |
+| `handles` | object | — | Declares file extensions and/or URL protocols your app can open — see [Default Apps](#default-apps) below |
 
 ### App ID format
 
@@ -182,6 +187,27 @@ Use reverse domain name notation. Studio's manifest validation enforces this at 
 ❌  MyApp                    ← no uppercase
 ❌  myapp                    ← needs at least one dot
 ```
+
+---
+
+### Default Apps
+
+Declaring a `handles` block makes your app selectable in **Settings → Default Apps** for any file extension or protocol you list, alongside the OS's own built-in apps (Browser, TextEdit, Music, Gallery, Email, Calendar):
+
+```json
+{
+  "handles": {
+    "protocols": ["mailto"],
+    "extensions": [".eml"]
+  }
+}
+```
+
+Both arrays are optional independently — a music player only needs `extensions`, a browser-style app only needs `protocols`; declare whichever applies, or omit `handles` entirely if your app doesn't want to be a default-openable target at all. Extensions are matched case-insensitively and should include the leading dot (`.mp3`, not `mp3`).
+
+This is purely a **discovery/selection** declaration, not a permission — it doesn't grant your app anything, and there's no `handles:*` permission string to request. It only affects whether your app shows up as a choice in the Default Apps picker and, once chosen, whether the OS routes matching files/links to your app's `entry` when opened. Nothing about installing, launching, or running your app changes based on `handles` alone.
+
+`handles` isn't part of `RESERVED_APP_IDS`-gated behavior — any installed `.novaapp`, including unsigned/Unverified ones, is eligible to appear in the picker for any extension/protocol it declares. The OS doesn't currently restrict which apps can claim which types (e.g. nothing stops a third-party app from declaring `extensions: [".html"]` alongside the built-in Browser). The user is the actual gatekeeper: they still have to explicitly select your app as the default in Settings for anything to route to it — declaring `handles` never changes a default on its own.
 
 ---
 
@@ -737,7 +763,18 @@ await window.nova.apps.install(packageObject);
 // Uninstall an app (requires system:apps) — only works on real,
 // file-installed .novaapp packages, not built-in system apps.
 await window.nova.apps.uninstall('com.example.otherapp');
+
+// Send the user to Settings → Default Apps (requires system:apps) — for
+// a "Set as default" button in your own app's UI. `category` is optional;
+// omit it to land on the general Default Apps list, or pass one of the
+// category ids (e.g. 'music', 'browser') to open Settings with that row
+// highlighted and a banner naming your app as the requester.
+await window.nova.apps.openDefaultAppsSettings('music');
 ```
+
+**`openDefaultAppsSettings` is rate-limited** to 3 calls per minute per app id, using the same sliding-window pattern as `nova:notifications:show` — this exists because, unlike a real click, there's no reliable host-side signal that this call came from an actual user gesture rather than a script loop (the sandbox's postMessage boundary doesn't carry browser user-activation state). The limit bounds how often a misbehaving app can steal window focus by repeatedly popping Settings open; it doesn't require a click, since the platform genuinely can't verify one happened. Calls beyond the limit reject with `{ code: 'RATE_LIMITED' }` (see [Error codes](#error-codes)) — design your "Set as default" button assuming a real click, and you'll never hit it in normal use.
+
+This call only opens Settings to the right place — it never changes the user's default itself. The user still has to pick your app from the picker; there's no way to set a default programmatically without their action.
 
 ### Admin — `nova:admin:*` / `window.nova.admin`
 
