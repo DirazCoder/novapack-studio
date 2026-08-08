@@ -66,6 +66,17 @@ NovaByte Studio is available for Windows, macOS, and Linux. Download the latest 
 ### Prerequisites
 
 - Basic HTML, CSS, and JavaScript knowledge
+- For the `native-cpp` template only: [Emscripten](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`) on your PATH. Studio doesn't bundle a compiler — Build fails with install instructions if `emcc` isn't found, rather than silently skipping the C++ source. This path is verified in CI on Windows, Linux, and macOS.
+
+### Supported languages
+
+| Language | How it runs | Notes |
+|----------|-------------|-------|
+| JavaScript | Native — runs as-is in the webview | No build step required |
+| HTML | Native — runs as-is in the webview | No build step required |
+| CSS | Native — runs as-is in the webview | No build step required |
+| TypeScript | Editor-only (intellisense/type-checking) | Not compiled or transpiled by Build — write plain JS for anything that ships |
+| C/C++ | Compiled to WebAssembly via `emcc` at Build time | Requires Emscripten on your PATH; see Prerequisites and the `native-cpp` template |
 
 ### Available templates
 
@@ -80,6 +91,7 @@ NovaByte Studio is available for Windows, macOS, and Linux. Download the latest 
 | `form` | Structured form that saves entries via the fs bridge |
 | `markdown-viewer` | Live markdown preview using a bundled vendor library |
 | `chat` | Message list with input — client-side state, no permissions needed |
+| `native-cpp` | C++ compiled to WebAssembly, UI in HTML/CSS/JS — requires `emcc` (see Prerequisites) |
 
 ### Bundled external dependencies (`vendor/`)
 
@@ -98,6 +110,27 @@ Reference them in your HTML as:
 ```
 
 Only copy the final built/minified file you need — don't copy entire `node_modules` folders.
+
+### Excluding files from the build (`.studioignore`)
+
+Add a `.studioignore` file to your project root to exclude files/folders from packaging without deleting them from disk — build logs, local test fixtures, secrets you don't want bundled, anything you're keeping around locally but don't want shipped in the `.novaapp`.
+
+Syntax is `.gitignore`-style (globs, `!` negation, `#` comments):
+
+```
+# ignore build logs entirely
+logs/
+
+# ignore any .env file anywhere in the project
+*.env
+
+# but keep this one specific env file
+!config/required.env
+```
+
+`.studioignore` itself is never packaged — dotfiles are already excluded from every build regardless.
+
+**No exemptions, same as `.gitignore`:** there's no protected list of "important" files. If a pattern matches your `manifest.json`, your entry HTML file, or anything else the app needs to run, it gets excluded and your build breaks — that's expected behavior, not a bug to report. Write patterns carefully.
 
 ---
 
@@ -217,6 +250,7 @@ When you hit Build in Studio, here's what happens under the hood:
 
 - Reads and validates `manifest.json` (or `novaapp.json` — both accepted)
 - Validates the app ID format and all declared permissions against the known permission list
+- If the project has a C/C++ source file (e.g. `module.cpp`, from the `native-cpp` template), compiles it with `emcc` first — output is `module.js` (glue) + `module.wasm`, bundled like any other project file. The Build button turns purple when C/C++ sources are detected. This step requires `emcc` on your PATH; see Prerequisites.
 - Reads every file in the project directory and Base64-encodes it
 - Generates a SHA-256 signature over the manifest + files payload
 - Writes `<app.id>.novaapp` to your chosen output directory
@@ -658,6 +692,8 @@ const res = await fetch('https://api.example.com/data', {
 });
 const data = await res.json();
 ```
+
+**Exception — fetching your own bundled files:** a same-origin `fetch()` for a file this app already ships (e.g. `module.wasm` in the `native-cpp` template, loaded internally by Emscripten's glue code) does not require a `net:*` permission. It's treated the same as a `<script src>` or `<img src>` reading a bundled asset, not as outbound network access.
 
 ### WebSocket — `nova:net:websocket` / `window.nova.websocket`
 

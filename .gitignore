@@ -21,7 +21,11 @@ runtime/nbosp/cert.*
 runtime/nbosp/ca.*
 runtime/nbosp/.env
 runtime/nbosp/data/
+emsdk
 
 # Logs
 v8.log
 *.log
+
+# idk
+.kilo
