@@ -20,7 +20,7 @@
 
 <br>
 
-[**Getting Started**](#getting-started) · [**Manifest Format**](#manifest-format) · [**App Runtime**](#app-runtime) · [**Permissions**](#permissions) · [**Private Storage**](#private-storage) · [**IPC API**](#ipc-api-windownova) · [**Background Execution**](#background-execution-novabackground) · [**Security**](#security) · [**Getting Verified**](#how-to-get-your-novaapp-verified) · [**Distribution**](#distribution)
+[**Getting Started**](#getting-started) · [**Manifest Format**](#manifest-format) · [**App Runtime**](#app-runtime) · [**Browser Apps**](#building-browser-apps) · [**Permissions**](#permissions) · [**Private Storage**](#private-storage) · [**IPC API**](#ipc-api-windownova) · [**Background Execution**](#background-execution-novabackground) · [**Security**](#security) · [**Getting Verified**](#how-to-get-your-novaapp-verified) · [**Distribution**](#distribution)
 
 </div>
 
@@ -30,20 +30,8 @@
 >
 > Two rules that live deep in the [Security](#security) section below cause almost all first-build failures. Save yourself the debugging loop:
 >
-> 1. **Reference your script, never inline it.** In `index.html`, use `<script src="app.js"></script>` — a local relative path to a sibling file. An inline `<script>...code...</script>` block with actual code inside it is flagged by the install-time content scanner and **blocks install outright, no exceptions.** See [Content Scanner](#content-scanner--avoiding-false-positives-on-install).
-> 2. **Wrap every `app.js` in a DOM-ready guard before writing anything else** — not after something breaks:
->    ```javascript
->    function main() {
->      document.getElementById('pad').addEventListener('click', /* ... */);
->      // rest of your DOM-touching setup
->    }
->    if (document.readyState === 'loading') {
->      document.addEventListener('DOMContentLoaded', main);
->    } else {
->      main();
->    }
->    ```
->    Skip this and you'll eventually hit `Uncaught TypeError: Cannot read properties of null (reading 'addEventListener')` — a script running before its target element exists in the DOM. It's cheap to set up front and costly to retrofit once a file's grown past a few elements. See [Best practices](#best-practices).
+> 1. **Reference your script, never inline it.** In `index.html`, use `<script src="app.js" defer></script>` — a local relative path to a sibling file. An inline `<script>...code...</script>` block with actual code inside it is flagged by the install-time content scanner and **blocks install outright, no exceptions.** See [Content Scanner](#content-scanner--avoiding-false-positives-on-install).
+> 2. **No DOM-ready wrapper is needed for packaged scripts.** The NovaByte host defers external scripts in the packaged entry HTML until parsing completes, so ordinary DOM lookups in `app.js` can find elements declared in the page. Dynamically created scripts or documents retain normal browser timing.
 
 ---
 
@@ -198,16 +186,38 @@ Every app needs a `manifest.json` at the root of its directory.
 | `website` | string | — | Your site |
 | `icon` | string | `"box"` | Icon Lucide name, data URI, or URL |
 | `type` | string | `"blank"` | App type |
-| `permissions` | array | `[]` | Required permissions — user must grant all |
+| `unrestrictedEntry` | string | — | Packaged JavaScript entry for trusted system packages or apps granted `system:root` |
+| `permissions` | array | `[]` | Required capabilities; missing sensitive grants are requested at launch, but denial does not block the app |
 | `optionalPermissions` | array | `[]` | Optional permissions — app must handle denial gracefully |
 | `defaultSize` | array | `[800, 560]` | `[width, height]` in pixels |
 | `minSize` | array | `[400, 300]` | Minimum window size |
 | `maxSize` | array | — | Maximum window size |
 | `resizable` | boolean | `true` | Whether the window can be resized |
 | `frame` | boolean | `true` | Whether the window has a title bar |
+| `transparent` | boolean | `false` | Enables an alpha-capable sandboxed app surface |
 | `categories` | array | `[]` | App categories for filtering |
 | `minSecurityPatch` | string | — | Minimum OS patch date (`YYYY-MM-DD`) required to run |
-| `handles` | object | — | Declares file extensions and/or URL protocols your app can open — see [Default Apps](#default-apps) below |
+| `handles` | object | — | Declares file extensions, URL protocols, and/or MIME types your app can open — see [Default Apps](#default-apps) below |
+
+Set `transparent` to `true` when the app should let the desktop show through areas not painted by its UI. The OS makes the sandboxed webview alpha-capable and makes the document's `html` and `body` backgrounds transparent; it does not force child elements to be transparent, so your app can still paint opaque panels, cards, and controls. This is a visual setting only: it does not grant host-page access, bypass the app sandbox, or make the package trusted or system-signed.
+
+### Root access (high risk)
+
+Third-party `.novaapp` packages can request host-page execution with a required `system:root` permission and a packaged JavaScript entry:
+
+```json
+{
+  "entry": "index.html",
+  "permissions": ["system:root"],
+  "unrestrictedEntry": "root.js"
+}
+```
+
+`unrestrictedEntry` must name a `.js` file included in the package. That file is the **complete app entry** for root execution: it should register the app with `registerApp(...)` and render its window from the registered `init()` function, like a trusted built-in app. It can be named `app.js` instead of `root.js` if that is the app's single host-side implementation.
+
+Root-approved apps do not run two copies of the app. When Developer Mode and Root Access are enabled and the user grants `system:root`, the OS loads only `unrestrictedEntry` directly into the OS page; the manifest's ordinary HTML `entry` and its scripts are not also loaded. If root is unavailable or not granted, the ordinary HTML `entry` runs in the app's sandbox instead. The two launch modes are alternatives, not communicating processes, so there is no app.js-to-root.js IPC bridge. Move the UI and behavior needed in root mode into the unrestricted entry; it can use host APIs directly.
+
+Users must enable Developer Mode, turn on Root Access in Settings, and explicitly approve the app through the conspicuous root permission prompt. Root grants do not expire automatically; revoke them explicitly in Settings. Root code runs in the OS page rather than an isolated app webview and can read or modify OS data and UI. Settings provides per-app grants and a persistent log of up to 1,000 recent observed OS API calls. The log is best-effort: direct JavaScript and browser activity is not completely observable, and a root app can potentially tamper with same-origin data. Disabling Developer Mode, Root Access, or an app's root grant closes root app windows and reloads the OS page if root code has run.
 
 ### App ID format
 
@@ -225,22 +235,53 @@ Use reverse domain name notation. Studio's manifest validation enforces this at 
 
 ### Default Apps
 
-Declaring a `handles` block makes your app selectable in **Settings → Default Apps** for any file extension or protocol you list, alongside the OS's own built-in apps (Browser, TextEdit, Music, Gallery, Email, Calendar):
+Declaring a `handles` block makes your app selectable in **Settings → Default Apps** and in the desktop file context menu's **Open with...** chooser for matching file types, alongside the OS's own built-in apps (Browser, TextEdit, Music, Gallery, Email, Calendar). Apps may also declare the `home` role to be offered as a Home app:
 
 ```json
 {
   "handles": {
-    "protocols": ["mailto"],
-    "extensions": [".eml"]
+    "extensions": [".webp"],
+    "mimeTypes": ["image/heic"],
+    "roles": ["home"]
   }
 }
 ```
 
-Both arrays are optional independently — a music player only needs `extensions`, a browser-style app only needs `protocols`; declare whichever applies, or omit `handles` entirely if your app doesn't want to be a default-openable target at all. Extensions are matched case-insensitively and should include the leading dot (`.mp3`, not `mp3`).
+`protocols`, `extensions`, `mimeTypes`, and `roles` are optional independently — declare whichever applies, or omit `handles` entirely if your app doesn't want to be a default-openable target at all. `roles` currently supports `home`. Declaring it only makes the app eligible; the user must explicitly choose it in Settings. A selected third-party Home app is hosted in a full-screen sandboxed surface, not an OS application window, and does not receive host-page access. Home selection takes effect after the OS page reloads. Extensions are matched case-insensitively and should include the leading dot (`.mp3`, not `mp3`); protocols and MIME types are matched case-insensitively. MIME parameters are ignored, and subtype wildcards such as `image/*` are supported.
 
-This is purely a **discovery/selection** declaration, not a permission — it doesn't grant your app anything, and there's no `handles:*` permission string to request. It only affects whether your app shows up as a choice in the Default Apps picker and, once chosen, whether the OS routes matching files/links to your app's `entry` when opened. Nothing about installing, launching, or running your app changes based on `handles` alone.
+This is purely a **discovery/selection** declaration, not a permission — it doesn't grant ambient access to files, and there's no `handles:*` permission string to request. When the user chooses your app through **Open with...**, the launch receives a `fileIntent` object in `window.__NOVA_APP_OPTIONS__` and the host grants that sandbox access to only that selected file. The scoped grant permits reading and writing that file through `nova:vfs:read` / `nova:vfs:write` by file id, without granting directory listing, access to other files, or broad `vfs:read` / `vfs:write` permission. A user can choose **Always use this app for this file type**; that preference is checked against the app's current declaration and installed status when the file is opened.
 
-`handles` isn't part of `RESERVED_APP_IDS`-gated behavior — any installed `.novaapp`, including unsigned/Unverified ones, is eligible to appear in the picker for any extension/protocol it declares. The OS doesn't currently restrict which apps can claim which types (e.g. nothing stops a third-party app from declaring `extensions: [".html"]` alongside the built-in Browser). The user is the actual gatekeeper: they still have to explicitly select your app as the default in Settings for anything to route to it — declaring `handles` never changes a default on its own.
+A sandboxed file manager can show the same OS chooser for a file the app can access by calling `window.nova.openWith(fileId)`, for example from its own right-click menu:
+
+```javascript
+fileMenuItems.push({
+  label: 'Open with…',
+  action: async () => {
+    const result = await window.nova.openWith(file.id);
+    if (result.cancelled) return;
+    if (!result.success) console.error('The selected app could not be opened');
+  }
+});
+```
+
+The host checks the file is within the calling app's accessible VFS scope before displaying the chooser. The app is not allowed to pass a path or file contents to this API. It resolves to `{ cancelled: true }` if the user dismisses the chooser (or there is no compatible installed app), or `{ cancelled: false, success, appId, windowId, defaultSaved }` after a choice. This API displays a chooser each time; it does not silently launch a remembered default.
+
+```javascript
+const intent = window.__NOVA_APP_OPTIONS__?.fileIntent;
+if (intent?.action === 'open') {
+  const file = await window.nova.ipc('nova:vfs:read', { id: intent.file.id });
+  // `file.data` is the selected file's content.
+  // Saving this same file is scoped to this launch:
+  await window.nova.ipc('nova:vfs:write', {
+    id: intent.file.id,
+    content: 'Updated content'
+  });
+}
+```
+
+Files opened without a matching `handles` declaration do not receive this scoped file grant. The OS checks the declaration again when launching, so a stale choice or a file type the app no longer declares cannot be used to acquire access.
+
+`handles` isn't part of `RESERVED_APP_IDS`-gated behavior — any installed `.novaapp`, including unsigned/Unverified ones, is eligible to appear in the chooser for any extension/protocol it declares. The OS doesn't currently restrict which apps can claim which types (e.g. a third-party app may declare `extensions: [".html"]` alongside the built-in Browser). A user choice in **Open with...** applies once unless they select **Always use this app**; declaring `handles` never changes a default on its own.
 
 ---
 
@@ -254,6 +295,27 @@ When you hit Build in Studio, here's what happens under the hood:
 - Reads every file in the project directory and Base64-encodes it
 - Generates a SHA-256 signature over the manifest + files payload
 - Writes `<app.id>.novaapp` to your chosen output directory
+
+### Headless system services
+
+NovaByte's built-in headless services are first-party `.novaapp` packages whose `service.js` runs in the OS page, preserving the global APIs and startup ordering used by their former standalone scripts. Their manifests use `system: true`, `systemService: true`, and `unrestrictedEntry: "service.js"`. They do not have a window or an HTML entry at runtime.
+
+Only IDs in `js/apps/novaapp-manifest.json` can pass the trusted system-package gate. Startup order is declared in `js/apps/system-service-manifest.json`; the loader checks package integrity and allowlist membership before executing each entry. If a service is missing or fails verification/startup, NovaByte logs the failure, skips that service, continues loading the rest, and starts the OS with a dismissible degraded-services warning. These packages execute with OS-page access and must remain first-party code. Framework/bootstrap pieces such as `boot.js`, `kernel.js`, `app-registry.js`, and trust/security initialization remain ordinary scripts because they are prerequisites for safely loading packages.
+
+Rebuild the built-in services after changing their source with:
+
+```sh
+node build-apps.mjs js/apps background-apps calendar-notifier default-apps event-log notifications registry scanner server-events-bridge system-dialogs system-events
+```
+
+`npm start` and `npm run dev` build the NovaApp packages automatically. To skip that build and use the packages already on disk, set `NBOSP_SKIP_APP_BUILD=1` before starting. In PowerShell:
+
+```powershell
+$env:NBOSP_SKIP_APP_BUILD = '1'
+npm start
+```
+
+Remove the variable from the current shell with `Remove-Item Env:\NBOSP_SKIP_APP_BUILD` when you want the automatic build again.
 
 ---
 
@@ -313,11 +375,15 @@ When a `.novaapp` is installed and launched, here's what actually happens:
 
 The App Manager reads the file, validates the manifest fields (`id`, `name`, `version` are required), checks the signature (prompts the user if it fails rather than blocking outright), and saves the app data to `localStorage` under `nova_installed_apps`. It also calls `registerNovaApp()` which registers the app with the OS app registry so it appears in the launcher.
 
+In **App Manager → Packages**, user-facing system apps remain visible in the package list. Developer tools, the built-in launcher, and headless system services are hidden by default; enable **Show hidden apps** to inspect them. The launcher and headless services cannot be opened from App Manager, and headless services are managed by NovaByte rather than launched, disabled, or uninstalled individually.
+
 ### Launch — permission gate
 
-Before the app loads, the runtime checks every permission in `permissions` against the Permission Manager. Missing grants are queued and shown one at a time (Android-style). Previously, denying any declared permission — required or optional — blocked launch behind a locked screen. **That's no longer the case: denying a required permission no longer blocks launch either.** The app launches regardless of grant state, and it's on the app to check what it actually has (via `nova:ready`, see below) and degrade gracefully for anything it wasn't granted — including required permissions.
+Declaring a permission explains what your app may request; it does not grant access by itself. Low-risk permissions—including public internet, public WebSockets, clipboard writing, notifications, and metadata—are auto-granted unless the user previously denied them. The broad `vfs:access` grant remains high-risk because it can edit shared files; use it when building a file editor or file manager. Missing required medium-or-higher permissions use the consent queue; denying one never blocks app launch, and only that capability fails when called. Optional sensitive permissions are not prompted at launch: request them with `window.nova.requestPermission(...)` when the related feature is used.
 
-> **Note:** `optionalPermissions` are never prompted for at launch — only entries in `permissions` go through the launch-time consent queue. Users can grant optional permissions manually from Settings → Apps, or your app can request one at runtime with `window.nova.requestPermission(...)` (see below) at the point you actually need it.
+This follows the Android distinction between ordinary install-time capabilities and sensitive access: public internet is available to apps that declare it, while internal-network access, personal data, broad shared-file editing, sensors, and powerful sandbox capabilities remain explicit. Auto-grant is based on the OS risk catalogue—not on an app's `required` label—and a previous denial is never silently replaced.
+
+Design your app so each sensitive feature is independently optional. Explain the reason at the moment of use, request the permission then, and offer a useful fallback if it is denied.
 
 ### Launch — sandbox
 
@@ -330,45 +396,215 @@ Third-party apps run inside an NW.js `<webview>` element, not an iframe — a se
 
 Declaring the manifest flag without the permission (or vice versa) still gets you a sandbox with no `allow-same-origin`. This is `high` risk — expect it to draw extra scrutiny before your app is verified.
 
-**Without this permission, raw browser storage does not survive relaunch.** `allow-same-origin` isn't just about *access* while your app is running — a guest page can always call `localStorage.setItem()`/set cookies regardless of this permission, since the sandbox attribute doesn't disable those APIs. What the permission actually controls is whether that data is kept on the next launch: when your app's window closes, the OS clears its storage partition unless it holds a live `sandbox:same-origin` grant at that moment. So without the permission, any raw `localStorage`/cookie values your app writes are wiped as soon as it closes — they'll be gone on the next open, even though reads/writes work fine within a single session. This applies every time the app is fully closed (not backgrounded via `stayAliveInBackground()`), so a revoked grant takes effect the next time the app closes, not immediately.
+**Without this permission, raw browser storage in your app's own sandbox does not survive relaunch.** `allow-same-origin` isn't just about *access* while your app is running — a guest page can always call `localStorage.setItem()`/set cookies regardless of this permission, since the sandbox attribute doesn't disable those APIs. What the permission actually controls is whether that data is kept on the next launch: when your app's window closes, the OS clears its app-sandbox storage partition unless it holds a live `sandbox:same-origin` grant at that moment. So without the permission, any raw `localStorage`/cookie values your app writes are wiped as soon as it closes — they'll be gone on the next open, even though reads/writes work fine within a single session. This applies every time the app is fully closed (not backgrounded via `stayAliveInBackground()`), so a revoked grant takes effect the next time the app closes, not immediately. This is separate from nested browser views, which use their own persistent web-content partition.
 
 If your app just needs data to survive across launches — settings, save state, caches — and doesn't need real same-origin semantics (postMessage origin-matching, sharing cookies with the host), don't request `sandbox:same-origin` for this. Use [`nova:storage:*`](#storage-novastorage) instead: it's durable by default, requires no permission, and isn't affected by this at all.
 
-**Nested `<webview>` (in-app browsers):** if your app's own HTML/JS creates a `<webview>` element (e.g. to build a browser-style app — see the [Browser template](#templates)), that's gated separately and blocked by default. Any nested `<webview>` your app tries to create — via `document.createElement('webview')`, `innerHTML`, or `insertAdjacentHTML` — is silently stripped at runtime unless **both** of these are true:
+**Nested browser views:** creating an in-app browser view is gated separately and blocked by default. The supported Nova browser API is documented in [Building browser apps](#building-browser-apps). Legacy `<webview>` creation is proxied for compatibility; the host creates a sibling web-content view rather than a native child webview inside the app renderer. Both of these gates are required:
 
 1. Your manifest declares `"allowNestedWebview": true` (a top-level manifest field, not nested under `sandbox`), **and**
 2. The user has granted the `sandbox:nested-webview` permission (declare it in `permissions` so it's requested at launch — see [Permissions](#permissions)).
 
-Both gates are required; declaring one without the other still gets you a stripped `<webview>`. This is `critical` risk since a nested `<webview>` is effectively a second, unsandboxed renderer surface — expect extra scrutiny if you're submitting for verification.
+Declaring only one still blocks access. This is a critical permission because browser views expose live third-party web content and navigation; host-side network permissions continue to apply inside them.
 
-> ⚠️ **Delay the first navigation on a nested `<webview>` by ~1 second, or it can crash the renderer.**
->
-> Creating a nested `<webview>` and setting its `.src` immediately — on the same tick, right after `document.createElement('webview')` — is a reproducible way to crash the guest's renderer process outright. This isn't a catchable JS error: no `window` `'error'` event fires, and DevTools attached to that webview dies along with it, so it can look like the whole app crashed rather than a script bug.
->
-> Waiting before the first navigation avoids it. In testing, creating the element and navigating on the very next tick reliably crashed; a ~1000ms delay before the first `.src` assignment reliably didn't. This has only been confirmed as a working mitigation, not root-caused against NW.js/Chromium internals — treat 1000ms as a tested safe margin, not a proven minimum, and don't shorten it without re-testing an actual crash-free launch.
->
-> This only applies to the *first* navigation right after creating a nested `<webview>` — once it's up and showing content, normal navigation (URL bar, back/forward, `.reload()`) is unaffected. It has no bearing on `net:external`/other permissions, and doesn't apply to the platform's own outer sandbox webview (the one that loads your app's own HTML) — only to a nested `<webview>` your own app code creates.
->
-> ```javascript
-> function main() {
->   var container = document.getElementById('webview-container');
->   // Show a loading state immediately; don't leave a blank pane during the delay.
->   setTimeout(createWebview, 1000);
->
->   function createWebview() {
->     var view = document.createElement('webview');
->     container.appendChild(view);
->     view.src = 'https://example.com'; // first navigation — safe here, after the delay
->   }
-> }
-> if (document.readyState === 'loading') {
->   document.addEventListener('DOMContentLoaded', main);
-> } else {
->   main();
-> }
-> ```
->
-> See the [Browser template](#templates) for a complete working example (loading state, disabled toolbar during the wait, URL bar, back/forward).
+The old advice to delay the first navigation by one second is obsolete. The current host-mediated implementation creates the web-content view outside the app renderer. Prefer `window.nova.browser.createView()`: it waits for host-side view creation before starting the first navigation and gives your app a stable Nova API.
+
+### Building browser apps
+
+Use the Nova browser API for an in-app browser. It creates a host-managed browser view and exposes Nova event names and Promise-based operations; app code does not need `BrowserWindow`, `webContents`, `ipcRenderer`, `require('electron')`, or direct access to `OS`. The older nested `<webview>` proxy remains available for compatibility, but new browser apps should prefer `window.nova.browser`.
+
+#### 1. Declare browser permissions
+
+Nested browser content is a powerful capability. Both the manifest opt-in and user grant are required:
+
+```json
+{
+  "id": "com.example.browser",
+  "name": "Example Browser",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "allowNestedWebview": true,
+  "permissions": [
+    "sandbox:nested-webview",
+    "net:external"
+  ]
+}
+```
+
+`sandbox:nested-webview` allows the app to create a browser view. `net:external` allows it to navigate to public HTTP(S) sites and download external content. Declared public internet and WebSocket permissions are auto-granted unless previously denied. Internal NovaByte services and private-network destinations still require `net:internal`; `net:external` cannot reach them. If the nested-webview grant is absent, `window.nova.browser` is not available.
+
+#### 2. Add the browser viewport and controls
+
+Keep the viewport in a container with a definite height. The host-managed view fills the container:
+
+```html
+<form id="address-form">
+  <button id="back" type="button" aria-label="Back">Back</button>
+  <button id="forward" type="button" aria-label="Forward">Forward</button>
+  <button id="reload" type="button">Reload</button>
+  <input id="address" type="text" autocomplete="url" aria-label="Address or search">
+  <button type="submit">Go</button>
+</form>
+<div id="browser-viewport" style="height: 600px"></div>
+<p id="browser-status" role="status"></p>
+<script src="app.js" defer></script>
+```
+
+The host enforces deferred execution for packaged external scripts even if `defer` is omitted. Keeping the attribute is useful when testing the page outside NovaByte OS.
+
+#### 3. Create a view and connect navigation
+
+`createView()` resolves to a `BrowserView`. It installs its event listeners before it starts the initial navigation. A URL passed to the app through `nova:open-url` takes precedence over the optional initial `url`, so links opened by the OS do not get replaced by the browser's home page.
+
+```javascript
+const HOME = 'https://example.com';
+let browserView;
+
+function addressToUrl(value) {
+  const input = value.trim();
+  if (!input) return null;
+  if (/^https?:\/\//i.test(input)) return input;
+  if (/^[\w-]+(\.[\w-]+)+(\/.*)?$/.test(input) && !input.includes(' ')) {
+    return 'https://' + input;
+  }
+  return 'https://www.google.com/search?q=' + encodeURIComponent(input);
+}
+
+async function main() {
+  const address = document.getElementById('address');
+  const status = document.getElementById('browser-status');
+  const viewport = document.getElementById('browser-viewport');
+
+  browserView = await window.nova.browser.createView({
+    container: viewport,
+    url: HOME,
+    pollingInterval: 1000
+  });
+
+  browserView.addEventListener('url-change', event => {
+    if (document.activeElement !== address) address.value = event.detail.url;
+  });
+  browserView.addEventListener('title-change', event => {
+    document.title = event.detail.title || 'Browser';
+  });
+  browserView.addEventListener('navigation-start', () => {
+    status.textContent = 'Loading…';
+  });
+  browserView.addEventListener('navigation-complete', () => {
+    status.textContent = '';
+  });
+  browserView.addEventListener('navigation-error', event => {
+    status.textContent = event.detail.errorDescription || event.detail.reason || 'Navigation failed';
+  });
+  browserView.addEventListener('state-change', event => {
+    document.getElementById('back').disabled = !event.detail.canGoBack;
+    document.getElementById('forward').disabled = !event.detail.canGoForward;
+  });
+
+  document.getElementById('address-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const url = addressToUrl(address.value);
+    if (url) await browserView.navigate(url);
+    address.blur();
+  });
+  document.getElementById('back').addEventListener('click', () => browserView.back());
+  document.getElementById('forward').addEventListener('click', () => browserView.forward());
+  document.getElementById('reload').addEventListener('click', () => browserView.reload());
+}
+
+main();
+```
+
+Navigation and download calls return Promises. Handle rejected Promises in UI actions so permission denials and host errors are visible; don’t silently treat them as successful loads.
+
+#### Browser API reference
+
+```javascript
+const view = await window.nova.browser.createView({
+  container,          // required DOM Element
+  url: 'https://…',   // optional; a pending OS open-url target takes precedence
+  pollingInterval: 1000 // optional: 0 disables polling; otherwise 250–10000 ms
+});
+```
+
+`BrowserView` exposes:
+
+| Member | Behavior |
+|--------|----------|
+| `element` | The host-managed view element. Prefer the methods below instead of relying on implementation-specific element APIs. |
+| `url`, `title`, `loading` | Latest known state. URL and title are also refreshed by polling, which catches client-side history changes. |
+| `canGoBack`, `canGoForward` | Latest history availability (`null` until state is first queried). |
+| `getState()` | Promise for `{ url, title, loading, canGoBack, canGoForward }`. |
+| `navigate(url)` | Navigate to a URL; the host enforces network permissions. |
+| `back()`, `forward()`, `reload()`, `stop()` | Browser navigation controls. |
+| `find(query, options)` | Search page text; resolves with the find result, including match count and active match. Options: `backward`, `matchCase`, `wordStart`, `medialCapitalAsWordStart`. |
+| `stopFinding(action)` | End page search; `action` is `clear`, `keep`, or `activate` (defaults to `clear`). |
+| `setZoom(factor)` | Set page zoom from `0.25` through `5`. |
+| `setZoomMode(mode)` | Set `per-view`, `per-origin`, or `automatic` zoom behavior. |
+| `setUserAgent(userAgent)` | Override the view's user-agent string (maximum 512 characters). |
+| `clearData(types)` | Clear selected site-data categories for this app's browser partition (for example `['cookies', 'cache', 'localStorage', 'indexedDB']`). |
+| `executeScript(code)` | Execute JavaScript in the loaded site and resolve with its result. Treat page script execution as privileged; it runs with that site's access. |
+| `on(type, listener)` | Listen for an event and receive an unsubscribe function. `addEventListener` / `removeEventListener` are also supported. |
+| `destroy()` | Stop polling and remove the view. Call this when permanently discarding a view. |
+
+Nova events use `CustomEvent`; read event-specific information from `event.detail`.
+
+| Event | Detail |
+|-------|--------|
+| `navigation-start` | Top-level navigation started. |
+| `navigation-redirect` | Navigation redirect details. |
+| `navigation-commit` | Top-level committed URL and navigation details. |
+| `navigation-complete` | Current state after the page load completes. |
+| `navigation-error` | `{ url, reason, errorCode, errorDescription, isTopLevel }`. |
+| `url-change` | `{ url, previousUrl }`, including in-page URL changes discovered by polling. |
+| `title-change` | `{ title, previousTitle }`. |
+| `state-change` | Current URL/title/loading/history state. |
+| `state-error` | `{ error }` when the host cannot refresh browser state. |
+| `new-window` | `{ url, disposition, width, height, window }`; decide whether to block, open a tab, or display a popup. |
+| `download-request` | `{ url }` when page content requests a download. |
+| `close`, `crash`, `destroy` | View lifecycle notifications. |
+
+#### Downloads and popups
+
+Page-initiated downloads are denied by default at the native webview boundary. Handle `download-request` and use Nova's save-dialog-backed download method instead of granting a website filesystem access:
+
+```javascript
+browserView.addEventListener('download-request', async event => {
+  try {
+    const result = await window.nova.browser.download({
+      url: event.detail.url,
+      filename: 'download'
+    });
+    if (result.cancelled) return;
+  } catch (error) {
+    console.error('Download failed:', error);
+  }
+});
+```
+
+`download({ url, filename })` fetches through the app's permission-checked network bridge, then asks the user where to save the file. The current limit is 100 MB and the payload is buffered in memory; this is not a resumable/background download manager.
+
+For `new-window`, create a view in your tab or popup container, then attach the pending popup to preserve the opener relationship:
+
+```javascript
+browserView.addEventListener('new-window', async event => {
+  const popupView = await window.nova.browser.createView({ container: popupViewport });
+  await event.detail.window.attach(popupView);
+  if (event.detail.url) await popupView.navigate(event.detail.url);
+});
+```
+
+Always provide a user-visible way to close popup views and call `destroy()` when a tab or popup is removed.
+
+#### Browser-app recommendations and boundaries
+
+- Store bookmarks, history, preferences, and tab metadata with [`nova:storage:*`](#storage-novastorage); don’t expose the host `OS` object to app code.
+- The OS gives each app a persistent browser-content partition. Cookies and site storage are isolated from the app's own storage and other apps. The current public API does not let an app select arbitrary partitions or implement a private/incognito profile.
+- `canGoBack` and `canGoForward` reflect URL history observed by the view, including changes found by polling. Use them to update toolbar state, but keep browser history UI in your app if it needs durable history across app launches.
+- Keep browser controls in the app's trusted UI, validate/normalize address-bar input, and never treat arbitrary user text as an executable URL scheme. Only HTTP(S) navigation is supported for nested browser views.
+- Treat `executeScript()` as a powerful escape into the current site's page context. Use it only for explicit features and never interpolate untrusted strings into the script source.
+- A browser app is responsible for tabs, history/bookmarks UI, downloads UI, popup policy, and user-facing error pages. The API does not provide Chrome extensions, browser-engine internals, certificate-warning bypass, per-site permission prompts, download progress/resume, or profile management.
+- Use [`window.nova.openUrl(url)`](#ipc-api-windownova) to hand a link to the OS-selected browser app rather than opening the system's external desktop browser.
 
 ### Launch — window.nova bridge
 
@@ -395,15 +631,15 @@ There is no `window.__novaPrivateStore` — for isolated, namespaced storage, us
 
 ## Permissions
 
-Permissions are declared in `manifest.json` and checked before the app loads. The user sees a consent dialog for each one. Grants persist across sessions via HMAC-signed localStorage entries. Unused app grants expire after 30 days of inactivity.
+Permissions are declared in `manifest.json` and checked before the app loads. Low-risk permissions are auto-granted unless previously denied; required medium-or-higher permissions are requested at launch, while optional sensitive permissions are requested when needed. Denying a permission does not block app launch. Grants persist across sessions via HMAC-signed localStorage entries. Unused app grants expire after 30 days of inactivity.
 
 ### Full permission list
 
-36 permissions across 10 categories. This mirrors `app-permission-manager.js` exactly — if you're hand-writing a manifest, these are the only strings `validateManifest` recognizes without a warning. (`data:export`/`data:backup`, previously listed here, don't exist as real permissions — they were dead metadata with no backing handler and have been removed from the OS entirely; the export feature in Settings isn't permission-gated.)
+40 permissions across 9 categories. This mirrors `app-permission-manager.js` exactly — if you're hand-writing a manifest, these are the only strings `validateManifest` recognizes without a warning. (`data:export`/`data:backup`, previously listed here, don't exist as real permissions — they were dead metadata with no backing handler and have been removed from the OS entirely; the export feature in Settings isn't permission-gated.)
 
 All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, `sandbox:escape-popups`) work differently from every other permission in this table: the permission grant alone does nothing. Each also requires a matching manifest flag — `allowNestedWebview`, `sandbox.allowSameOrigin`, and `allowPopupsToEscapeSandbox` respectively — and both the grant and the flag must be present or the underlying sandbox attribute is never added. See each row's description below for the exact manifest key.
 
-`clipboard:read`/`clipboard:write` are a similar case worth calling out: they used to be gated behind `vfs:read` (a misleading label, since the clipboard is a shared, ambient, cross-app channel with nothing to do with your app's own files). They're now their own permissions, but `vfs:read` is still honored as a fallback — any app already holding `vfs:read` keeps clipboard access without needing to request the new permissions, so this wasn't a breaking change for existing installs. New manifests should request `clipboard:read`/`clipboard:write` directly rather than relying on the fallback.
+`clipboard:read`/`clipboard:write` are distinct: reading clipboard contents remains high-risk, while writing is low-risk and auto-granted when declared. Existing apps with `vfs:read` retain the old clipboard fallback for compatibility; new manifests should request the clipboard permission they actually need.
 
 `vfs:metadata` is worth calling out specifically: it existed in the permission registry from the start, but the handler behind it (`nova:vfs:stat`) checked `vfs:read` instead — declaring `vfs:metadata` alone in a manifest silently did nothing. That's now fixed; `vfs:metadata` genuinely gates `nova:vfs:stat` on its own (an app with `vfs:read` still works too, since full read is a superset of metadata-only access).
 
@@ -411,13 +647,14 @@ All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, 
 
 | Permission | Category | Risk | Useful for |
 |------------|----------|------|------------|
-| `vfs:read` | Filesystem | Medium | Reading files a user opens/imports |
-| `vfs:write` | Filesystem | High | Saving files, exports, generated output |
-| `vfs:delete` | Filesystem | Critical | File managers, cleanup tools |
+| `vfs:access` | Filesystem | High | Reading and editing user files throughout the shared NovaByte VFS; one grant covers read/write |
+| `vfs:read` | Filesystem | Medium | Reading shared VFS files and your own app data |
+| `vfs:write` | Filesystem | High | Writing only to your own app data |
+| `vfs:delete` | Filesystem | Critical | Deleting shared files and your own app data |
 | `vfs:metadata` | Filesystem | Low | Listing/sizing files without reading contents |
 | `net:internal` | Network | High | Calling this OS's own API/server endpoints — also reaches private-network and cloud metadata addresses (169.254.169.254), not just same-origin |
-| `net:external` | Network | Medium | Calling any third-party HTTP API (REST, webhooks, AI providers) |
-| `net:websocket` | Network | Medium | Live/streaming connections (chat, realtime data feeds) |
+| `net:external` | Network | Low | Calling public internet services (declare in the manifest; auto-granted unless previously denied) |
+| `net:websocket` | Network | Low | Public WebSocket connections (declare in the manifest; auto-granted unless previously denied) |
 | `mail:read` | Email | High | Inbox viewers, search, unread-count widgets |
 | `mail:write` | Email | Critical | Mark-as-read/move tools, compose-preview UIs |
 | `mail:send` | Email | Critical | Send-on-your-behalf tools (needs its own SMTP config UI — see below) |
@@ -433,11 +670,13 @@ All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, 
 | `device:camera` | Device | Critical | Photo capture, video chat, QR/barcode scanning |
 | `device:microphone` | Device | Critical | Voice recording, voice chat, dictation |
 | `clipboard:read` | Clipboard | High | Paste-in tools, import-from-clipboard features — can expose whatever any other app or the user copied, not just your own app's data |
-| `clipboard:write` | Clipboard | Medium | Copy-to-clipboard buttons, share/export shortcuts |
+| `clipboard:write` | Clipboard | Low | Copy-to-clipboard features (auto-granted when declared; does not allow reading clipboard contents) |
 | `system:info` | System | Medium | Diagnostics, "about this device" panels — also gates reading settings values like `username`, `region`, `timezone`, and `devMode` |
 | `system:settings` | System | Medium | Preference sync, theme/settings dashboards |
 | `system:apps` | System | Medium | Launchers, app-store-style installers, dock/dashboard replacements |
+| `system:app-launch` | System | Low | Launching an installed app without access to app inventory or management |
 | `system:events` | System | Medium | Reacting to OS-level events (theme change, etc.) |
+| `system:root` | System | Critical | Running the app's `unrestrictedEntry` as its complete host-page implementation instead of loading its HTML entry in the app sandbox; requires Developer Mode, Root Access, and a separate explicit confirmation |
 | `system:background` | System | Medium | Periodic sync/checks while closed — reminders, cache refresh, polling (see below) |
 | `system:background:live` | System | High | Staying alive after the window closes — timers, active transfers, live connections (see below) |
 | `system:autostart` | System | High | Launching automatically at OS startup with no user action at all (see below) |
@@ -460,7 +699,7 @@ All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, 
 }
 ```
 
-Required permissions are prompted for at launch, but a denial no longer blocks the app from loading — the app must check what was actually granted and degrade gracefully if a required permission is missing. Optional permissions are never prompted at launch; users can grant them manually from Settings → Apps, or your app can request one at runtime with `window.nova.requestPermission(...)` and handle denial gracefully.
+Required medium-or-higher-risk permissions are prompted for at launch, but a denial does not block the app from loading — check what was actually granted and degrade gracefully if a required capability is missing. Low-risk permissions are auto-granted regardless of whether they appear in `permissions` or `optionalPermissions`, unless the user previously denied them. Optional sensitive permissions are not prompted at launch; users can grant them manually from Settings → Apps, or your app can request one at runtime with `window.nova.requestPermission(...)` and handle denial gracefully.
 
 ### Requesting a permission at runtime
 
@@ -554,44 +793,145 @@ const info = await window.nova.ipc('nova:ready', {});
 // }
 ```
 
+### App lifecycle and launch intents — `window.nova.app`
+
+`nova:open-url` and app launches carry options into the new app session. Use the app facade instead of reading host globals:
+
+```javascript
+const info = await window.nova.app.getInfo();
+const options = await window.nova.app.getLaunchOptions();
+
+const removeLaunchListener = window.nova.app.onLaunch(({ options, reason }) => {
+  if (options.url) navigateTo(options.url);
+  if (options.sharedText) showSharedText(options.sharedText);
+});
+
+const removeStateListener = window.nova.app.onStateChange(({ visible, focused }) => {
+  // Pause animations or defer nonessential refresh work while not visible.
+});
+```
+
+`onLaunch` reports this app window's initial options; it is not an app-to-app broadcast channel. `onStateChange` reports this document's visibility/focus and returns an unsubscribe function. These lifecycle signals do not grant background execution; background work still requires the relevant `system:background*` permission.
+
+### Appearance — `window.nova.appearance`
+
+Reading the small, non-sensitive appearance snapshot and subscribing to its changes require no permission. Apps can follow the OS theme, accent, high-contrast, reduced-motion, and transparent-surface preferences without broad `system:info` or `system:events` access:
+
+```javascript
+const current = await window.nova.appearance.get();
+const unsubscribe = await window.nova.appearance.onChange(appearance => {
+  document.documentElement.dataset.theme = appearance.theme;
+  document.documentElement.style.setProperty('--accent', appearance.accentColor || '');
+  document.documentElement.classList.toggle('high-contrast', appearance.highContrast);
+  document.documentElement.classList.toggle('reduce-motion', appearance.reduceMotion);
+});
+// later, when the view is disposed:
+unsubscribe();
+```
+
+The API deliberately does not expose unrelated OS settings. `set` accepts only the supported appearance fields and validated values; it does not require broad `system:settings` access. `onChange` calls the callback immediately with the current snapshot, then when one of those appearance preferences changes.
+
+```javascript
+await window.nova.appearance.set({
+  theme: 'nord',
+  accentColor: '#5e81ac',
+  highContrast: false,
+  reduceMotion: true,
+  transparentSurfaces: true
+});
+```
+
+### User-mediated sharing — `window.nova.share`
+
+Opening the OS share sheet itself needs no permission: the user chooses whether to copy content, open a link in the OS default browser, email it, or cancel. The app cannot silently write to the clipboard or launch a recipient through this chooser:
+
+```javascript
+const result = await window.nova.share({
+  title: 'Share this page',
+  text: 'Useful note',
+  url: 'https://example.com/article'
+});
+if (result.cancelled) return;
+```
+
+Only credential-free HTTP(S) links are accepted. Text is limited to 4000 characters, and the chooser is rate-limited. The returned `action` identifies the user's choice.
+
+### Picker-scoped files — `window.nova.files`
+
+Use these methods when an app needs to import or export a document the user explicitly selects. They do not require broad `vfs:read` or `vfs:write`; the picker mediates access to one chosen VFS file or save destination. The picker can show shared user files and the calling app's own private data, never another app's private `/data/<app-id>/` folder. They do not provide unrestricted access to host disk or persistent file handles:
+
+```javascript
+const opened = await window.nova.files.open({
+  title: 'Import notes',
+  accept: ['text/plain', 'application/json']
+});
+if (!opened.cancelled) {
+  console.log(opened.file.name, opened.file.content);
+}
+
+const saved = await window.nova.files.save({
+  title: 'Export notes',
+  filename: 'notes.txt',
+  mimeType: 'text/plain',
+  content: 'Exported content'
+});
+if (!saved.cancelled) console.log('Saved:', saved.file.path);
+```
+
+Open/save calls return `{ cancelled: true }` when dismissed. The first version is text-only and capped at 10 MB. Use the existing `nova:vfs:*` APIs when your app needs ongoing access to its own VFS data; use `nova:files` for a user-selected import/export flow.
+
 ### Filesystem — `nova:vfs:*`
 
-All filesystem operations require the appropriate `vfs:*` permission. This is **NovaByte's own OS-managed virtual filesystem** — the same data the built-in Files app shows (worker/IndexedDB-backed), never real Node `fs` or real host disk. (Renamed from `fs:*` — that name read as raw Node filesystem access, which this has never been. Real host-disk access, if it ever gets built, is reserved for its own separate, picker-mediated permission later — a single user-chosen file via a native dialog, not free-roam path access — deliberately not this.)
+The broad `vfs:access` permission enables reading and editing the shared user-visible tree with one grant. Separate `vfs:read` and `vfs:write` permissions remain available for narrower access; `vfs:write` alone is limited to your app's private data. `vfs:delete` is still separate and required to delete files. This is **NovaByte's own OS-managed virtual filesystem** — the same data the built-in Files app shows (worker/IndexedDB-backed), never real Node `fs` or real host disk.
 
-**Ownership scoping:** `vfs:read` can see the shared/general area of the tree plus your app's own `/data/<your-app-id>/` folder, but never another app's `/data/<other-app-id>/` folder. `vfs:write`/`vfs:delete` (and the rename/move/mkdir operations) are scoped tighter — they only ever work inside your own `/data/<your-app-id>/` folder, even in the shared area. Write outside your own app-data folder fails with `PERMISSION_DENIED`, not silently no-op'ing.
+**Ownership scoping:** `vfs:read` and `vfs:access` can see shared files and your app's own `/data/<your-app-id>/` folder, but never another app's private `/data/<other-app-id>/` folder. `vfs:access` can create, edit, rename, move, and make folders in the shared tree as well as your app's own data. `vfs:write` without `vfs:access` remains limited to your app's private data. `vfs:delete` is separate, and apps cannot delete the filesystem root, `/data`, or the Trash folder. Deleting your app's private files keeps them private while they are in Trash; no grant gives access to another app's private data.
 
 `<your-app-id>` above is filled in automatically by the host from whatever you pass — **you should never write your own literal app id into a path**. See [`/data/` path rewriting](#data-path-rewriting--read-this-before-you-build-anything) just below for the exact rules; getting this wrong is the single most common reason a fresh app's file tree looks empty, wrong, or throws `NOT_FOUND`.
 
 ```javascript
-// Read a file (requires vfs:read)
+// Read a file (requires vfs:read or vfs:access)
 const { content, size, modified } = await window.nova.ipc('nova:vfs:read', { path: '/docs/notes.txt' });
 
-// List a folder's contents (requires vfs:read) — separate channel from read
+// List a folder's contents (requires vfs:read or vfs:access) — separate channel from read
 const { files } = await window.nova.ipc('nova:vfs:list', { path: '/docs' });
 // files: [{ id, name, type, mimeType, size, modified, created }, ...]
 
-// Get metadata only, no file content (requires vfs:metadata — vfs:read also
+// Get metadata only, no file content (requires vfs:metadata — vfs:read or vfs:access also
 // works, since full read is a superset of metadata-only access)
 const { stat } = await window.nova.ipc('nova:vfs:stat', { path: '/docs/notes.txt' });
 // stat: { id, name, type, mimeType, size, path, parentId, created, modified, accessed, tags }
 
-// Write a file (requires vfs:write) — only works under your own /data/<app-id>/
+// Write a shared file (requires vfs:access)
+await window.nova.ipc('nova:vfs:write', { path: '/Documents/notes.txt', content: 'Hello' });
+
+// Or use the narrower vfs:write grant to write only under your app's /data/
 await window.nova.ipc('nova:vfs:write', { path: '/data/notes.txt', content: 'Hello' });
 
-// Create a folder (requires vfs:write) — 'path' is the *parent* folder,
-// same own-app-data scoping as write; omit path to create under your app root.
+// Create a shared folder (requires vfs:access); 'path' is the parent folder.
+await window.nova.ipc('nova:vfs:mkdir', { path: '/Documents/', name: 'exports' });
+
+// Or create one under your app root with vfs:write; omit path for app root.
 // NOTE: 'path' must include the trailing slash ('/data/', not '/data') — see
 // the path-rewriting section right below for why this distinction matters.
 await window.nova.ipc('nova:vfs:mkdir', { path: '/data/', name: 'exports' });
 
-// Rename a file/folder in place (requires vfs:write) — same own-app-data scoping
+// Rename a shared file/folder (requires vfs:access)
+await window.nova.ipc('nova:vfs:rename', { path: '/Documents/notes.txt', name: 'renamed.txt' });
+
+// Rename a file/folder in your app data (requires vfs:write)
 await window.nova.ipc('nova:vfs:rename', { path: '/data/notes.txt', name: 'renamed.txt' });
 
-// Move a file/folder (requires vfs:write) — both source and destination must
-// resolve inside your own /data/<app-id>/ folder
+// Move a shared file/folder (requires vfs:access); source and destination
+// must both be in the shared tree or your own app data.
+await window.nova.ipc('nova:vfs:move', { path: '/Documents/notes.txt', destPath: '/Documents/exports/' });
+
+// Delete a shared or app-owned file (requires vfs:delete)
+await window.nova.ipc('nova:vfs:delete', { path: '/Documents/notes.txt' });
+
+// Move a file/folder under your app data with vfs:write
 await window.nova.ipc('nova:vfs:move', { path: '/data/notes.txt', destPath: '/data/exports/notes.txt' });
 
-// Delete a file (requires vfs:delete) — same own-app-data scoping as write
+// Delete a file (requires vfs:delete)
 await window.nova.ipc('nova:vfs:delete', { path: '/data/notes.txt' });
 ```
 
@@ -607,7 +947,7 @@ That means:
 |---|---|---|
 | `/data/notes.txt` | `/data/<your-app-id>/notes.txt` | ✅ correct — this is the intended usage |
 | `/data/<your-app-id>/notes.txt` | `/data/<your-app-id>/<your-app-id>/notes.txt` | ❌ double-nested. `NOT_FOUND` / "Parent folder not found" — **never include your own app id in the path**, the host adds it for you |
-| `/data` *(no trailing slash)* | `/data` unchanged — rewrite doesn't fire | ⚠️ resolves to the literal **shared** root. A `list` here returns *every app's* `/data/<app-id>/` folder, not just yours. Not a permission leak (write/delete still get blocked below your own subtree), but almost certainly not what you meant if you intended "my app's root" |
+| `/data` *(no trailing slash)* | `/data` unchanged — rewrite doesn't fire | ⚠️ resolves to the shared data root. The host filters private app folders so you can only see your own `/data/<your-app-id>/` subtree. |
 | `/data/` *(trailing slash, nothing else)* | `/data/<your-app-id>/` | ✅ correct — this is the right way to refer to your own app root as a whole, e.g. for `list` or as `mkdir`'s parent |
 
 **Practical takeaways:**
@@ -652,10 +992,10 @@ Rate limited to 10 notifications per app per minute. Once exceeded, further call
 ### Clipboard — `nova:clipboard:*`
 
 ```javascript
-// Read clipboard (requires vfs:read)
+// Read clipboard (requires clipboard:read; vfs:read is a legacy fallback)
 const { text } = await window.nova.ipc('nova:clipboard:read', {});
 
-// Write clipboard (requires vfs:read)
+// Write clipboard (declare clipboard:write; low-risk grant is auto-granted)
 await window.nova.ipc('nova:clipboard:write', { text: 'Hello' });
 ```
 
@@ -781,14 +1121,19 @@ await window.nova.contacts.remove('c1');
 ```javascript
 // List installed apps (requires system:apps)
 const { apps } = await window.nova.apps.list();
+// Each app retains `icon` and adds `iconUrl` for direct rendering:
+// <img src="${apps[0].iconUrl}" alt="">
+// `iconUrl` is a package image data URL, a safe local /assets path, or a
+// generated SVG data URL for built-in icon names. It is null when unavailable.
 
-// Launch another app (requires system:apps)
+// Launch an installed app (requires system:app-launch; max 6 per minute)
 await window.nova.apps.launch('com.example.otherapp');
 
-// Get info about an app (requires system:apps)
+// Get info about this app (no permission)
 const info = await window.nova.ipc('nova:app:info', { appId: 'com.example.otherapp' });
 
-// Install a package (requires system:apps) — fails closed. Only succeeds
+// Listing, installing, and uninstalling still require system:apps.
+// Install a package — fails closed. Only succeeds
 // for a package that's fully signed, trust-store-verified, and unmodified.
 // Anything that would normally need a human to click through a warning
 // dialog (untrusted signer, tampered contents, already installed) is
@@ -806,11 +1151,27 @@ await window.nova.apps.uninstall('com.example.otherapp');
 // category ids (e.g. 'music', 'browser') to open Settings with that row
 // highlighted and a banner naming your app as the requester.
 await window.nova.apps.openDefaultAppsSettings('music');
+
+// A currently selected sandboxed Home app can take the user directly
+// to Home app selection without requesting the broader system:apps grant.
+await window.nova.home.openDefaultAppsSettings();
+
+// Home-only app drawer APIs. Settings and App Manager are always listed
+// and launchable by the currently selected Home app. Other apps appear
+// in list() with system:apps, and can be launched with system:app-launch
+// or system:apps.
+const { apps, fullAccess } = await window.nova.home.apps.list();
+await window.nova.home.apps.launch('com.nbosp.settings');
+await window.nova.home.apps.launch('com.nbosp.appmanager');
 ```
 
 **`openDefaultAppsSettings` is rate-limited** to 3 calls per minute per app id, using the same sliding-window pattern as `nova:notifications:show` — this exists because, unlike a real click, there's no reliable host-side signal that this call came from an actual user gesture rather than a script loop (the sandbox's postMessage boundary doesn't carry browser user-activation state). The limit bounds how often a misbehaving app can steal window focus by repeatedly popping Settings open; it doesn't require a click, since the platform genuinely can't verify one happened. Calls beyond the limit reject with `{ code: 'RATE_LIMITED' }` (see [Error codes](#error-codes)) — design your "Set as default" button assuming a real click, and you'll never hit it in normal use.
 
 This call only opens Settings to the right place — it never changes the user's default itself. The user still has to pick your app from the picker; there's no way to set a default programmatically without their action.
+
+`window.nova.home.openDefaultAppsSettings()` is limited to the currently selected Home app, opens the Home app row, and shares the 3-per-minute rate limit. Other apps receive `PERMISSION_DENIED`.
+
+`window.nova.home.apps.list()` and `.launch(appId)` are also restricted to the selected Home app. Without `system:apps`, the list contains only Settings and App Manager; `system:apps` enables listing other registered apps. Those two core apps can always be launched, while launching any other app requires `system:app-launch` or `system:apps`. Home launches are limited to 6 per minute and do not accept caller-supplied launch options or file intents.
 
 ### Admin — `nova:admin:*` / `window.nova.admin`
 
@@ -902,7 +1263,9 @@ await window.nova.ipc('nova:settings:set', { key: 'theme', value: 'dark' });
 
 This is a shared, OS-wide key space, not per-app storage — if you want isolated data scoped to your own app, use [Private Storage](#private-storage) (`nova:storage:*`) instead.
 
-A small set of security-sensitive keys — `lockPin`, `pinSalt`, `biometricCredentialId`, `lockoutUntil`, `wrongPinCount`, and `bootPassword` — are blocked from **both** get and set, regardless of permission. No app can read or write these through the settings API; both calls fail with `INVALID_ARGS`. This exists so that holding `system:info` (a low-risk permission) can't be used to read the user's PIN hash, and holding `system:settings` can't be used to reset `lockoutUntil` and bypass the lock screen.
+A small set of security-sensitive keys — `lockPin`, `pinSalt`, `biometricCredentialId`, `lockoutUntil`, `wrongPinCount`, and `bootPassword` — are blocked from **both** get and set, regardless of permission. No app can read or write these through the settings API; both calls fail with `INVALID_ARGS`. This exists so that holding `system:info` can't be used to read the user's PIN hash, and holding `system:settings` can't be used to reset `lockoutUntil` and bypass the lock screen.
+
+For common appearance customization, prefer `window.nova.appearance.set(...)`. It changes only validated theme/accent/accessibility preferences and doesn't grant access to arbitrary OS settings.
 
 ### Event bus — `nova:events:*`
 
@@ -916,7 +1279,7 @@ window.nova.onEvent('system:themeChanged', (data) => {
 
 Calling `nova.ipc('nova:events:unsubscribe', { event: 'system:themeChanged' })` directly still works if you need to unsubscribe explicitly.
 
-**Event names are restricted to a fixed allowlist** — subscribing to any name outside this list fails with `INVALID_ARGS`, even if you hold `system:events`. This isn't a permission gate you can request your way past; it's a fixed set of events the OS actually emits for app consumption:
+**Event names are restricted to a fixed allowlist** — subscribing to any name outside this list fails with `INVALID_ARGS`, even if you hold `system:events`. Common appearance, volume, workspace, power, and network change events do not require `system:events`; notifications, app inventory/lifecycle events, and mail/calendar/contact events remain protected. Mail/calendar/contact events also require their corresponding read permission:
 
 | Event | Fires when |
 |---|---|
@@ -1002,14 +1365,14 @@ const { keys } = await window.nova.ipc('nova:storage:keys', {});
 ### File picker — `nova:dialog:*`
 
 ```javascript
-// Open file picker (requires vfs:read)
+// Open file picker (requires vfs:read or vfs:access)
 const file = await window.nova.ipc('nova:dialog:open', {
   accept: ['.txt', '.md'],
   multiple: false,
 });
 // { path, name, content }
 
-// Save file picker (requires vfs:write)
+// Save file picker (requires vfs:write or vfs:access)
 await window.nova.ipc('nova:dialog:save', {
   filename: 'notes.txt',
   content: 'Hello',
@@ -1018,10 +1381,10 @@ await window.nova.ipc('nova:dialog:save', {
 
 ### Styled file picker — `nova:sysdialog:*`
 
-A second, additional file-picker pair, separate from `nova:dialog:*` above and not a replacement for it — both keep working independently, so switching to this one is opt-in. Where `nova:dialog:*` renders its own minimal one-off overlay, `nova:sysdialog:*` opens the same shared, Files-app-styled VFS browser (`SystemDialogs`) that built-in apps like TextEdit use for Save As / Open — real folder navigation with back/up buttons and a path bar, an icon grid instead of a plain list, and no "save as type" dropdown (the payload already tells the host what kind of file this is; a type selector would be redundant). Same permissions as `nova:dialog:*` — `vfs:read` to open, `vfs:write` to save — this is a different *visual style* of the same capability, not a new one.
+A second, additional file-picker pair, separate from `nova:dialog:*` above and not a replacement for it — both keep working independently, so switching to this one is opt-in. Where `nova:dialog:*` renders its own minimal one-off overlay, `nova:sysdialog:*` opens the same shared, Files-app-styled VFS browser (`SystemDialogs`) that built-in apps like TextEdit use for Save As / Open — real folder navigation with back/up buttons and a path bar, an icon grid instead of a plain list, and no "save as type" dropdown (the payload already tells the host what kind of file this is; a type selector would be redundant). `vfs:access` also satisfies either operation; otherwise `vfs:read` opens and `vfs:write` saves within your app data.
 
 ```javascript
-// Open picker (requires vfs:read)
+// Open picker (requires vfs:read or vfs:access)
 const result = await window.nova.ipc('nova:sysdialog:open', {
   title: 'Import',            // optional, defaults to "Open"
   startFolderId: undefined,   // optional VFS folder id to start in; defaults to root
@@ -1032,7 +1395,7 @@ if (result.cancelled) {
   const { id, name, content, mimeType, size, path } = result.file;
 }
 
-// Save picker (requires vfs:write) — writes the file itself once a
+// Save picker (requires vfs:write or vfs:access) — writes the file itself once a
 // destination is chosen, then returns the new node's info.
 const result = await window.nova.ipc('nova:sysdialog:save', {
   title: 'Save As',            // optional, defaults to "Save As"
@@ -1135,19 +1498,7 @@ Practical takeaway: both gates now actually block. The scanner stops the obvious
 - Don't use `eval()` — use safer alternatives
 - Validate and sanitize all user input and any file content you read
 - Don't collect data you don't need
-- **Start every `app.js` with this wrapper in place, before writing any other code — not after something breaks.** It's cheap to set up front and costly to retrofit: if you build for hours adding DOM queries throughout your file without testing, then finally hit `Uncaught TypeError: Cannot read properties of null (reading 'addEventListener')`, you're not adding one wrapper — you're going back through everything you wrote and moving it inside one. Make this your literal first lines in a new file, then build outward from inside `main()`:
-  ```javascript
-  function main() {
-    document.getElementById('pad').addEventListener('click', /* ... */);
-    // rest of your DOM-touching setup
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', main);
-  } else {
-    main();
-  }
-  ```
-  This becomes more likely to bite you, not less, as a `.novaapp` grows — more elements, more scripts, more setup code, more chances for a query to run before its target exists.
+- External scripts in the packaged entry HTML are deferred by the NovaByte host, so `app.js` can initialize against the parsed entry-page DOM directly. Add `defer` to the script tag as well if you also run the page outside NovaByte OS. Dynamically created scripts and documents retain normal browser timing.
 
 ### Content Scanner — avoiding false positives on install
 
