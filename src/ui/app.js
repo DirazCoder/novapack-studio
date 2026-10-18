@@ -625,7 +625,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.00';
+const STUDIO_VERSION = '1.2.01';
 const GITHUB_REPO = 'NovaByteOfficial/novapack-studio';
 
 // Theme
