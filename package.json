@@ -2,8 +2,8 @@
   "name": "novapack-studio",
   "version": "1.2.00",
   "description": "NovaByte App Development Studio",
-  "author": "NovaByteOfficial",
-  "license": "UNLICENSED",
+  "author": "DirazCoder",
+  "license": "Apache-2.0",
   "main": "index.html",
   "window": {
     "title": "NovaByte Studio",
@@ -18,7 +18,7 @@
   "app": {
     "LSApplicationCategoryType": "public.app-category.developer-tools"
   },
-  "chromium-args": "--disable-web-security --allow-file-access-from-files --disable-devtools --remote-debugging-port=0 --remote-allow-origins=none",
+  "chromium-args": "--disable-web-security --allow-file-access-from-files",
   "node-remote": "<all_urls>",
   "scripts": {
     "start": "nw .",
@@ -54,7 +54,6 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
-    "js-confuser": "^2.1.3",
     "nw": "^0.114.0-sdk",
     "nw-builder": "^4.18.0"
   },

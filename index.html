@@ -1,0 +1,1637 @@
+<!-- [NOVAPACK_INDEX_HTML] -- from NovaPack Studio, not NBOSP -->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovaByte Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="node_modules/devicon/devicon.min.css">
+  <link rel="stylesheet" href="src/ui/style.css">
+  <script>
+    // Set data-theme (and, for the custom theme, its CSS var overrides)
+    // before first paint so there's no flash of default colors before
+    // app.js runs. Mirrors loadStorage()/applyTheme()/_applyCustomColors()
+    // in app.js — kept in sync manually since this has to run standalone,
+    // before any other script, and can't import from app.js.
+    (function () {
+      try {
+        var raw = localStorage.getItem('novapack_studio_data');
+        var data = raw ? JSON.parse(raw) : null;
+        var theme = data && data.theme;
+        if (!theme) {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'nb-dark' : 'nb-light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+
+        if (theme === 'custom' && data && data.customColors && typeof data.customColors === 'object') {
+          var style = document.documentElement.style;
+          for (var key in data.customColors) {
+            if (Object.prototype.hasOwnProperty.call(data.customColors, key) && key.indexOf('--') === 0) {
+              style.setProperty(key, data.customColors[key]);
+            }
+          }
+        }
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'nb-dark');
+      }
+    })();
+  </script>
+</head>
+
+<body>
+
+  <!-- ── Titlebar ──────────────────────────────────────────────── -->
+  <div class="titlebar" id="titlebar">
+    <div class="titlebar-left">
+      <svg class="titlebar-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" stroke="#22c55e" stroke-width="1.5" fill="none" />
+        <polygon points="12,6 18,9 18,15 12,18 6,15 6,9" stroke="#22c55e" stroke-width="0.75" fill="none"
+          opacity="0.5" />
+        <text x="12" y="14.5" fill="#22c55e" font-size="6" font-weight="700" text-anchor="middle"
+          font-family="system-ui">NB</text>
+      </svg>
+      <span class="titlebar-name">NovaByte Studio</span>
+    </div>
+    <div class="titlebar-center" id="project-breadcrumb"></div>
+    <div class="titlebar-right">
+      <button class="tb-btn update-badge hidden" id="btn-update-badge" title="Update available">⬆ Update</button>
+      <button class="tb-btn" id="btn-minimize" title="Minimize">─</button>
+      <button class="tb-btn" id="btn-maximize" title="Maximize">□</button>
+      <button class="tb-btn tb-btn--close" id="btn-close" title="Close">✕</button>
+    </div>
+  </div>
+
+  <!-- ── Main Layout ───────────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-header-title">NovaByte</span>
+        <div class="sidebar-header-actions">
+          <button class="icon-btn icon-btn--ghost" id="btn-help" title="Help">?</button>
+          <button class="icon-btn icon-btn--ghost" id="btn-collapse-sidebar" title="Collapse sidebar">✕</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Projects</div>
+        <button class="sidebar-btn sidebar-btn--primary" id="btn-new-project">
+          <span class="sidebar-btn-icon">+</span> New Project
+        </button>
+        <button class="sidebar-btn" id="btn-open-project">
+          <span class="sidebar-btn-icon">↗</span> Open Folder
+        </button>
+      </div>
+
+      <div class="sidebar-section hidden" id="pinned-section">
+        <div class="sidebar-label">Pinned</div>
+        <div id="pinned-list" class="recent-list"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Recent</div>
+        <div id="recent-list" class="recent-list">
+          <div class="recent-empty">No recent projects</div>
+        </div>
+      </div>
+
+      <div class="sidebar-section sidebar-section--tools">
+        <div class="sidebar-label">Tools</div>
+        <button class="sidebar-btn" id="btn-inspect">
+          <span class="sidebar-btn-icon">🔍</span> Inspect .novaapp
+        </button>
+        <button class="sidebar-btn" id="btn-run-novabyte">
+          <span class="sidebar-btn-icon">▶</span> Run NovaByte
+        </button>
+        <button class="sidebar-btn" id="btn-editor-settings">
+          <span class="sidebar-btn-icon">⚙</span> Settings
+        </button>
+        <button class="sidebar-btn" id="btn-about">
+          <span class="sidebar-btn-icon">ℹ</span> About
+        </button>
+      </div>
+    </aside>
+
+    <button class="panel-reopen-tab hidden" id="btn-reopen-sidebar" title="Show sidebar">▶</button>
+
+    <!-- Main area -->
+    <main class="main" id="main">
+
+      <!-- Welcome screen -->
+      <div class="welcome" id="screen-welcome">
+        <div class="welcome-logo">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+              opacity="0.4" />
+            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+              font-family="system-ui">NB</text>
+          </svg>
+        </div>
+        <h1 class="welcome-title">NovaByte Studio</h1>
+        <p class="welcome-sub">Build · Package · Test</p>
+        <div class="welcome-actions">
+          <button class="welcome-btn welcome-btn--primary" id="welcome-new">New Project</button>
+          <button class="welcome-btn" id="welcome-open">Open Folder</button>
+        </div>
+        <div class="welcome-shortcuts">
+          <div class="shortcut"><kbd id="sc-new">Ctrl+N</kbd> New project</div>
+          <div class="shortcut"><kbd id="sc-open">Ctrl+O</kbd> Open folder</div>
+          <div class="shortcut"><kbd id="sc-build">Ctrl+B</kbd> Build</div>
+          <div class="shortcut"><kbd id="sc-run">Ctrl+R</kbd> Run NovaByte</div>
+          <div class="shortcut"><kbd id="sc-quickopen">Ctrl+P</kbd> Quick open</div>
+          <div class="shortcut"><kbd id="sc-palette">Ctrl+Shift+P</kbd> Command palette</div>
+          <div class="shortcut"><kbd id="sc-search">Ctrl+Shift+F</kbd> Search project</div>
+          <div class="shortcut"><kbd id="sc-diff">Ctrl+Shift+D</kbd> Diff vs saved</div>
+          <div class="shortcut"><kbd id="sc-workspaces">Ctrl+Shift+W</kbd> Workspaces</div>
+        </div>
+      </div>
+
+      <!-- Project screen — 3-column IDE layout -->
+      <div class="project-screen hidden" id="screen-project">
+
+        <!-- Left: file tree rail (always visible when project open) -->
+        <div class="project-rail" id="project-rail">
+          <div class="file-tree-header">
+            <span id="file-tree-path" class="file-tree-path"></span>
+            <div class="file-tree-actions">
+              <button class="icon-btn" id="btn-new-file" title="New File">+📄</button>
+              <button class="icon-btn" id="btn-new-folder" title="New Folder">+📁</button>
+              <button class="icon-btn" id="btn-global-search" title="Search in project (Ctrl/Cmd+Shift+F)">🔍</button>
+              <button class="icon-btn" id="btn-workspaces" title="Workspaces (Ctrl/Cmd+Shift+W)">⊞</button>
+              <button class="icon-btn" id="btn-refresh-files" title="Refresh">↺</button>
+            </div>
+          </div>
+          <div class="file-tree" id="file-tree"></div>
+          <button class="rail-collapse-btn" id="btn-collapse-rail" title="Collapse file tree">‹</button>
+        </div>
+        <div class="rail-resize-handle" id="rail-resize-handle"></div>
+        <button class="panel-reopen-tab panel-reopen-tab--rail hidden" id="btn-reopen-rail"
+          title="Show file tree">▶</button>
+
+        <!-- Right: top-nav + content area -->
+        <div class="project-main" id="project-main">
+
+          <!-- Top nav -->
+          <div class="tabs" id="tabs">
+            <button class="tab tab--active" data-tab="editor">Editor</button>
+            <button class="tab" data-tab="manifest">Manifest</button>
+            <button class="tab" data-tab="design">Design</button>
+            <button class="tab" data-tab="permissions">Permissions</button>
+            <button class="tab" data-tab="build">Build</button>
+            <button class="tab" data-tab="sign">Sign</button>
+            <button class="tab" data-tab="git">Git</button>
+            <button class="tab" data-tab="review">Review</button>
+          </div>
+
+          <!-- Editor view (permanent, shown by default) -->
+          <div class="tab-panel tab-panel--editor" id="panel-editor">
+            <div class="editor-tabbar" id="editor-tabbar">
+              <div class="editor-tabs" id="editor-tabs"></div>
+              <div class="editor-tabbar-actions">
+                <button class="icon-btn" id="btn-diff-vs-saved" title="Diff vs Saved (Ctrl/Cmd+Shift+D)">🔀</button>
+                <button class="icon-btn" id="btn-check-syntax" title="Check Syntax">✓</button>
+                <button class="icon-btn" id="btn-toggle-preview" title="Toggle HTML Preview">⬜</button>
+                <button class="action-btn action-btn--ghost" id="btn-editor-save-all"
+                  title="Save All (Ctrl/Cmd+Alt+S)">Save All</button>
+                <button class="action-btn action-btn--primary" id="btn-editor-save">Save</button>
+              </div>
+            </div>
+            <div class="editor-body" id="editor-body">
+              <div class="editor-pane" id="editor-pane">
+                <div class="editor-empty-state" id="editor-empty-state">
+                  <div class="editor-empty-icon">📄</div>
+                  <div class="editor-empty-text">Open a file from the tree</div>
+                  <div class="editor-empty-hint"><kbd id="sc-quick-open">Ctrl+P</kbd> Quick open</div>
+                </div>
+                <div id="cm-editor-host" class="hidden"></div>
+                <div class="file-preview-image hidden" id="file-preview-image">
+                  <img id="file-preview-img" src="" alt="Preview">
+                  <div class="file-preview-meta" id="file-preview-meta"></div>
+                </div>
+              </div>
+              <div class="preview-pane hidden" id="preview-pane">
+                <div class="preview-pane-header">
+                  <span class="preview-pane-label">Preview</span>
+                  <button class="icon-btn" id="btn-refresh-preview" title="Refresh">↺</button>
+                </div>
+                <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+              </div>
+            </div>
+            <div class="status-bar status-bar-hidden" id="status-bar">
+              <div class="status-bar-left">
+                <span class="status-bar-item" id="sb-lang"></span>
+                <span class="status-bar-sep"></span>
+                <span class="status-bar-item" id="sb-pos">Ln 1, Col 1</span>
+                <span class="status-bar-sep"></span>
+                <span class="status-bar-item" id="sb-size"></span>
+                <span class="status-bar-sep" id="sb-syntax-sep" style="display:none"></span>
+                <span class="status-bar-item status-bar-item--clickable" id="sb-syntax" style="display:none"
+                  title="Click for details"></span>
+                <span class="status-bar-sep" id="sb-perm-sep" style="display:none"></span>
+                <span class="status-bar-item status-bar-item--clickable" id="sb-perm-live" style="display:none"
+                  title="Click to open Permissions tab"></span>
+              </div>
+              <div class="status-bar-right">
+                <span class="status-bar-item">UTF-8</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab: Manifest editor -->
+          <div class="tab-panel" id="panel-manifest">
+            <div class="manifest-editor manifest-editor--v2">
+
+              <div class="manifest-section manifest-section--identity">
+                <div class="manifest-section-title">Identity</div>
+
+                <div class="field-row">
+                  <label class="field-label">App ID <span class="field-hint">reverse domain</span></label>
+                  <div class="mf-id-row">
+                    <input class="field-input" id="mf-id" placeholder="com.example.myapp" spellcheck="false">
+                    <span class="mf-id-status" id="mf-id-status"></span>
+                  </div>
+                  <div class="mf-id-feedback" id="mf-id-feedback"></div>
+                </div>
+
+                <div class="field-row-pair">
+                  <div class="field-row">
+                    <label class="field-label">Name</label>
+                    <input class="field-input" id="mf-name" placeholder="My App">
+                  </div>
+                  <div class="field-row field-row--narrow">
+                    <label class="field-label">Version</label>
+                    <input class="field-input" id="mf-version" placeholder="1.0.0" spellcheck="false">
+                  </div>
+                </div>
+
+                <div class="field-row">
+                  <label class="field-label">Description <span class="field-hint">optional</span></label>
+                  <input class="field-input" id="mf-description" placeholder="A short description">
+                </div>
+
+                <div class="field-row-pair">
+                  <div class="field-row">
+                    <label class="field-label">Author <span class="field-hint">optional</span></label>
+                    <input class="field-input" id="mf-author" placeholder="Your Name">
+                  </div>
+                  <div class="field-row field-row--narrow">
+                    <label class="field-label">Entry File</label>
+                    <input class="field-input" id="mf-entry" placeholder="index.html" spellcheck="false">
+                  </div>
+                </div>
+
+                <div class="field-row">
+                  <label class="field-label">Icon <span class="field-hint">Lucide name or custom image</span></label>
+                  <div class="icon-picker-row">
+                    <div class="icon-preview-box" id="mf-icon-preview" title="Click to upload custom image">
+                      <span class="icon-preview-plus" id="mf-icon-plus">+</span>
+                      <img id="mf-icon-img" src="" alt=""
+                        style="display:none;width:100%;height:100%;object-fit:cover;border-radius:7px;">
+                    </div>
+                    <div class="icon-picker-right">
+                      <input class="field-input" id="mf-icon" placeholder="e.g. gamepad-2  (or upload image above)"
+                        spellcheck="false">
+                      <div class="icon-picker-actions">
+                        <button class="icon-picker-btn" id="btn-icon-upload" type="button">Upload image</button>
+                        <button class="icon-picker-btn icon-picker-btn--clear" id="btn-icon-clear" type="button"
+                          style="display:none">Clear</button>
+                      </div>
+                    </div>
+                  </div>
+                  <input type="file" id="mf-icon-file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                    style="display:none">
+                </div>
+              </div>
+
+              <div class="manifest-actions">
+                <button class="action-btn action-btn--ghost" id="btn-view-json">View JSON</button>
+                <button class="action-btn action-btn--primary" id="btn-save-manifest">Save manifest.json</button>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- Tab: Design -->
+          <div class="tab-panel hidden" id="panel-design">
+
+            <!-- Fullscreen takeover: opened by switchTab('design'), covers the
+                 whole app shell (titlebar/rail/tabs included) via fixed
+                 positioning -- see .design-fullscreen in style.css. The panel
+                 content below (palette/canvas/attrs) lives inside it; nothing
+                 is duplicated, so every existing #design-* id design-pro.js
+                 and app.js already query keeps working unchanged. -->
+            <div class="design-fullscreen" id="design-fullscreen">
+              <div class="design-fullscreen-drag-strip"></div>
+              <button class="design-fs-close" id="design-fs-close" title="Close design mode (Esc)">&times;</button>
+              <!-- Positioned via JS (synced to the frame's on-screen corner every
+                   time pan/zoom/resize changes it) rather than living inside
+                   .design-stage-pan -- the floating palette/attrs columns sit
+                   above the canvas at z-index: 12 and can overlap the frame's
+                   edges, and a descendant can never out-stack a sibling of its
+                   own clipped/lower ancestor. Living directly in
+                   .design-fullscreen (z-index: 20000) sidesteps that instead
+                   of fighting it. -->
+              <div class="design-frame-resize-handle" id="design-frame-resize-handle" title="Drag to resize canvas"></div>
+
+              <div class="design-fs-actions">
+                <button class="nbpro-chip" id="nbpro-btn-undo" title="Undo (Ctrl+Z)">&#8630; Undo</button>
+                <button class="nbpro-chip" id="nbpro-btn-redo" title="Redo (Ctrl+Shift+Z)">&#8631; Redo</button>
+                <button class="nbpro-chip" id="nbpro-btn-save" title="Save design changes">&#128190; Save</button>
+                <button class="nbpro-chip" id="nbpro-btn-snapshot" title="Capture AST baseline before editing">&#9791; Snapshot</button>
+                <button class="nbpro-chip" id="nbpro-btn-ast-diff" title="Show side-by-side AST diff vs baseline">&#8801; AST Diff</button>
+                <div class="design-fs-zoom-actions">
+                  <button class="nbpro-chip" id="design-zoom-out" title="Zoom out">&#8722;</button>
+                  <button class="nbpro-chip nbpro-chip--ghost" id="design-zoom-reset" title="Reset zoom to 100% and re-center">
+                    <span id="design-zoom-pct">100%</span>
+                  </button>
+                  <button class="nbpro-chip" id="design-zoom-in" title="Zoom in">&#43;</button>
+                </div>
+                <div class="design-fs-window-actions">
+                  <button class="nbpro-chip" id="design-dpi-trigger" title="Window size / DPI presets">&#8862; Window</button>
+                  <button class="nbpro-chip" id="design-window-trigger" title="App window dimensions &amp; behavior">&#9635; App Window</button>
+                </div>
+              </div>
+
+              <!-- DPI/window preset popup -- was an inline toolbar row eating
+                   canvas space; now opens from the Window button above and
+                   closes on selection or an outside click. Same #nbpro-dpi-bar
+                   / #nbpro-layout-bar ids design-pro.js already renders into,
+                   just relocated. -->
+              <div class="design-dpi-popup hidden" id="design-dpi-popup">
+                <button class="nbpro-popup-close" id="design-dpi-popup-close" title="Close">&times;</button>
+                <div class="nbpro-bar-row" id="nbpro-dpi-bar"></div>
+                <div class="nbpro-bar-row" id="nbpro-layout-bar"></div>
+              </div>
+
+              <div class="design-layout">
+                <div class="design-palette design-palette--floating" id="design-palette">
+                  <div class="design-panel-collapse-row">
+                    <div class="design-palette-title">Palette</div>
+                    <button class="design-panel-collapse-btn" id="design-palette-collapse" title="Collapse palette">&#8249;</button>
+                  </div>
+                  <div class="design-palette-hint">Drag onto the canvas to place, or click to insert into the selected element</div>
+                  <button class="design-palette-item" data-el-type="div" draggable="true">
+                    <span class="design-palette-icon">▭</span> Div
+                  </button>
+                  <button class="design-palette-item" data-el-type="text" draggable="true">
+                    <span class="design-palette-icon">T</span> Text
+                  </button>
+                  <button class="design-palette-item" data-el-type="button" draggable="true">
+                    <span class="design-palette-icon">▢</span> Button
+                  </button>
+                  <button class="design-palette-item" data-el-type="image" draggable="true">
+                    <span class="design-palette-icon">🖼</span> Image
+                  </button>
+                  <button class="design-palette-item" data-el-type="input" draggable="true">
+                    <span class="design-palette-icon">✎</span> Input
+                  </button>
+                  <div class="design-palette-divider"></div>
+                  <button class="design-palette-item" data-el-type="flex" draggable="true">
+                    <span class="design-palette-icon">⇔</span> Flex container
+                  </button>
+                  <button class="design-palette-item" data-el-type="grid" draggable="true">
+                    <span class="design-palette-icon">⊞</span> Grid container
+                  </button>
+                  <button class="design-palette-item" data-el-type="modal" draggable="true">
+                    <span class="design-palette-icon">▣</span> Modal
+                  </button>
+                  <button class="design-palette-item" data-el-type="table" draggable="true">
+                    <span class="design-palette-icon">▤</span> Data table
+                  </button>
+                </div>
+                <button class="design-panel-reopen design-panel-reopen--left hidden" id="design-palette-reopen" title="Show palette">&#8250;</button>
+
+                <div class="design-canvas-wrap">
+                  <div class="design-stage design-stage--grid" id="design-stage">
+                    <div class="design-stage-pan" id="design-stage-pan">
+                      <iframe class="design-frame" id="design-frame" title="App design canvas" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+                    </div>
+                    <div class="design-empty hidden" id="design-empty">
+                      <div class="design-empty-msg" id="design-empty-msg">No index.html found in this project</div>
+                      <button class="action-btn action-btn--primary" id="design-empty-create">Create index.html</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="design-attrs-col design-attrs-col--floating" id="design-attrs-col">
+                  <div class="design-panel-collapse-row design-panel-collapse-row--attrs">
+                    <div class="design-palette-title">Inspector</div>
+                    <button class="design-panel-collapse-btn" id="design-attrs-collapse" title="Collapse attrs">&#8250;</button>
+                  </div>
+                  <div class="nbpro-ins-tabs" id="nbpro-inspector-tabs"></div>
+                  <div class="nbpro-ins-body" id="nbpro-inspector-body" style="display:none;"></div>
+                  <div class="design-attrs" id="design-attrs">
+                    <div class="design-attrs-empty" id="design-attrs-empty">
+                      Nothing selected — click an element in the canvas
+                    </div>
+                    <div class="design-attrs-body hidden" id="design-attrs-body">
+                    <div class="design-attrs-heading">
+                      <span class="design-attrs-tag" id="design-attrs-tag">div</span>
+                      <span class="design-attrs-id" id="design-attrs-id"></span>
+                    </div>
+                    <div class="design-attrs-mode" id="design-attrs-mode"></div>
+
+                    <div class="design-attrs-group">
+                      <div class="design-attrs-group-title">Identity</div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">id</label>
+                        <input class="design-attrs-input" id="da-id" spellcheck="false">
+                      </div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">class</label>
+                        <input class="design-attrs-input" id="da-class" spellcheck="false">
+                      </div>
+                    </div>
+
+                    <div class="design-attrs-group" id="da-text-group">
+                      <div class="design-attrs-group-title">Content</div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">text</label>
+                        <textarea class="design-attrs-input design-attrs-input--area" id="da-text" spellcheck="false" rows="2"></textarea>
+                      </div>
+                    </div>
+
+                    <div class="design-attrs-group hidden" id="da-table-group">
+                      <div class="design-attrs-group-title">Table data</div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">rows (JSON)</label>
+                        <textarea class="design-attrs-input design-attrs-input--area" id="da-table-rows" spellcheck="false" rows="5" placeholder='[{"col": "value"}]'></textarea>
+                      </div>
+                      <div class="design-attrs-row-note" id="da-table-error"></div>
+                    </div>
+
+                    <div class="design-attrs-group">
+                      <div class="design-attrs-group-title">Layout</div>
+
+                      <div class="design-attrs-mode-toggle" id="da-layout-mode" role="tablist" aria-label="Layout mode">
+                        <button class="design-attrs-mode-btn" data-layout-mode="free" role="tab">Free</button>
+                        <button class="design-attrs-mode-btn" data-layout-mode="flex" role="tab">Flex</button>
+                        <button class="design-attrs-mode-btn" data-layout-mode="grid" role="tab">Grid</button>
+                      </div>
+
+                      <div class="design-attrs-row design-attrs-row--pair">
+                        <div>
+                          <label class="design-attrs-label">width</label>
+                          <input class="design-attrs-input" id="da-width" placeholder="auto">
+                        </div>
+                        <div>
+                          <label class="design-attrs-label">height</label>
+                          <input class="design-attrs-input" id="da-height" placeholder="auto">
+                        </div>
+                      </div>
+
+                      <div id="da-layout-free">
+                        <div class="design-attrs-row design-attrs-row--pair">
+                          <div>
+                            <label class="design-attrs-label">left</label>
+                            <input class="design-attrs-input" id="da-left" placeholder="auto">
+                          </div>
+                          <div>
+                            <label class="design-attrs-label">top</label>
+                            <input class="design-attrs-input" id="da-top" placeholder="auto">
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="hidden" id="da-layout-flex">
+                      <div class="design-attrs-row design-attrs-row--pair">
+                        <div>
+                          <label class="design-attrs-label">direction</label>
+                          <select class="design-attrs-input" id="da-flex-direction">
+                            <option value="row">row</option>
+                            <option value="column">column</option>
+                            <option value="row-reverse">row-reverse</option>
+                            <option value="column-reverse">column-reverse</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="design-attrs-label">wrap</label>
+                          <select class="design-attrs-input" id="da-flex-wrap">
+                            <option value="nowrap">nowrap</option>
+                            <option value="wrap">wrap</option>
+                            <option value="wrap-reverse">wrap-reverse</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="design-attrs-row design-attrs-row--pair">
+                        <div>
+                          <label class="design-attrs-label">justify</label>
+                          <select class="design-attrs-input" id="da-flex-justify">
+                            <option value="flex-start">start</option>
+                            <option value="center">center</option>
+                            <option value="flex-end">end</option>
+                            <option value="space-between">space-between</option>
+                            <option value="space-around">space-around</option>
+                            <option value="space-evenly">space-evenly</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="design-attrs-label">align</label>
+                          <select class="design-attrs-input" id="da-flex-align">
+                            <option value="stretch">stretch</option>
+                            <option value="flex-start">start</option>
+                            <option value="center">center</option>
+                            <option value="flex-end">end</option>
+                            <option value="baseline">baseline</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">gap</label>
+                        <input class="design-attrs-input" id="da-flex-gap" placeholder="0px">
+                      </div>
+                    </div>
+
+                    <div class="hidden" id="da-layout-grid">
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">columns</label>
+                        <input class="design-attrs-input" id="da-grid-columns" placeholder="repeat(3, 1fr)">
+                      </div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">rows</label>
+                        <input class="design-attrs-input" id="da-grid-rows" placeholder="auto">
+                      </div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">named areas</label>
+                        <textarea class="design-attrs-input design-attrs-input--area" id="da-grid-areas" rows="3" placeholder='"header header"&#10;"sidebar main"'></textarea>
+                      </div>
+                      <div class="design-attrs-row design-attrs-row--pair">
+                        <div>
+                          <label class="design-attrs-label">justify items</label>
+                          <select class="design-attrs-input" id="da-grid-justify">
+                            <option value="stretch">stretch</option>
+                            <option value="start">start</option>
+                            <option value="center">center</option>
+                            <option value="end">end</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="design-attrs-label">align items</label>
+                          <select class="design-attrs-input" id="da-grid-align">
+                            <option value="stretch">stretch</option>
+                            <option value="start">start</option>
+                            <option value="center">center</option>
+                            <option value="end">end</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="design-attrs-row">
+                        <label class="design-attrs-label">gap</label>
+                        <input class="design-attrs-input" id="da-grid-gap" placeholder="0px">
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="design-attrs-group">
+                    <div class="design-attrs-group-title">Appearance</div>
+                    <div class="design-attrs-row">
+                      <label class="design-attrs-label">background</label>
+                      <input class="design-attrs-input" id="da-background" placeholder="transparent">
+                    </div>
+                    <div class="design-attrs-row">
+                      <label class="design-attrs-label">color</label>
+                      <input class="design-attrs-input" id="da-color" placeholder="inherit">
+                    </div>
+                    <div class="design-attrs-row design-attrs-row--pair">
+                      <div>
+                        <label class="design-attrs-label">font-size</label>
+                        <input class="design-attrs-input" id="da-font-size" placeholder="inherit">
+                      </div>
+                      <div>
+                        <label class="design-attrs-label">opacity</label>
+                        <input class="design-attrs-input" id="da-opacity" placeholder="1">
+                      </div>
+                    </div>
+                  </div>
+
+                  <button class="action-btn action-btn--ghost design-attrs-delete" id="da-delete">Delete element (Backspace)</button>
+                </div>
+                </div>
+              </div>
+              <button class="design-panel-reopen design-panel-reopen--right hidden" id="design-attrs-reopen" title="Show attrs">&#8249;</button>
+            </div>
+
+            <div class="design-ctx-menu hidden" id="design-ctx-menu">
+              <div class="design-ctx-submenu-wrap">
+                <button class="design-ctx-item design-ctx-item--parent" id="ctx-add-child">
+                  Add child <span class="design-ctx-arrow">›</span>
+                </button>
+                <div class="design-ctx-submenu" id="design-ctx-submenu">
+                  <button class="design-ctx-item" data-el-type="div">Div</button>
+                  <button class="design-ctx-item" data-el-type="text">Text</button>
+                  <button class="design-ctx-item" data-el-type="button">Button</button>
+                  <button class="design-ctx-item" data-el-type="image">Image</button>
+                  <button class="design-ctx-item" data-el-type="input">Input</button>
+                  <div class="design-ctx-sep"></div>
+                  <button class="design-ctx-item" data-el-type="flex">Flex container</button>
+                  <button class="design-ctx-item" data-el-type="grid">Grid container</button>
+                  <button class="design-ctx-item" data-el-type="modal">Modal</button>
+                  <button class="design-ctx-item" data-el-type="table">Data table</button>
+                </div>
+              </div>
+              <button class="design-ctx-item" id="ctx-duplicate">Duplicate</button>
+              <div class="design-ctx-sep"></div>
+              <button class="design-ctx-item design-ctx-item--danger" id="ctx-delete">Delete</button>
+            </div>
+
+            <div class="design-drop-indicator" id="design-drop-indicator"></div>
+
+            <!-- Window designer -- was a permanently-inline section below the
+                 canvas eating vertical space; now opens as a popup from the
+                 "Window size" button, same trigger row as the DPI popup.
+                 Contents unchanged, so mf-width/mf-height/etc keep the same
+                 ids the manifest sync code already reads. -->
+            <div class="design-window-popup hidden" id="design-window-popup">
+              <button class="nbpro-popup-close" id="design-window-popup-close" title="Close">&times;</button>
+              <div class="manifest-section manifest-section--window">
+                <div class="manifest-section-title">Window</div>
+
+                <div class="window-designer">
+                  <div class="window-preview-stage" id="window-preview-stage">
+                    <div class="window-preview-box" id="window-preview-box">
+                      <div class="window-preview-chrome" id="window-preview-chrome">
+                        <span class="window-preview-dot"></span>
+                        <span class="window-preview-dot"></span>
+                        <span class="window-preview-dot"></span>
+                      </div>
+                      <div class="window-preview-body"></div>
+                      <div class="window-preview-handle" id="window-preview-handle" title="Drag to resize"></div>
+                    </div>
+                  </div>
+                  <div class="window-preview-caption">
+                    Drag the corner to set the default size — <span id="window-preview-dims">800 × 560</span>
+                  </div>
+                </div>
+
+                <div class="window-fields-grid">
+                  <div class="field-group">
+                    <label class="field-label">Default Width</label>
+                    <input class="field-input field-input--sm" id="mf-width" placeholder="800" type="number">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Default Height</label>
+                    <input class="field-input field-input--sm" id="mf-height" placeholder="560" type="number">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Min Width</label>
+                    <input class="field-input field-input--sm" id="mf-min-width" placeholder="400" type="number">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Min Height</label>
+                    <input class="field-input field-input--sm" id="mf-min-height" placeholder="300" type="number">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Max Width <span class="field-hint">optional — set both</span></label>
+                    <input class="field-input field-input--sm" id="mf-max-width" placeholder="none" type="number">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label">Max Height <span class="field-hint">optional — set both</span></label>
+                    <input class="field-input field-input--sm" id="mf-max-height" placeholder="none" type="number">
+                  </div>
+                </div>
+
+                <div class="window-toggle-grid">
+                  <label class="window-toggle" id="mf-toggle-resizable" for="mf-resizable">
+                    <input type="checkbox" id="mf-resizable" checked>
+                    <span class="window-toggle-icon">⤢</span>
+                    <span class="window-toggle-label">Resizable</span>
+                  </label>
+                  <label class="window-toggle" id="mf-toggle-frame" for="mf-frame">
+                    <input type="checkbox" id="mf-frame" checked>
+                    <span class="window-toggle-icon">▭</span>
+                    <span class="window-toggle-label">Title bar</span>
+                  </label>
+                  <label class="window-toggle" id="mf-toggle-always-on-top" for="mf-always-on-top">
+                    <input type="checkbox" id="mf-always-on-top">
+                    <span class="window-toggle-icon">⬆</span>
+                    <span class="window-toggle-label">Always on top</span>
+                  </label>
+                  <label class="window-toggle" id="mf-toggle-start-minimized" for="mf-start-minimized">
+                    <input type="checkbox" id="mf-start-minimized">
+                    <span class="window-toggle-icon">—</span>
+                    <span class="window-toggle-label">Start minimized</span>
+                  </label>
+                  <label class="window-toggle" id="mf-toggle-transparent" for="mf-transparent">
+                    <input type="checkbox" id="mf-transparent">
+                    <span class="window-toggle-icon">◫</span>
+                    <span class="window-toggle-label">Transparent</span>
+                  </label>
+                </div>
+
+                <div class="manifest-actions">
+                  <button class="action-btn action-btn--primary" id="design-window-popup-save">Save to manifest.json</button>
+                </div>
+              </div>
+            </div>
+
+            </div>
+            <!-- /.design-fullscreen -->
+          </div>
+
+
+          <!-- Tab: Permissions -->
+          <div class="tab-panel hidden" id="panel-permissions">
+            <div class="permissions-tab-wrap">
+              <div class="permissions-tab-header">
+                <span class="permissions-tab-title">App Permissions</span>
+                <span class="permissions-tab-hint">Select what your app is allowed to access. These are written to
+                  manifest.json.</span>
+              </div>
+
+              <div class="permissions-toolbar">
+                <div class="permissions-search-row">
+                  <span class="permissions-search-icon">⌕</span>
+                  <input class="permissions-search-input" id="permissions-search" placeholder="Search permissions…"
+                    autocomplete="off" spellcheck="false">
+                </div>
+                <div class="permissions-summary" id="permissions-summary">0 selected</div>
+              </div>
+
+              <div class="permissions-grid" id="permissions-grid"></div>
+
+              <div class="manifest-actions">
+                <button class="action-btn action-btn--primary" id="btn-save-manifest-perms">Save manifest.json</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="perm-tooltip hidden" id="perm-tooltip">
+            <div class="perm-tooltip-header">
+              <span class="perm-tooltip-dot" id="perm-tooltip-dot"></span>
+              <span class="perm-tooltip-id" id="perm-tooltip-id"></span>
+            </div>
+            <div class="perm-tooltip-body" id="perm-tooltip-body"></div>
+          </div>
+
+          <!-- Tab: Build -->
+          <div class="tab-panel" id="panel-build">
+            <div class="build-config">
+              <div class="build-config-section-title">Output</div>
+              <div class="build-config-row">
+                <label class="field-label">Output directory</label>
+                <div class="path-input-row">
+                  <input class="field-input" id="build-outdir" placeholder="./dist" spellcheck="false">
+                  <button class="icon-btn" id="btn-pick-outdir" title="Browse">…</button>
+                </div>
+              </div>
+              <div class="build-config-row">
+                <label class="field-label field-label--check">
+                  <input type="checkbox" id="build-clean" checked> Clean last build automatically
+                </label>
+              </div>
+
+            <div class="build-summary-card" id="build-summary-card">
+              <div class="build-summary-title">This build will produce</div>
+              <div class="build-summary-row">
+                <span class="build-summary-label">Signing</span>
+                <span class="build-summary-value" id="build-summary-signing">—</span>
+              </div>
+              <div class="build-summary-row">
+                <span class="build-summary-label">Integrity</span>
+                <span class="build-summary-value" id="build-summary-integrity">—</span>
+              </div>
+              <div class="build-summary-row">
+                <span class="build-summary-label">Output to</span>
+                <span class="build-summary-value build-summary-value--path" id="build-summary-outpath">—</span>
+              </div>
+            </div>
+
+            <button class="build-btn" id="btn-build">
+              <span class="build-btn-label">Build Package</span>
+              <span class="build-btn-fill" id="build-btn-fill"></span>
+            </button>
+
+            <div class="build-log" id="build-log">
+              <div class="build-log-empty">Build output will appear here</div>
+            </div>
+
+            <div class="build-history" id="build-history">
+              <div class="build-history-header">
+                <span class="build-history-title">Build History</span>
+                <button class="icon-btn" id="btn-clear-history" title="Clear history">🗑</button>
+              </div>
+              <div class="build-history-list" id="build-history-list">
+                <div class="build-history-empty">No builds yet</div>
+              </div>
+            </div>
+          </div>
+          </div>
+
+          <div class="tab-panel hidden" id="panel-sign">
+            <div class="sign-tab-wrap">
+
+              <div class="sign-status-strip" id="sign-status-strip">
+                <div class="sign-status-item">
+                  <span class="sign-status-label">Signing</span>
+                  <span class="sign-status-value" id="sign-status-signing">—</span>
+                </div>
+                <div class="sign-status-divider"></div>
+                <div class="sign-status-item">
+                  <span class="sign-status-label">Integrity</span>
+                  <span class="sign-status-value" id="sign-status-integrity">—</span>
+                </div>
+                <div class="sign-status-divider"></div>
+                <div class="sign-status-item">
+                  <span class="sign-status-label">Last build</span>
+                  <span class="sign-status-value" id="sign-status-build">—</span>
+                </div>
+              </div>
+
+              <button class="legacy-disclosure" id="btn-localdev-toggle" type="button" aria-expanded="false">
+                <span class="legacy-disclosure-arrow">▸</span> Local Dev Signing (testing only, not trusted)
+              </button>
+
+              <div class="sign-section legacy-config hidden" id="localdev-config">
+                <div class="sign-section-hint">
+                  Self-sign with a key generated on this machine, for local testing only.
+                  Self-signed builds are <strong>not</strong> trusted by NBOSP — they'll always
+                  show the "Unverified" dialog on install, since nobody but you vouches for them.
+                </div>
+                <div class="sign-config-row">
+                  <label class="field-label">Signing method</label>
+                  <select class="field-input" id="sign-method-select">
+                    <option value="ed25519">Ed25519</option>
+                    <option value="ml-dsa-65">ML-DSA-65 (post-quantum, experimental)</option>
+                    <option value="ed448">Ed448</option>
+                    <option value="ecdsa-p256">ECDSA P-256</option>
+                    <option value="ecdsa-p384">ECDSA P-384</option>
+                    <option value="rsa-pss-4096">RSA-PSS 4096</option>
+                    <option value="custom">Custom</option>
+                    <option value="none" selected>None (unsigned)</option>
+                  </select>
+                </div>
+                <div class="sign-config-row">
+                  <label class="field-label">Integrity method</label>
+                  <select class="field-input" id="sign-integrity-select">
+                    <option value="blake3">BLAKE3</option>
+                    <option value="sha256">SHA-256</option>
+                    <option value="sha512">SHA-512</option>
+                    <option value="none" selected>None</option>
+                  </select>
+                </div>
+                <div class="sign-config-row hidden" id="sign-custom-key-row">
+                  <label class="field-label">Custom signing key / payload</label>
+                  <textarea class="field-input field-input--mono" id="sign-dev-custom-key"
+                    placeholder="Paste custom key material or signing payload here" rows="3"
+                    spellcheck="false"></textarea>
+                </div>
+                <div class="sign-config-row" id="sign-dev-key-row">
+                  <label class="field-label">Dev private key (JWK)</label>
+                  <div class="key-field-wrap">
+                    <textarea class="field-input field-input--mono key-field--masked" id="sign-dev-privkey"
+                      placeholder="Paste a private key JWK, or click Generate" rows="3" spellcheck="false"></textarea>
+                    <div class="key-field-actions">
+                      <button class="icon-btn icon-btn--ghost" id="btn-privkey-reveal" type="button"
+                        title="Show private key" aria-pressed="false">👁</button>
+                      <button class="icon-btn icon-btn--ghost" id="btn-privkey-copy" type="button"
+                        title="Copy private key">⧉</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="sign-actions-row">
+                  <button class="secondary-btn" id="btn-sign-generate-key">Generate New Keypair</button>
+                  <button class="secondary-btn" id="btn-sign-selfsign" disabled>Self-Sign Last Build</button>
+                </div>
+                <div class="sign-keypair-out hidden" id="sign-keypair-out">
+                  <div class="sign-keypair-label">Generated public key (safe to share/keep) — not used for trust
+                    automatically:</div>
+                  <div class="key-field-wrap">
+                    <textarea class="field-input field-input--mono" id="sign-dev-pubkey" rows="3" readonly
+                      spellcheck="false"></textarea>
+                    <div class="key-field-actions">
+                      <button class="icon-btn icon-btn--ghost" id="btn-pubkey-copy" type="button"
+                        title="Copy public key">⧉</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="tab-panel hidden" id="panel-git">
+            <div class="git-workspace" id="git-workspace">
+
+              <!-- Toolbar: current branch, ahead/behind, fetch/pull/push -->
+              <div class="git-toolbar">
+                <div class="git-branch-chip" id="git-branch-chip" title="Switch branch">
+                  <span class="git-branch-chip-icon">⑂</span>
+                  <span class="git-branch-chip-name" id="git-branch-chip-name">—</span>
+                  <span class="git-ahead-behind" id="git-ahead-behind"></span>
+                  <span class="git-branch-chip-caret">▾</span>
+                </div>
+
+                <div class="git-branch-dropdown hidden" id="git-branch-dropdown">
+                  <div class="git-branch-dropdown-search-row">
+                    <input class="gs-input git-branch-dropdown-search" id="git-branch-search"
+                      placeholder="Search branches…" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="git-branch-dropdown-list" id="git-branch-dropdown-list"></div>
+                  <div class="git-branch-dropdown-footer">
+                    <button class="link-btn" id="btn-git-new-branch">+ New branch</button>
+                  </div>
+                </div>
+
+                <div class="git-new-branch-row hidden" id="git-new-branch-row">
+                  <input class="field-input" id="git-new-branch-name" placeholder="feature/my-branch"
+                    spellcheck="false">
+                  <button class="git-action-btn git-action-btn--primary" id="btn-git-create-branch">Create &amp;
+                    Checkout</button>
+                  <button class="icon-btn" id="btn-git-cancel-branch" title="Cancel">✕</button>
+                </div>
+
+                <div class="git-toolbar-spacer"></div>
+
+                <button class="git-icon-action" id="btn-git-fetch" title="Fetch from remote">
+                  <span class="git-icon-action-icon">↺</span>
+                </button>
+                <button class="git-icon-action" id="btn-git-pull" title="Pull">
+                  <span class="git-icon-action-icon">↓</span>
+                  <span class="git-icon-action-count" id="git-pull-count"></span>
+                </button>
+                <button class="git-icon-action" id="btn-git-push" title="Push">
+                  <span class="git-icon-action-icon">↑</span>
+                  <span class="git-icon-action-count" id="git-push-count"></span>
+                </button>
+              </div>
+
+              <!-- Sub-nav -->
+              <nav class="git-subnav" id="git-subnav">
+                <button class="git-subnav-btn git-subnav-btn--active" data-git-section="changes">
+                  Changes <span class="git-subnav-badge hidden" id="git-changes-count"></span>
+                </button>
+                <button class="git-subnav-btn" data-git-section="history">History</button>
+                <button class="git-subnav-btn" data-git-section="stash">
+                  Stash <span class="git-subnav-badge hidden" id="git-stash-count"></span>
+                </button>
+                <button class="git-subnav-btn" data-git-section="branches">Branches</button>
+              </nav>
+
+              <!-- ── Changes section ─────────────────────────────────────── -->
+              <div class="git-section" data-git-pane="changes">
+
+                <div class="git-changes-scroll">
+                  <div class="git-status-section" id="git-staged-section">
+                    <div class="git-status-header">
+                      <span>Staged Changes</span>
+                      <span class="git-status-header-actions">
+                        <span class="git-status-header-count" id="git-staged-count">0</span>
+                        <button class="link-btn" id="btn-git-unstage-all">Unstage all</button>
+                      </span>
+                    </div>
+                    <div class="git-file-list" id="git-staged-list">
+                      <div class="git-file-list-empty">Nothing staged</div>
+                    </div>
+                  </div>
+
+                  <div class="git-status-section" id="git-unstaged-section">
+                    <div class="git-status-header">
+                      <span>Changes</span>
+                      <span class="git-status-header-actions">
+                        <span class="git-status-header-count" id="git-unstaged-count">0</span>
+                        <button class="link-btn" id="btn-git-stage-all">Stage all</button>
+                      </span>
+                    </div>
+                    <div class="git-file-list" id="git-unstaged-list">
+                      <div class="git-file-list-empty">No changes</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="git-commit-box">
+                  <textarea class="field-input git-commit-input" id="git-commit-msg"
+                    placeholder="Commit message — short summary on the first line" rows="3"></textarea>
+                  <div class="git-commit-row">
+                    <label class="git-amend-toggle" id="git-amend-toggle" for="git-amend-checkbox">
+                      <input type="checkbox" id="git-amend-checkbox">
+                      Amend last commit
+                    </label>
+                    <button class="git-action-btn git-action-btn--primary" id="btn-git-commit">
+                      Commit<span id="git-commit-count-suffix"></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ── History section ─────────────────────────────────────── -->
+              <div class="git-section hidden" data-git-pane="history">
+                <div class="git-history-list" id="git-history-list">
+                  <div class="git-empty-state">
+                    <div class="git-empty-state-icon">⏱</div>
+                    <div class="git-empty-state-text">No commits yet</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ── Stash section ────────────────────────────────────────── -->
+              <div class="git-section hidden" data-git-pane="stash">
+                <div class="git-stash-toolbar">
+                  <input class="field-input" id="git-stash-message" placeholder="Optional stash message"
+                    spellcheck="false">
+                  <button class="git-action-btn" id="btn-git-stash-save">Stash changes</button>
+                </div>
+                <div class="git-stash-list" id="git-stash-list">
+                  <div class="git-empty-state">
+                    <div class="git-empty-state-icon">📦</div>
+                    <div class="git-empty-state-text">No stashes</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ── Branches section ─────────────────────────────────────── -->
+              <div class="git-section hidden" data-git-pane="branches">
+                <div class="git-branches-toolbar">
+                  <input class="field-input" id="git-branches-search" placeholder="Search branches…"
+                    autocomplete="off" spellcheck="false">
+                  <button class="git-action-btn" id="btn-git-branches-new">+ New branch</button>
+                </div>
+                <div class="git-branches-list" id="git-branches-list"></div>
+              </div>
+
+            </div>
+
+            <div class="build-log git-output-log" id="git-log">
+              <div class="build-log-empty">Git output will appear here</div>
+            </div>
+          </div>
+
+          <div class="tab-panel hidden" id="panel-review">
+            <div class="review-header">
+              <div class="review-header-title">Preview</div>
+              <div class="review-header-sub">A preview of your app in a desktop window.</div>
+            </div>
+            <div class="review-stage" id="review-stage">
+              <div class="review-window" id="review-window">
+                <div class="review-titlebar" id="review-titlebar">
+                  <span class="review-controls" aria-hidden="true">
+                    <span class="review-dot review-dot--close"></span>
+                    <span class="review-dot review-dot--minimize"></span>
+                    <span class="review-dot review-dot--maximize"></span>
+                  </span>
+                  <img class="review-titlebar-icon" id="review-titlebar-icon" alt="" />
+                  <span class="review-titlebar-text" id="review-titlebar-text">Untitled App</span>
+                </div>
+                <div class="review-body">
+                  <iframe class="review-body-frame" id="review-body-frame" title="App preview" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+                </div>
+                <div class="review-resize-handle" id="review-resize-handle" title="Drag to resize"></div>
+              </div>
+            </div>
+            <div class="review-caption">This preview does not emulate the NBOSP runtime or permission system.</div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Inspector screen -->
+      <div class="inspector-screen hidden" id="screen-inspector">
+        <div class="inspector-dropzone" id="inspector-dropzone">
+          <div class="inspector-dropzone-icon">📦</div>
+          <div class="inspector-dropzone-label">Drop a .novaapp file here</div>
+          <div class="inspector-dropzone-sub">or <button class="link-btn" id="btn-pick-novaapp">browse</button></div>
+        </div>
+        <div class="inspector-result hidden" id="inspector-result"></div>
+      </div>
+
+      <!-- Settings screen -->
+      <div class="settings-screen hidden" id="screen-settings">
+        <div class="settings-header">
+          <button class="icon-btn" id="btn-settings-back" title="Back">←</button>
+          <h2 class="settings-title">Settings</h2>
+        </div>
+        <div class="settings-search-row">
+          <input class="gs-input" id="settings-search" placeholder="Search settings..." autocomplete="off">
+        </div>
+        <div class="settings-body" id="settings-body">
+          <div class="settings-section" data-section="editor">
+            <div class="settings-section-title">Editor</div>
+            <div class="settings-row">
+              <label class="settings-label">Font size</label>
+              <div class="settings-control">
+                <button class="icon-btn" id="btn-font-dec">−</button>
+                <span id="lbl-font-size">13</span>px
+                <button class="icon-btn" id="btn-font-inc">+</button>
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Tab size</label>
+              <select class="field-input field-input--sm" id="sel-tab-size">
+                <option value="2">2 spaces</option>
+                <option value="4">4 spaces</option>
+                <option value="8">8 spaces</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">
+                <input type="checkbox" id="chk-word-wrap"> Word wrap
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">
+                <input type="checkbox" id="chk-status-bar" checked> Show status bar
+              </label>
+            </div>
+          </div>
+          <div class="settings-section" data-section="autosave">
+            <div class="settings-section-title">Autosave</div>
+            <div class="settings-row">
+              <label class="settings-label">Autosave mode</label>
+              <div class="settings-control">
+                <select class="field-input field-input--sm" id="sel-autosave-mode">
+                  <option value="off">Off</option>
+                  <option value="realtime">On change (real-time)</option>
+                  <option value="5">Every 5 seconds</option>
+                  <option value="15">Every 15 seconds</option>
+                  <option value="30">Every 30 seconds</option>
+                  <option value="60">Every 1 minute</option>
+                  <option value="custom">Custom…</option>
+                </select>
+                <input class="field-input field-input--sm" id="inp-autosave-custom" type="number" min="1" max="3600"
+                  placeholder="Seconds" style="display:none;width:80px;">
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">
+                <input type="checkbox" id="chk-autosave-manifest" checked> Auto-save manifest.json
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">
+                <input type="checkbox" id="chk-autosave-editor" checked> Auto-save open editor files
+              </label>
+            </div>
+          </div>
+          <div class="settings-section" data-section="appearance">
+            <div class="settings-section-title">Appearance</div>
+            <div class="settings-row">
+              <label class="settings-label">Theme</label>
+              <div class="theme-picker" id="theme-picker-settings">
+                <button class="icon-btn" id="btn-theme-picker-settings" title="Select theme">🎨</button>
+                <div class="theme-picker-menu hidden" id="theme-picker-menu-settings">
+                  <div class="theme-picker-list" id="theme-picker-list-settings"></div>
+                </div>
+              </div>
+            </div>
+            <div class="custom-theme-editor hidden" id="custom-theme-editor">
+              <!-- color groups populated by _renderCustomThemeSection() -->
+              <div class="custom-theme-actions">
+                <button class="action-btn action-btn--ghost" id="btn-custom-theme-reset">Discard &amp; revert to
+                  previous theme</button>
+                <button class="action-btn action-btn--ghost" id="btn-custom-theme-export">Copy theme JSON</button>
+                <button class="action-btn action-btn--ghost" id="btn-custom-theme-import">Paste theme JSON</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section" data-section="data">
+            <div class="settings-section-title">Settings backup</div>
+            <div class="settings-row">
+              <label class="settings-label">Export / import</label>
+              <div class="settings-control">
+                <button class="action-btn action-btn--ghost" id="btn-settings-export">Export settings&hellip;</button>
+                <button class="action-btn action-btn--ghost" id="btn-settings-import">Import settings&hellip;</button>
+              </div>
+            </div>
+            <div class="settings-hint">
+              Carries your theme, layout, and autosave/editor preferences to another machine.
+              Recent projects, workspaces, and build history are machine-specific and are not included.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ── Modals ─────────────────────────────────────────────────── -->
+
+  <!-- New Project modal -->
+  <div class="modal-overlay hidden" id="modal-new-project">
+    <div class="modal modal--xwide">
+      <div class="modal-header">
+        <span class="modal-title">New Project</span>
+        <button class="modal-close" data-close="modal-new-project">✕</button>
+      </div>
+
+      <div class="modal-body modal-body--new-project">
+        <div class="np-left">
+          <div class="template-grid" id="template-grid"></div>
+
+          <div class="modal-fields">
+            <div class="field-row">
+              <label class="field-label">App Name</label>
+              <input class="field-input" id="new-app-name" placeholder="My App">
+            </div>
+            <div class="field-row">
+              <label class="field-label">App ID <span class="field-hint">reverse domain</span></label>
+              <input class="field-input" id="new-app-id" placeholder="com.example.myapp" spellcheck="false">
+            </div>
+            <div class="field-row">
+              <label class="field-label">Project Folder</label>
+              <div class="path-input-row">
+                <input class="field-input" id="new-app-dir" placeholder="/path/to/projects/my-app" spellcheck="false">
+                <button class="icon-btn" id="btn-pick-dir" title="Browse">…</button>
+              </div>
+            </div>
+
+            <!-- Populated only for templates that declare placeholderFields
+                 (e.g. Web App Wrapper's URL). Hidden entirely otherwise, so
+                 templates with nothing extra to configure don't show an
+                 empty section. -->
+            <div class="field-row np-placeholder-fields hidden" id="np-placeholder-fields"></div>
+          </div>
+        </div>
+
+        <div class="np-right">
+          <div class="np-preview-header">
+            <span class="np-preview-icon" id="np-preview-icon"></span>
+            <div class="np-preview-heading">
+              <span class="np-preview-name" id="np-preview-name"></span>
+              <span class="np-preview-desc" id="np-preview-desc"></span>
+            </div>
+          </div>
+
+          <div class="np-preview-body">
+            <div class="np-file-list" id="np-file-list"></div>
+            <div class="np-file-view">
+              <div class="np-file-view-header">
+                <span class="np-file-view-name" id="np-file-view-name"></span>
+              </div>
+              <pre class="np-file-view-content" id="np-file-view-content"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="action-btn action-btn--ghost" data-close="modal-new-project">Cancel</button>
+        <button class="action-btn action-btn--primary" id="btn-create-project">Create Project</button>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- Context menu -->
+  <div class="context-menu hidden" id="context-menu">
+    <button class="context-menu-item" id="filectx-rename">✏️ Rename</button>
+    <button class="context-menu-item" id="filectx-duplicate">📋 Duplicate</button>
+    <button class="context-menu-item" id="filectx-compare">🔀 Compare With...</button>
+    <button class="context-menu-item" id="ctx-new-file">📄 New File Here</button>
+    <button class="context-menu-item" id="ctx-new-folder">📁 New Folder Here</button>
+    <div class="context-menu-sep" id="filectx-sep"></div>
+    <button class="context-menu-item context-menu-item--danger" id="filectx-delete">🗑 Delete</button>
+  </div>
+
+  <!-- Recents context menu -->
+  <div class="context-menu hidden" id="recent-context-menu">
+    <button class="context-menu-item" id="rctx-open">↗ Open</button>
+    <button class="context-menu-item" id="rctx-pin">📌 Pin to top</button>
+    <button class="context-menu-item" id="rctx-copy-path">📋 Copy folder path</button>
+    <button class="context-menu-item" id="rctx-reveal">🗂 Reveal in file explorer</button>
+    <div class="context-menu-sep"></div>
+    <button class="context-menu-item context-menu-item--danger" id="rctx-remove">✕ Remove from Recents</button>
+  </div>
+
+  <!-- JSON viewer modal -->
+  <div class="modal-overlay hidden" id="modal-json">
+    <div class="modal modal--wide">
+      <div class="modal-header">
+        <span class="modal-title">manifest.json</span>
+        <button class="modal-close" data-close="modal-json">✕</button>
+      </div>
+      <div class="modal-body">
+        <pre class="json-viewer" id="json-viewer"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global project search modal -->
+  <div class="modal-overlay hidden" id="modal-command-palette">
+    <div class="modal modal--palette">
+      <div class="modal-search-row">
+        <span class="modal-search-icon">›_</span>
+        <input class="modal-search-input" id="cp-input" placeholder="Type a command…" spellcheck="false"
+          autocomplete="off">
+      </div>
+      <div class="cp-results-wrap">
+        <div class="modal-results" id="cp-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-quick-open">
+    <div class="modal modal--palette">
+      <div class="modal-search-row">
+        <span class="modal-search-icon" id="sc-qo-icon">P</span>
+        <input class="modal-search-input" id="qo-input" placeholder="Jump to file…" spellcheck="false"
+          autocomplete="off">
+      </div>
+      <div class="modal-results" id="qo-results"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-workspace">
+    <div class="modal modal--wide">
+      <div class="modal-header">
+        <span class="modal-title">Workspaces</span>
+        <button class="modal-close" data-close="modal-workspace">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="workspace-actions">
+          <button class="action-btn" id="btn-workspace-save">Save current workspace</button>
+        </div>
+        <div class="workspace-list" id="workspace-list">
+          <div class="workspace-empty">No saved workspaces</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-global-search">
+    <div class="modal modal--wide modal--search">
+      <div class="modal-header">
+        <span class="modal-title">Search in Project</span>
+        <button class="modal-close" data-close="modal-global-search">✕</button>
+      </div>
+      <div class="modal-body modal-body--search">
+        <input type="text" id="gs-input" class="gs-input" placeholder="Search file contents… (Esc to close)"
+          autocomplete="off" />
+        <div id="gs-meta" class="gs-meta"></div>
+        <div id="gs-results" class="gs-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diff / compare modal -->
+  <div class="modal-overlay hidden" id="modal-diff">
+    <div class="modal modal--diff">
+      <div class="modal-header">
+        <div class="diff-header-labels">
+          <span class="diff-label" id="diff-label-left">—</span>
+          <span class="diff-label-sep">⇄</span>
+          <span class="diff-label" id="diff-label-right">—</span>
+        </div>
+        <div class="diff-header-actions">
+          <button class="icon-btn" id="btn-diff-prev" title="Previous change">↑</button>
+          <button class="icon-btn" id="btn-diff-next" title="Next change">↓</button>
+          <button class="modal-close" data-close="modal-diff">✕</button>
+        </div>
+      </div>
+      <div class="modal-body modal-body--diff">
+        <div id="diff-host" class="diff-host"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- About modal -->
+  <div class="modal-overlay hidden" id="modal-about">
+    <div class="modal modal--about">
+      <div class="modal-header">
+        <span class="modal-title">About</span>
+        <button class="modal-close" data-close="modal-about">✕</button>
+      </div>
+      <div class="modal-body modal-body--about">
+        <div class="about-logo">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+              opacity="0.4" />
+            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+              font-family="system-ui">NB</text>
+          </svg>
+        </div>
+        <div class="about-name">NovaByte Studio</div>
+        <div class="about-version" id="about-version">Version 1.2.00</div>
+        <div class="about-copy">© 2026 NovaByteOfficial</div>
+        <a class="about-link" id="about-releases-link" href="#"
+          onclick="nw.Shell.openExternal('https://github.com/NovaByteOfficial/novapack-studio/releases'); return false;">View
+          Releases on GitHub</a>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn" data-close="modal-about">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Update available modal -->
+  <div class="modal-overlay hidden" id="modal-update">
+    <div class="modal modal--wide">
+      <div class="modal-header">
+        <span class="modal-title">Update Available</span>
+        <button class="modal-close" data-close="modal-update">✕</button>
+      </div>
+      <div class="modal-body modal-body--update">
+        <div class="update-heading-row">
+          <div class="about-logo">
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
+              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+                opacity="0.4" />
+              <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+                font-family="system-ui">NB</text>
+            </svg>
+          </div>
+          <div class="update-heading-text">
+            <div class="about-name">NovaByte Studio</div>
+            <div class="about-version" id="update-new-version"></div>
+            <div class="about-copy update-current-version" id="update-current-version"></div>
+          </div>
+        </div>
+        <div class="update-changelog" id="update-changelog"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn--primary" id="btn-download-update">Download</button>
+        <button class="modal-btn" data-close="modal-update">Later</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-help">
+    <div class="modal modal--wide modal--help">
+      <div class="modal-header">
+        <span class="modal-title">Help</span>
+        <button class="modal-close" data-close="modal-help">✕</button>
+      </div>
+      <div class="help-logo-row">
+        <div class="about-logo">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+              opacity="0.4" />
+            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+              font-family="system-ui">NB</text>
+          </svg>
+        </div>
+        <div class="about-name">NovaByte Studio</div>
+        <div class="about-copy">Everything you need to build, package, and ship a `.novaapp`.</div>
+      </div>
+      <div class="modal-body modal-body--help">
+        <nav class="help-nav" id="help-nav">
+          <button class="help-nav-btn active" data-help-section="how-to-use">How to Use</button>
+          <button class="help-nav-btn" data-help-section="manifest">Manifest</button>
+          <button class="help-nav-btn" data-help-section="permissions">Permissions</button>
+          <button class="help-nav-btn" data-help-section="signing">Building &amp; Signing</button>
+          <button class="help-nav-btn" data-help-section="shortcuts">Keyboard Shortcuts</button>
+          <button class="help-nav-btn" data-help-section="faq">FAQ</button>
+        </nav>
+        <div class="help-panes" id="help-panes">
+
+          <div class="help-pane active" data-help-pane="how-to-use">
+            <h3>Getting started</h3>
+            <p>NovaByte Studio is a desktop IDE for creating, building, and packaging <code>.novaapp</code> applications for NovaByte OS and compatible NBOSP systems. You get a GUI for everything — no CLI required.</p>
+            <ol class="help-steps">
+              <li><strong>Create a project</strong> from a template — <code>blank</code>, <code>webapp</code>, <code>browser</code>, <code>utility</code>, <code>game</code>, <code>dashboard</code>, <code>form</code>, <code>markdown-viewer</code>, or <code>chat</code>.</li>
+              <li><strong>Edit your code</strong> in the built-in CodeMirror 6 editor — multi-tab, syntax highlighting, TypeScript intellisense, and a live HTML preview pane.</li>
+              <li><strong>Fill in your manifest</strong> (name, id, permissions, window size) in the Manifest tab.</li>
+              <li><strong>Build</strong> from the Build tab — this validates your manifest, bundles every file, and writes a <code>.novaapp</code> to your output directory.</li>
+              <li><strong>Inspect</strong> any <code>.novaapp</code> by dragging it into the Package Inspector to check its manifest, files, and signature.</li>
+            </ol>
+            <p class="help-note">⚠️ Reference external scripts such as <code>app.js</code> instead of putting code in an inline script block. The host defers packaged entry-page scripts until HTML parsing is complete, so DOM-ready wrappers are not needed. See the FAQ for details.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="manifest">
+            <h3>Manifest format</h3>
+            <p>Every app needs a <code>manifest.json</code> at its root. Required fields:</p>
+            <table class="help-table">
+              <tr><th>Field</th><th>Description</th></tr>
+              <tr><td><code>id</code></td><td>Unique app ID, reverse-domain format (e.g. <code>com.example.app</code>)</td></tr>
+              <tr><td><code>name</code></td><td>Display name shown in the OS</td></tr>
+              <tr><td><code>version</code></td><td>Semantic version <code>x.y.z</code></td></tr>
+              <tr><td><code>entry</code></td><td>Main HTML file to load</td></tr>
+            </table>
+            <p>Common optional fields: <code>description</code>, <code>author</code>, <code>icon</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>categories</code>.</p>
+            <p class="help-note">App IDs must be lowercase reverse-domain (<code>io.github.you.app</code>) — <code>MyApp</code> or <code>myapp</code> with no dot will fail validation at Build time. Web-app shortcuts use the <code>webapp_</code> prefix instead.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="permissions">
+            <h3>Permissions</h3>
+            <p>Permissions gate what your app can access on the host OS. Declare required permissions in <code>permissions</code>; missing sensitive grants may be requested at launch, but denial does not block the app. Optional sensitive permissions are not prompted at launch and can be requested at runtime or granted from Settings → Apps. Low-risk permissions are auto-granted when declared unless previously denied.</p>
+            <table class="help-table">
+              <tr><th>Category</th><th>Permissions</th><th>Risk range</th></tr>
+              <tr><td>Filesystem</td><td><code>vfs:access</code>, <code>vfs:read</code>, <code>vfs:write</code>, <code>vfs:delete</code>, <code>vfs:metadata</code></td><td>Low – Critical</td></tr>
+              <tr><td>Network</td><td><code>net:internal</code>, <code>net:external</code>, <code>net:websocket</code></td><td>Low – High</td></tr>
+              <tr><td>Clipboard</td><td><code>clipboard:read</code>, <code>clipboard:write</code></td><td>Low – High</td></tr>
+              <tr><td>Mail</td><td><code>mail:read</code>, <code>mail:write</code>, <code>mail:send</code>, <code>mail:delete</code></td><td>High – Critical</td></tr>
+              <tr><td>Calendar</td><td><code>calendar:read</code>, <code>calendar:write</code>, <code>calendar:delete</code></td><td>Medium – High</td></tr>
+              <tr><td>Contacts</td><td><code>contacts:read</code>, <code>contacts:write</code>, <code>contacts:delete</code></td><td>Medium – High</td></tr>
+              <tr><td>Device</td><td><code>device:notifications</code>, <code>device:geolocation</code>, <code>device:camera</code>, <code>device:microphone</code></td><td>Low – Critical</td></tr>
+              <tr><td>System</td><td><code>system:info</code>, <code>system:settings</code>, <code>system:apps</code>, <code>system:app-launch</code>, <code>system:events</code>, <code>system:root</code>, <code>system:background</code>, <code>system:background:live</code>, <code>system:autostart</code></td><td>Low – Critical</td></tr>
+              <tr><td>Admin</td><td><code>admin:apps</code>, <code>admin:users</code>, <code>admin:system</code>, <code>admin:audit</code></td><td>High – Critical</td></tr>
+              <tr><td>Sandbox</td><td><code>sandbox:nested-webview</code>, <code>sandbox:same-origin</code>, <code>sandbox:escape-popups</code></td><td>High – Critical</td></tr>
+            </table>
+            <p>Hover any permission in the Permissions tab (or in the manifest editor) for its exact risk level and description.</p>
+            <p class="help-note"><code>admin:*</code> permissions also require the machine itself to be in Admin Access mode (Settings → Privacy &amp; Security) — granting the permission alone isn't enough. <code>mail:*</code> always acts on whichever account the user has connected via the Email app; there's no way to supply separate credentials.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="signing">
+            <h3>Building</h3>
+            <p>Hitting <strong>Build</strong> validates your manifest and permissions, Base64-encodes every project file, generates a signature over the payload, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="shortcuts">
+            <h3>Keyboard shortcuts</h3>
+            <table class="help-table help-table--shortcuts">
+              <tr><td><kbd id="help-kbd-palette">Ctrl+Shift+P</kbd></td><td>Command palette — jump to any action</td></tr>
+              <tr><td><kbd id="help-kbd-quickopen">Ctrl+P</kbd></td><td>Quick open — jump to any file</td></tr>
+              <tr><td><kbd id="help-kbd-save">Ctrl+S</kbd></td><td>Save current file</td></tr>
+              <tr><td><kbd>Ctrl+F</kbd></td><td>Find / replace in current file</td></tr>
+              <tr><td><kbd>Esc</kbd></td><td>Close any open modal or menu</td></tr>
+            </table>
+            <p class="help-note">Shortcuts shown use <span id="help-mod-key">Ctrl</span> — substitute <kbd>⌘</kbd> on macOS.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="faq">
+            <h3>Frequently asked questions</h3>
+
+            <p><strong>My app won't install / gets flagged on install — why?</strong></p>
+            <p>An inline <code>&lt;script&gt;</code> block with real code in <code>index.html</code> is blocked by the install-time content scanner. Put the code in a sibling file and reference it instead:</p>
+            <pre class="help-code">&lt;script src="app.js" defer&gt;&lt;/script&gt;</pre>
+            <p>For packaged apps, the host defers external entry-page scripts until HTML parsing is complete, so code in <code>app.js</code> can access elements declared in the page without a <code>DOMContentLoaded</code> wrapper. Keep <code>defer</code> to preserve the same behavior when testing outside NovaByte OS. Dynamically created scripts and documents keep normal browser timing.</p>
+
+            <p><strong>Where do I put third-party libraries?</strong></p>
+            <p>Drop single minified files (JS/CSS) into the <code>vendor/</code> folder in your project — they're bundled automatically at Build time. Reference them as <code>&lt;script src="vendor/yourlib.min.js" defer&gt;&lt;/script&gt;</code>. Don't copy entire <code>node_modules</code> folders in.</p>
+
+            <p><strong>My manifest permission isn't doing anything?</strong></p>
+            <p>Studio lists all 40 supported permissions in the Permissions section of this Help window. Some permissions also need a matching manifest flag: <code>sandbox:nested-webview</code> needs <code>"allowNestedWebview": true</code>, <code>sandbox:same-origin</code> needs <code>"sandbox": { "allowSameOrigin": true }</code>, and <code>sandbox:escape-popups</code> needs <code>"allowPopupsToEscapeSandbox": true</code>. Both the permission and its flag are required. Low-risk permissions are auto-granted when declared unless previously denied; denial of any permission does not block app launch.</p>
+
+            <p><strong>Still stuck?</strong></p>
+            <p>Open the Command Palette (<kbd>Ctrl+Shift+P</kbd>) and search for an action by name, or consult <code>NOVAAPP.md</code> in the Studio repository for the complete manifest, permission, and IPC API reference.</p>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CodeMirror 6 — bundled via esbuild (see package.json scripts) -->
+  <script src="./src/ui/editor.bundle.js"></script>
+  <script>
+    // Initialize window.CM and window.CMDiff from the bundled IIFE
+    // The esbuild bundle (--global-name=_CMLoaded) exports to _CMLoaded
+    if (typeof _CMLoaded !== 'undefined') {
+      if (!window.CM && _CMLoaded.CM) window.CM = _CMLoaded.CM;
+      if (!window.CMDiff && _CMLoaded.CMDiff) window.CMDiff = _CMLoaded.CMDiff;
+    }
+    // If the bundle properly set window.CM directly (non-IIFE approach), those are already available
+    // This block is just a fallback for IIFE bundles.
+  </script>
+  <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <script src="node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="./src/ui/design-pro.js"></script>
+  <script src="./src/ui/app.js"></script>
+  <script>
+    (function () {
+      const methodSelect = document.getElementById('sign-method-select');
+      const integritySelect = document.getElementById('sign-integrity-select');
+      const customRow = document.getElementById('sign-custom-key-row');
+      const devKeyRow = document.getElementById('sign-dev-key-row');
+      const generateBtn = document.getElementById('btn-sign-generate-key');
+      if (!methodSelect) return;
+
+      // Signing method and integrity method are independent settings and must
+      // not trigger each other's side effects. Previously both selects shared
+      // one updateMethodUI() handler, so switching the *integrity* dropdown
+      // (e.g. BLAKE3 -> SHA-256) also ran the signing-method branch below and
+      // silently regenerated a fresh dev keypair, discarding whatever key was
+      // already in use. Keypair generation must only ever be triggered by an
+      // actual change to the signing method.
+      function updateSigningUI() {
+        const method = methodSelect.value;
+        window.setSelectedSigningMethod?.(method);
+        if (customRow) customRow.classList.toggle('hidden', method !== 'custom');
+        if (devKeyRow) devKeyRow.classList.toggle('hidden', method === 'custom' || method === 'none');
+        if (method !== 'custom' && method !== 'none' && generateBtn && !generateBtn.disabled) {
+          generateBtn.click();
+        }
+      }
+
+      function updateIntegrityUI() {
+        window.setSelectedIntegrityMethod?.(integritySelect ? integritySelect.value : 'blake3');
+      }
+
+      methodSelect.addEventListener('change', updateSigningUI);
+      if (integritySelect) integritySelect.addEventListener('change', updateIntegrityUI);
+
+      // Wait until app.js has wired its signing handlers before syncing the
+      // initial method and integrity settings.
+      function runInitialSync() {
+        updateSigningUI();
+        updateIntegrityUI();
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', runInitialSync);
+      } else {
+        runInitialSync();
+      }
+    })();
+  </script>
+</body>
+
+</html>
