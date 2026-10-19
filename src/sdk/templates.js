@@ -1721,7 +1721,7 @@ main();`,
 </html>`,
 
       'app.js': (m) => `// ${escapeJsString(m.name)}
-// Uses Nova's host-managed BrowserView API for isolated site rendering.
+// Uses Nova's host-managed BrowserView API, with the supported legacy webview proxy as fallback.
 
 const HOME = 'https://example.com';
 const STORAGE_KEY = 'browser-last-url';
@@ -1748,10 +1748,106 @@ async function requireBrowserApi() {
     if (!result?.granted) throw new Error('Browser access was not granted.');
     browser = window.nova?.browser;
   }
-  if (typeof browser?.createView !== 'function') {
-    throw new Error('The Nova browser API is unavailable. Grant sandbox:nested-webview and restart the app.');
+  return typeof browser?.createView === 'function' ? browser : null;
+}
+
+function createLegacyBrowserView(container, initialUrl) {
+  const element = document.createElement('webview');
+  element.setAttribute('aria-label', 'Web page');
+  element.style.cssText = 'display:flex;width:100%;height:100%;border:0;';
+  container.replaceChildren(element);
+
+  const listeners = new Map();
+  let destroyed = false;
+  let lastState = {};
+  let pollTimer = null;
+
+  function emit(type, detail = {}) {
+    for (const listener of listeners.get(type) || []) {
+      listener({ type, detail });
+    }
   }
-  return browser;
+
+  function getState() {
+    return {
+      url: typeof element.getURL === 'function' ? element.getURL() : element.src,
+      title: typeof element.getTitle === 'function' ? element.getTitle() : '',
+      loading: typeof element.isLoading === 'function' ? element.isLoading() : false,
+      canGoBack: typeof element.canGoBack === 'function' ? element.canGoBack() : false,
+      canGoForward: typeof element.canGoForward === 'function' ? element.canGoForward() : false,
+    };
+  }
+
+  function refreshState() {
+    if (destroyed) return;
+    const state = getState();
+    if (state.url !== lastState.url) emit('url-change', { url: state.url });
+    if (state.title !== lastState.title) emit('title-change', { title: state.title });
+    if (state.url !== lastState.url ||
+        state.canGoBack !== lastState.canGoBack ||
+        state.canGoForward !== lastState.canGoForward) {
+      emit('state-change', state);
+    }
+    lastState = state;
+  }
+
+  element.addEventListener('loadstart', () => {
+    emit('navigation-start');
+    refreshState();
+  });
+  element.addEventListener('loadstop', () => {
+    emit('navigation-complete');
+    refreshState();
+  });
+  element.addEventListener('loadabort', (event) => {
+    if (event.isError) {
+      emit('navigation-error', {
+        errorDescription: event.errorDescription || event.reason || 'Navigation failed',
+      });
+    }
+    refreshState();
+  });
+  element.addEventListener('newwindow', (event) => {
+    emit('new-window', { url: event.targetUrl || event.url || '' });
+  });
+
+  const view = {
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    getState: async () => getState(),
+    navigate(url) {
+      element.src = url;
+    },
+    back() {
+      if (typeof element.goBack !== 'function' || !element.canGoBack?.()) {
+        throw new Error('Back navigation is unavailable.');
+      }
+      element.goBack();
+    },
+    forward() {
+      if (typeof element.goForward !== 'function' || !element.canGoForward?.()) {
+        throw new Error('Forward navigation is unavailable.');
+      }
+      element.goForward();
+    },
+    reload() {
+      if (typeof element.reload !== 'function') throw new Error('Reload is unavailable.');
+      element.reload();
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      clearInterval(pollTimer);
+      element.remove();
+      listeners.clear();
+    },
+  };
+
+  element.src = initialUrl;
+  pollTimer = setInterval(refreshState, 1000);
+  return view;
 }
 
 async function readLastUrl() {
@@ -1842,11 +1938,16 @@ function main() {
       setStatus('Starting browser…');
       const initialUrl = await readLastUrl();
       const browser = await requireBrowserApi();
-      browserView = await browser.createView({
-        container: els.viewport,
-        url: initialUrl,
-        pollingInterval: 1000,
-      });
+      if (browser) {
+        browserView = await browser.createView({
+          container: els.viewport,
+          url: initialUrl,
+          pollingInterval: 1000,
+        });
+      } else {
+        setStatus('Starting compatible browser view…');
+        browserView = createLegacyBrowserView(els.viewport, initialUrl);
+      }
       if (lifecycle.signal.aborted) {
         browserView.destroy();
         browserView = null;
