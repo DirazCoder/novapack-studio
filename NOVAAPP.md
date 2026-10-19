@@ -230,12 +230,12 @@ Declaring the manifest flag without the permission (or vice versa) still gets yo
 
 If your app just needs data to survive across launches — settings, save state, caches — and doesn't need real same-origin semantics (postMessage origin-matching, sharing cookies with the host), don't request `sandbox:same-origin` for this. Use [`nova:storage:*`](#storage-novastorage) instead: it's durable by default, requires no permission, and isn't affected by this at all.
 
-**Nested browser views:** creating an in-app browser view is gated separately and blocked by default. The supported Nova browser API is documented in [Building browser apps](#building-browser-apps). Legacy `<webview>` creation is proxied for compatibility; the host creates a sibling web-content view rather than a native child webview inside the app renderer. Both of these gates are required:
+**Nested browser views:** creating an in-app browser view is gated separately and blocked by default. The supported Nova browser API is documented in [Building browser apps](#building-browser-apps). Legacy `<webview>` creation is proxied for compatibility; the host creates a sibling web-content view rather than a native child webview inside the app renderer. Both an app opt-in and the user's grant are required:
 
-1. Your manifest declares `"allowNestedWebview": true` (a top-level manifest field, not nested under `sandbox`), **and**
+1. Your manifest declares `"allowNestedWebview": true` (a top-level field) or declares `sandbox:nested-webview` in `permissions`, **and**
 2. The user has granted the `sandbox:nested-webview` permission (declare it in `permissions` so it's requested at launch — see [Permissions](#permissions)).
 
-Declaring only one still blocks access. This is a critical permission because browser views expose live third-party web content and navigation; host-side network permissions continue to apply inside them.
+Without either opt-in or the grant, access is blocked. This is a critical permission because browser views expose live third-party web content and navigation; host-side network permissions continue to apply inside them.
 
 The old advice to delay the first navigation by one second is obsolete. The current host-mediated implementation creates the web-content view outside the app renderer. Prefer `window.nova.browser.createView()`: it waits for host-side view creation before starting the first navigation and gives your app a stable Nova API.
 
@@ -245,7 +245,7 @@ Use the Nova browser API for an in-app browser. It creates a host-managed browse
 
 #### 1. Declare browser permissions
 
-Nested browser content is a powerful capability. Both the manifest opt-in and user grant are required:
+Nested browser content is a powerful capability. The permission declaration opts the app in and requests the grant:
 
 ```json
 {
@@ -394,6 +394,62 @@ Nova events use `CustomEvent`; read event-specific information from `event.detai
 | `download-request` | `{ url }` when page content requests a download. |
 | `close`, `crash`, `destroy` | View lifecycle notifications. |
 
+#### Host-rendered overlays
+
+App DOM cannot paint above a host-managed browser view because it runs in a separate renderer. Use `window.nova.overlay.show()` to render custom HTML and CSS in a sandboxed host-layer frame. It requires the `sandbox:nested-webview` grant. The optional `bounds` are relative to the app viewport in CSS pixels; omitted bounds cover the app viewport. Use `data-nova-action` and `data-nova-field` attributes to receive user interactions. Call `hide()` when the overlay is no longer needed; replacing it, closing the app, or revoking the browser-view permission also removes it.
+
+```javascript
+const removeOverlayListener = window.nova.overlay.onEvent(event => {
+  if (event.type === 'click' && event.action === 'close-bookmarks') {
+    window.nova.overlay.hide();
+  } else if (event.type === 'input' && event.field === 'search') {
+    filterBookmarks(event.value);
+  }
+});
+
+await window.nova.overlay.show({
+  bounds: { left: 0, top: 0, width: 320, height: 560 },
+  html: `
+    <aside class="bookmark-panel">
+      <header><strong>Bookmarks</strong>
+        <button data-nova-action="close-bookmarks">Close</button>
+      </header>
+      <input data-nova-field="search" placeholder="Search bookmarks">
+    </aside>
+  `,
+  css: `
+    .bookmark-panel { box-sizing: border-box; height: 100%; padding: 16px;
+      color: #eee; background: #252538; font: 14px sans-serif; }
+    header { display: flex; justify-content: space-between; }
+  `
+});
+// Later, when the app is disposed:
+removeOverlayListener();
+await window.nova.overlay.hide();
+```
+
+Overlay HTML is sanitized and runs in a script-disabled frame with network access blocked. Handle user actions in the app using `data-nova-action` or `data-nova-field`; scripts and inline event handlers in the markup are not run. The `onEvent` callback receives `click`, `input`, `change`, `submit`, or `keydown` events with the `action`/`field` value and relevant input `value`, checkbox `checked`, or key `key`. `show()` resolves with `{ success: true, overlayId }`.
+
+For simple native-style menus, use `window.nova.contextMenu.show()` instead. Coordinates are client coordinates in the app viewport, such as `event.clientX` and `event.clientY`. Its Promise resolves with `{ cancelled: false, index }` after selection or `{ cancelled: true, index: null }` when dismissed:
+
+```javascript
+viewport.addEventListener('contextmenu', async event => {
+  event.preventDefault();
+  try {
+    const result = await window.nova.contextMenu.show(event.clientX, event.clientY, [
+      { label: 'Reload', icon: 'refresh' },
+      { separator: true },
+      { label: 'Close tab', danger: true }
+    ]);
+    if (!result.cancelled && result.index === 0) browserView.reload();
+  } catch (error) {
+    console.error('Could not show menu:', error);
+  }
+});
+```
+
+Menu items support `label` (required), `icon`, `shortcut`, `disabled`, and `danger`; separators use `{ separator: true }`. `window.nova.contextMenu.hide()` dismisses the current app menu.
+
 #### Downloads and popups
 
 Page-initiated downloads are denied by default at the native webview boundary. Handle `download-request` and use Nova's save-dialog-backed download method instead of granting a website filesystem access:
@@ -467,7 +523,7 @@ Permissions are declared in `manifest.json` and checked before the app loads. Lo
 
 40 permissions across 9 categories. This mirrors `app-permission-manager.js` exactly — if you're hand-writing a manifest, these are the only strings `validateManifest` recognizes without a warning. (`data:export`/`data:backup`, previously listed here, don't exist as real permissions — they were dead metadata with no backing handler and have been removed from the OS entirely; the export feature in Settings isn't permission-gated.)
 
-All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, `sandbox:escape-popups`) work differently from every other permission in this table: the permission grant alone does nothing. Each also requires a matching manifest flag — `allowNestedWebview`, `sandbox.allowSameOrigin`, and `allowPopupsToEscapeSandbox` respectively — and both the grant and the flag must be present or the underlying sandbox attribute is never added. See each row's description below for the exact manifest key.
+The three Sandbox permissions have additional manifest opt-ins. `sandbox:nested-webview` requires either the top-level `allowNestedWebview` field or its declaration in `permissions`, as well as the user grant. `sandbox:same-origin` requires `sandbox.allowSameOrigin`, and `sandbox:escape-popups` requires `allowPopupsToEscapeSandbox`; those flags and the matching grants must both be present before the underlying sandbox attributes are added.
 
 `clipboard:read`/`clipboard:write` are distinct: reading clipboard contents remains high-risk, while writing is low-risk and auto-granted when declared. Existing apps with `vfs:read` retain the old clipboard fallback for compatibility; new manifests should request the clipboard permission they actually need.
 
@@ -514,7 +570,7 @@ All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, 
 | `admin:users` | Admin | Critical | Session monitors, force-logout tools (needs admin mode) |
 | `admin:system` | Admin | Critical | Security-policy dashboards, lockout/IP-block tuning (needs admin mode) |
 | `admin:audit` | Admin | High | Security/activity log viewers (needs admin mode) |
-| `sandbox:nested-webview` | Sandbox | Critical | Apps that create their own `<webview>` for in-app browsing (browser-style apps). Also requires `"allowNestedWebview": true` in the manifest — the permission alone does nothing. |
+| `sandbox:nested-webview` | Sandbox | Critical | Apps that create their own browser views for in-app browsing; requires the top-level `allowNestedWebview` opt-in or a `permissions` declaration, plus the user grant. |
 | `sandbox:same-origin` | Sandbox | High | Apps that need a stable origin for cross-tab logic or an IPC bridge depending on `window.location.origin` matching, or that need `localStorage`/cookies to survive relaunch (see [Launch — sandbox](#launch--sandbox)). Also requires `"sandbox": { "allowSameOrigin": true }` in the manifest — the permission alone does nothing. |
 | `sandbox:escape-popups` | Sandbox | High | Apps whose popups need to open as normal, unsandboxed browser windows (e.g. OAuth flows, external checkout). Also requires `"allowPopupsToEscapeSandbox": true` in the manifest — the permission alone does nothing. |
 
