@@ -1373,10 +1373,8 @@ The `.novaapp` format is used by NovaByte OS and compatible NBOSP forks. Runtime
 
 ### API evolution and backward compatibility
 
-NovaByte is a fun project, not a promise of enterprise-grade support. Still, `.novaapp` apps are a big part of what makes the OS fun, so keep compatibility in mind when changing the runtime. As a practical rule, follow an additive approach like the Windows API model: preserve existing API names and documented behavior when adding capabilities.
+Existing `.novaapp` APIs remain available to apps that already use them. When NovaByte adds different behavior, it will be provided through a new API so existing apps can keep working.
 
-Avoid silently changing an existing API's behavior or incompatibly changing its arguments or return shape. When a different behavior is needed, prefer a separately named API, method, event, or manifest option. Keep the old form working where practical, and briefly document which form new apps should use.
-
-If an API really needs to be retired, mark it deprecated and give app authors a migration path before removing it. Apply the same common-sense approach to permissions, manifest fields, event names, and other app-visible behavior.
+This does not mean bugs or security issues are left unfixed. NovaByte may fix an existing API when it has a genuine bug or vulnerability, while taking care to avoid breaking apps that rely on it.
 
 ---
