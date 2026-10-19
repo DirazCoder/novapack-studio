@@ -226,7 +226,7 @@ Third-party apps run inside an NW.js `<webview>` element, not an iframe — a se
 
 Declaring the manifest flag without the permission (or vice versa) still gets you a sandbox with no `allow-same-origin`. This is `high` risk — expect it to draw extra scrutiny before your app is verified.
 
-**Without this permission, raw browser storage in your app's own sandbox does not survive relaunch.** `allow-same-origin` isn't just about *access* while your app is running — a guest page can always call `localStorage.setItem()`/set cookies regardless of this permission, since the sandbox attribute doesn't disable those APIs. What the permission actually controls is whether that data is kept on the next launch: when your app's window closes, the OS clears its app-sandbox storage partition unless it holds a live `sandbox:same-origin` grant at that moment. So without the permission, any raw `localStorage`/cookie values your app writes are wiped as soon as it closes — they'll be gone on the next open, even though reads/writes work fine within a single session. This applies every time the app is fully closed (not backgrounded via `stayAliveInBackground()`), so a revoked grant takes effect the next time the app closes, not immediately. This is separate from nested browser views, which use their own persistent web-content partition.
+**Do not rely on raw browser storage for durable data or guaranteed erasure.** Apps without `sandbox:same-origin` have their `persist:app_<appId>` execution partition cleared on final close; cleanup is serialized per app and a new launch waits for any required clear to finish. If clearing fails, the OS logs the failure and refuses to launch that app until a later retry succeeds. Revoking `sandbox:same-origin` closes that app's live sandbox windows and marks the partition for cleanup before a replacement launch. This is a fail-closed cleanup policy, **not** a forensic secure-erasure guarantee, and it does not affect `nova:storage:*` or the separate partitions used by nested browser views. For settings and save data that must persist, use [`nova:storage:*`](#storage-novastorage); do not store secrets in raw `localStorage` or cookies.
 
 If your app just needs data to survive across launches — settings, save state, caches — and doesn't need real same-origin semantics (postMessage origin-matching, sharing cookies with the host), don't request `sandbox:same-origin` for this. Use [`nova:storage:*`](#storage-novastorage) instead: it's durable by default, requires no permission, and isn't affected by this at all.
 
@@ -453,7 +453,7 @@ const info = await window.nova.ipc('nova:ready', {});
 console.log(info.permissions, info.optionalPermissions);
 ```
 
-`window.fetch` and `XMLHttpRequest` inside your app are also transparently routed through this bridge — plain `fetch(url, opts)` calls work as expected and don't need to be rewritten to use `nova.ipc` directly, as long as the relevant `net:*` permission is granted.
+`window.fetch` and `XMLHttpRequest` inside your app are routed through the permission-checking bridge. `fetch()` remains the preferred API. The asynchronous `XMLHttpRequest` compatibility layer supports property callbacks and event listeners, string and supported binary/form request bodies (up to 6 MiB), real CRLF response-header formatting, and text/JSON/ArrayBuffer/Blob response types. It intentionally rejects synchronous XHR. `timeout` raises timeout/loadend events in the guest, but currently does not cancel the in-flight host request; incremental download/upload progress, upload-target events, and credentialed XHR are not implemented. Use `fetch()` for new code and do not depend on the unsupported features.
 
 There is no `window.__novaPrivateStore` — for isolated, namespaced storage, use `nova:storage:*` (see [Storage](#storage-novastorage) below), which is backed by the host, not raw `localStorage` inside the guest. Host-backed storage is always durable across launches regardless of permissions — raw `localStorage`/cookies inside the guest are not (see [Launch — sandbox](#launch--sandbox)).
 
@@ -482,7 +482,7 @@ All three Sandbox permissions (`sandbox:nested-webview`, `sandbox:same-origin`, 
 | `vfs:write` | Filesystem | High | Writing only to your own app data |
 | `vfs:delete` | Filesystem | Critical | Deleting shared files and your own app data |
 | `vfs:metadata` | Filesystem | Low | Listing/sizing files without reading contents |
-| `net:internal` | Network | High | Calling this OS's own API/server endpoints — also reaches private-network and cloud metadata addresses (169.254.169.254), not just same-origin |
+| `net:internal` | Network | High | Calling this OS's own API/server endpoints and explicitly authorized internal/private-network destinations; known cloud-metadata address literals are blocked by the network guards |
 | `net:external` | Network | Low | Calling public internet services (declare in the manifest; auto-granted unless previously denied) |
 | `net:websocket` | Network | Low | Public WebSocket connections (declare in the manifest; auto-granted unless previously denied) |
 | `mail:read` | Email | High | Inbox viewers, search, unread-count widgets |
@@ -867,7 +867,7 @@ const data = await res.json();
 
 ### WebSocket — `nova:net:websocket` / `window.nova.websocket`
 
-Requires `net:websocket`. Don't call the raw `nova:net:websocket` / `nova:net:ws:send` / `nova:net:ws:close` IPC methods directly — use the `window.nova.websocket()` wrapper, which handles requestId bookkeeping and event dispatch for you:
+Requires `net:websocket`. Only `ws:` and `wss:` URLs are accepted; credential-bearing URLs and known cloud-metadata address literals are blocked. Literal loopback/private/link-local addresses and NovaByte's internal hosts also require `net:internal` in addition to `net:websocket`. The host validates the URL before opening it; hostname classification is based on the URL hostname, so deployments that use private DNS aliases should apply network egress controls as a second layer. Don't call the raw `nova:net:websocket` / `nova:net:ws:send` / `nova:net:ws:close` IPC methods directly — use the `window.nova.websocket()` wrapper, which handles requestId bookkeeping and event dispatch for you:
 
 ```javascript
 const ws = await window.nova.websocket('wss://example.com/socket');
@@ -1378,3 +1378,38 @@ Existing `.novaapp` APIs remain available to apps that already use them. When No
 This does not mean bugs or security issues are left unfixed. NovaByte may fix an existing API when it has a genuine bug or vulnerability, while taking care to avoid breaking apps that rely on it.
 
 ---
+
+---
+
+## AppSandbox remediation log — 2026-10-19
+
+The eight implementation findings in the 2026-10-19 AppSandbox audit have been patched in the source and regression tests. The list below records the fix, relevant files, and any known compatibility boundary. Source line numbers are deliberately omitted because they change with maintenance; search for the named helper or IPC route.
+
+### Fixed findings
+
+| ID | Finding | Remediation | Regression coverage |
+|---|---|---|---|
+| SBX-01 | Guest apps could call Settings/system-only IPC handlers | `app-sandbox.js` removes system settings/permission-management/data-mutation/Clock channels from `API_HANDLERS` and rejects them before side effects with `PERMISSION_DENIED`. `nova:system:info` remains distinct and follows its existing permission check. | Every forbidden route is asserted absent and denied before permission mutation/storage effects. |
+| SBX-02 | Launch options could terminate the inline script | Launch-option JSON is escaped using literal `\u003c`, `\u003e`, `\u0026`, `\u2028`, and `\u2029` escapes before insertion. | Malicious `</script><script>` input and Unicode separators are checked against emitted HTML and parsed JSON. |
+| SBX-03 | Teardown looked up resources after deleting the sandbox registry entry | Teardown closes WebSockets and cleans nested views, popup state, appearance subscriptions, and registered cleanup callbacks from the captured sandbox record rather than looking it up again. | Tests delete the active registry entry before invoking cleanup and assert captured resources still close. |
+| SBX-04 | Public WebSocket permission could target internal address literals | WebSocket creation validates `ws:`/`wss:`, rejects credentials/metadata hosts, classifies loopback/private/link-local, common local DNS suffixes, single-label intranet names, and known internal hosts, and requires `net:internal` for those destinations. | Tests cover public URL acceptance, private IPv4/IPv6/loopback denial without `net:internal`, metadata-host denial, and unsupported protocols. |
+| SBX-05 | Shared Clock IPC was reachable from sandbox guests | `nova:clock:*` routes are no longer guest-callable and are denied with the other host-only APIs. | The restricted-channel test enumerates every removed Clock route. |
+| SBX-06 | XHR callbacks, request bodies, headers and response types were incomplete | XHR now wires `on*` callbacks and event listeners; supports URL-encoded, FormData, Blob, ArrayBuffer and ArrayBufferView bodies (capped at 6 MiB); uses CRLF response-header lines; and exposes text/JSON/ArrayBuffer/Blob responses. GET/HEAD bodies are suppressed. The proxy accepts strictly validated base64 request bodies and applies the matching size limit. | Shim-generation tests compile the guest script; tests and source-level coverage verify body/header code paths. |
+| SBX-07 | `transparent: true` depended on a literal `<head>` | The transparent-root style is inserted in the shared HTML shim path regardless of whether the entry document has a `<head>` or a doctype. | Test asserts style injection for an entry containing no `<head>`. |
+| SBX-08 | Partition cleanup raced with launch and ignored same-origin revocation | Cleanup is serialized by app ID. Same-origin revocation (including revoke-all) marks cleanup required and closes active guest windows. Cleanup failures retain the required marker, are logged, and block later launch until cleanup succeeds; the OS also refuses to clear a partition or relaunch while a sibling sandbox still uses that shared partition. The clear operation rejects on navigation/timeout/API errors rather than resolving as success. | A clear failure test asserts rejection, temporary-view removal, and unregister request; reset helper clears cleanup state between tests. |
+
+### Files changed
+
+- `NBOSP/js/platform/security/app-sandbox.js` — IPC allowlist, launch-option escaping, teardown, WebSocket guard, XHR implementation, transparency injection, partition cleanup.
+- `NBOSP/js/platform/security/app-permission-manager.js` — invokes the AppSandbox revocation hook after individual denials and when revoke-all removes same-origin access.
+- `NBOSP/server/proxies.js` — validates base64 request bodies and enforces a 6 MiB body cap in the external proxy.
+- `NBOSP/test/client/app-sandbox.test.js` — targeted regression tests for the security/correctness findings.
+- `NBOSP/test/client/app-permission-manager.test.js` — regression test for same-origin cleanup on revoke-all.
+- `NOVAAPP.md` — corrected API guidance and this remediation record.
+
+### Known boundaries and verification
+
+- WebSocket policy classifies the URL hostname before opening a connection and treats common local DNS suffixes and single-label intranet names as internal. A fully qualified public-looking DNS alias can still resolve differently from its apparent hostname, so production deployments should also enforce outbound network restrictions outside the renderer. The generic browser WebSocket API does not let this bridge pin DNS resolution and preserve ordinary TLS/SNI semantics at the same time.
+- XHR `timeout` emits guest-side timeout events but does not yet cancel the host-side network operation. True incremental progress/upload-target events, synchronous XHR, and credentialed XHR remain unsupported. Use `fetch()` for new code.
+- Partition cleanup prevents a replacement app renderer from starting while required cleanup is pending or has failed. This is not a claim of forensic secure erasure, does not wipe `nova:storage:*`, and does not clear the separately partitioned content of nested browser views.
+- Validation completed: `node --check` passed for all five changed JavaScript files; focused Node checks passed for generated shim syntax, launch-option escaping, transparent HTML injection, restricted IPC dispatch, WebSocket URL classification, and the partition-cleanup failure path. The Vitest suite could not be run in this workspace because the `npm ci` install did not complete and `node_modules/vitest` remains incomplete; the newly added Vitest tests have not been executed here. Run `npm test` in `NBOSP/` with the project's dependencies installed before release.
