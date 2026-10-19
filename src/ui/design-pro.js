@@ -87,10 +87,14 @@
     if (!s || !s.projectDir) return null;
     const fs = _fs(), p = _path();
     if (!fs || !p) return null;
-    const fp = p.join(s.projectDir, 'index.html');
-    if (!fs.existsSync(fp)) return null;
+    const projectFiles = window._designGetProjectFiles?.();
+    const fp = projectFiles?.html;
+    if (!fp) return null;
     try { return { path: fp, text: fs.readFileSync(fp, 'utf8') }; }
-    catch { return null; }
+    catch (err) {
+      _showToast(`Could not read entry HTML "${p.relative(s.projectDir, fp)}": ${err.message}`);
+      return null;
+    }
   }
 
   function _readStyleCss() {
@@ -98,16 +102,18 @@
     if (!s || !s.projectDir) return null;
     const fs = _fs(), p = _path();
     if (!fs || !p) return null;
-    // Common locations: ./style.css and ./src/ui/style.css
-    const candidates = ['style.css', 'src/ui/style.css', 'styles.css', 'css/style.css'];
-    for (const rel of candidates) {
-      const fp = p.join(s.projectDir, rel);
-      if (fs.existsSync(fp)) {
-        try { return { path: fp, text: fs.readFileSync(fp, 'utf8') }; }
-        catch { /* try next */ }
+    const linked = window._designGetProjectFiles?.()?.stylesheets || [];
+    const files = [];
+    for (const fp of linked) {
+      try { files.push({ path: fp, text: fs.readFileSync(fp, 'utf8') }); }
+      catch (err) {
+        _showToast(`Could not read linked stylesheet "${p.relative(s.projectDir, fp)}": ${err.message}`);
+        return null;
       }
     }
-    return null;
+    return files.length
+      ? { path: files[0].path, text: files.map((file) => file.text).join('\n'), files }
+      : null;
   }
 
   function _readAppJs() {
@@ -115,15 +121,44 @@
     if (!s || !s.projectDir) return null;
     const fs = _fs(), p = _path();
     if (!fs || !p) return null;
-    const candidates = ['app.js', 'src/app.js', 'src/ui/app.js'];
-    for (const rel of candidates) {
-      const fp = p.join(s.projectDir, rel);
-      if (fs.existsSync(fp)) {
-        try { return { path: fp, text: fs.readFileSync(fp, 'utf8') }; }
-        catch { /* try next */ }
+    const linked = window._designGetProjectFiles?.()?.scripts || [];
+    const scripts = [];
+    for (const fp of linked) {
+      try { scripts.push({ path: fp, text: fs.readFileSync(fp, 'utf8') }); }
+      catch (err) {
+        _showToast(`Could not read linked script "${p.relative(s.projectDir, fp)}": ${err.message}`);
+        return null;
       }
     }
-    return null;
+    if (!scripts.length) return null;
+    const score = (file) => /^(?:app|main|index)(?:\.[^.]+)?$/i.test(p.basename(file.path)) ? 0 : 1;
+    scripts.sort((a, b) => score(a) - score(b) || linked.indexOf(a.path) - linked.indexOf(b.path));
+    return { ...scripts[0], files: scripts };
+  }
+
+  function _writeCssUpdates(cssFile, updates) {
+    const fs = _fs();
+    if (!fs || !cssFile?.files?.length) return false;
+    const originals = new Map(cssFile.files.map((file) => [file.path, file.text]));
+    const written = [];
+    try {
+      for (const [filePath, text] of updates) {
+        if (!originals.has(filePath)) throw new Error('Refusing to write a stylesheet not linked by the entry HTML.');
+        written.push(filePath);
+        fs.writeFileSync(filePath, text, 'utf8');
+      }
+      _noteOwnSourceWrite();
+      return true;
+    } catch (err) {
+      const rollbackErrors = [];
+      for (const filePath of written.reverse()) {
+        try { fs.writeFileSync(filePath, originals.get(filePath), 'utf8'); }
+        catch (rollbackErr) { rollbackErrors.push(rollbackErr.message); }
+      }
+      const suffix = rollbackErrors.length ? ` Rollback incomplete: ${rollbackErrors.join('; ')}` : '';
+      _showToast(`Could not write linked stylesheet: ${err.message}.${suffix}`);
+      return false;
+    }
   }
 
   // ── postMessage bridge into the design iframe ─────────────────────────────
@@ -1329,13 +1364,21 @@
       .map(_renderActionBindingCode)
       .filter(Boolean)
       .join('\n\n');
-    const appFile = _readAppJs();
+    let appFile = _readAppJs();
     if (!appFile) {
       if (!code) return true;
-      _showToast('No app.js found in project');
-      return false;
+      const createdPath = window._designEnsureEntryScript?.();
+      if (!createdPath) {
+        _showToast('No linked project script is available for IPC bindings.');
+        return false;
+      }
+      try { appFile = { path: createdPath, text: _fs().readFileSync(createdPath, 'utf8') }; }
+      catch (err) {
+        _showToast('Could not read the new project script: ' + err.message);
+        return false;
+      }
     }
-    // Append (or replace) a managed block at the end of app.js
+    // Append (or replace) a managed block in the selected entry script.
     const MARKER_START = '// ── NBPro auto-injected IPC bindings ───────────────────────';
     const MARKER_END   = '// ── /NBPro auto-injected IPC bindings ────────────────────';
     const startIdx = appFile.text.indexOf(MARKER_START);
@@ -1352,13 +1395,13 @@
       _fs().writeFileSync(appFile.path, newText, 'utf8');
       return true;
     } catch (err) {
-      _showToast('Could not write app.js: ' + err.message);
+      _showToast('Could not write project script: ' + err.message);
       return false;
     }
   }
 
   // ── Reactive data binding ────────────────────────────────────────────────
-  // Bind an element's textContent to a top-level state key in app.js, or to
+  // Bind an element's textContent to a top-level state key in a linked script, or to
   // a key in a local JSON file. We scan app.js for `state.X = ` assignments
   // to surface candidate keys.
   function _scanAppStateKeys() {
@@ -1368,7 +1411,10 @@
     // Match `state.foo = ` and `state.bar.baz = ` patterns
     const re = /state\.([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
     let m;
-    while ((m = re.exec(appFile.text)) !== null) keys.add(m[1]);
+    for (const file of appFile.files || [appFile]) {
+      while ((m = re.exec(file.text)) !== null) keys.add(m[1]);
+      re.lastIndex = 0;
+    }
     return Array.from(keys).sort();
   }
 
@@ -1391,7 +1437,7 @@
         <label class="nbpro-ai-label">Bind to state key</label>
         <select class="nbpro-ai-select" id="nbpro-db-key">
           <option value="">— None —</option>
-          <optgroup label="app.js state">${opts}</optgroup>
+          <optgroup label="Linked script state">${opts}</optgroup>
           <option value="__file:local.json">— Load from local JSON —</option>
         </select>
       </div>
@@ -1484,8 +1530,13 @@
     if (!codeEl) return;
     const code = codeEl.textContent;
     if (!code || codeEl.dataset.ready !== 'true') { _showToast('Configure the binding first'); return; }
-    const appFile = _readAppJs();
-    if (!appFile) { _showToast('No app.js found'); return; }
+    let appFile = _readAppJs();
+    if (!appFile) {
+      const createdPath = window._designEnsureEntryScript?.();
+      if (!createdPath) { _showToast('No linked project script is available for data bindings.'); return; }
+      try { appFile = { path: createdPath, text: _fs().readFileSync(createdPath, 'utf8') }; }
+      catch (err) { _showToast('Could not read the new project script: ' + err.message); return; }
+    }
     const suffix = _proSelected?.path?.join('_') || 'element';
     const MARKER_START = `// ── NBPro auto-injected data binding ${suffix} ─────────────────────`;
     const MARKER_END   = `// ── /NBPro auto-injected data binding ${suffix} ───────────────────`;
@@ -1504,9 +1555,9 @@
     }
     try {
       _fs().writeFileSync(appFile.path, newText, 'utf8');
-      _showToast('Data binding injected into app.js');
+      _showToast('Data binding injected into the entry script');
     } catch (err) {
-      _showToast('Could not write app.js: ' + err.message);
+      _showToast('Could not write project script: ' + err.message);
     }
   }
 
@@ -1685,7 +1736,7 @@
 
   function _injectComponentHtml(html, css) {
     if (!_readIndexHtml()) {
-      _showToast('No readable index.html found');
+      _showToast('No readable entry HTML found');
       return false;
     }
     if (css && !_injectCssBlock(css)) return false;
@@ -1695,19 +1746,25 @@
   }
 
   function _injectCssBlock(css) {
-    const cssFile = _readStyleCss();
-    if (!cssFile) { _showToast('No style.css found'); return false; }
+    let cssFile = _readStyleCss();
+    if (!cssFile) {
+      const createdPath = window._designEnsureEntryStylesheet?.();
+      if (!createdPath) { _showToast('No linked stylesheet is available.'); return false; }
+      cssFile = _readStyleCss();
+    }
+    if (!cssFile?.files?.length) return false;
     const MARKER_START = '/* --- nbpro:components --- */';
     const MARKER_END   = '/* --- /nbpro:components --- */';
-    const startIdx = cssFile.text.indexOf(MARKER_START);
+    const target = cssFile.files.find((file) => file.text.includes(MARKER_START)) || cssFile.files[0];
+    const startIdx = target.text.indexOf(MARKER_START);
     let existing = '';
     if (startIdx >= 0) {
-      const endIdx = cssFile.text.indexOf(MARKER_END, startIdx);
+      const endIdx = target.text.indexOf(MARKER_END, startIdx);
       if (endIdx < 0) {
-        _showToast('Could not update style.css: the generated component block is incomplete.');
+        _showToast(`Could not update "${_path().relative(_state().projectDir, target.path)}": the generated component block is incomplete.`);
         return false;
       }
-      existing = cssFile.text.slice(startIdx + MARKER_START.length, endIdx).trim() + '\n';
+      existing = target.text.slice(startIdx + MARKER_START.length, endIdx).trim() + '\n';
     }
     // Dedup by hashing — skip if the exact CSS body is already present.
     const hash = _hashCode(css);
@@ -1716,19 +1773,12 @@
     const newSection = MARKER_START + '\n' + existing + block + MARKER_END + '\n';
     let newText;
     if (startIdx >= 0) {
-      const endIdx = cssFile.text.indexOf(MARKER_END, startIdx);
-      newText = cssFile.text.slice(0, startIdx) + newSection + cssFile.text.slice(endIdx + MARKER_END.length);
+      const endIdx = target.text.indexOf(MARKER_END, startIdx);
+      newText = target.text.slice(0, startIdx) + newSection + target.text.slice(endIdx + MARKER_END.length);
     } else {
-      newText = cssFile.text + '\n\n' + newSection;
+      newText = target.text + '\n\n' + newSection;
     }
-    try {
-      _fs().writeFileSync(cssFile.path, newText, 'utf8');
-      _noteOwnSourceWrite();
-      return true;
-    } catch (err) {
-      _showToast('Could not write style.css: ' + err.message);
-      return false;
-    }
+    return _writeCssUpdates(cssFile, new Map([[target.path, newText]]));
   }
 
   function _hashCode(s) {
@@ -1742,7 +1792,7 @@
 
   function _injectHtmlIntoBody(html) {
     const idx = _readIndexHtml();
-    if (!idx) { _showToast('No index.html found'); return false; }
+    if (!idx) { _showToast('No entry HTML found'); return false; }
     const insert = '\n' + html + '\n';
     let newText;
     if (/<\/body>/i.test(idx.text)) {
@@ -1802,9 +1852,9 @@
   // ═════════════════════════════════════════════════════════════════════════
   //   FEATURE 4 — Theme & Micro-Animation Inspector
   // ═════════════════════════════════════════════════════════════════════════
-  // The theme manager reads CSS variables defined in style.css (:root and
+  // The theme manager reads CSS variables defined in linked stylesheets (:root and
   // [data-theme="..."] blocks) and presents them as an editable palette.
-  // Edits write back to style.css via surgical regex replacement of the
+  // Edits write back to the matching linked stylesheet via surgical regex replacement of the
   // matching `--var: value;` line.
 
   function _extractThemeVars(cssText) {
@@ -1818,14 +1868,14 @@
     // sharing the same block. That looked merely like duplicated rows in
     // the Theme tab, but the real damage was on write-back: neither
     // fragment matches the actual selector text in the file, so "Write to
-    // style.css" silently no-opped for every :root/data-theme block while
+    // silently no-opped for every :root/data-theme block while
     // still showing a success toast.
     const out = {};
     // Selectors never legitimately contain /* */, so stripping comments
     // first can't eat real code -- and it stops the selector-capture group
     // below from running unbounded back into a preceding comment block
     // (which happened when comments sat directly above these rules, as
-    // they do in this project's style.css).
+    // they do in this project's CSS files).
     const noComments = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
     // Matches "<selector list>{...}" where the selector list contains
     // :root or [data-theme="..."] somewhere in it (so we don't pick up
@@ -1867,29 +1917,29 @@
 
   function _writeExtractedVarsToCss() {
     const cssFile = _readStyleCss();
-    if (!cssFile) { _showToast('No style.css found'); return; }
+    if (!cssFile?.files?.length) { _showToast('No linked stylesheet found'); return; }
     const vars = _extractColorsFromCss(cssFile.text);
     if (!Object.keys(vars).length) { _showToast('No color values found to extract'); return; }
     const entries = Object.entries(vars).map(([k, v]) => `  ${k}: ${v};`).join('\n');
     const rootBlock = `\n:root {\n${entries}\n}\n`;
     const varValues = new Set(Object.values(vars));
     const colorValRe = /(#[0-9a-fA-F]{3,8})\b|(rgba?\([^)]+\))|(hsla?\([^)]+\))/g;
-    let text = cssFile.text.replace(colorValRe, (match) => {
-      if (varValues.has(match)) {
-        for (const [k, v] of Object.entries(vars)) {
-          if (v === match) return `var(${k})`;
+    const updates = new Map();
+    cssFile.files.forEach((file, index) => {
+      let text = file.text.replace(colorValRe, (match) => {
+        if (varValues.has(match)) {
+          for (const [k, v] of Object.entries(vars)) {
+            if (v === match) return `var(${k})`;
+          }
         }
-      }
-      return match;
+        return match;
+      });
+      if (index === 0) text = rootBlock + text;
+      updates.set(file.path, text);
     });
-    text = rootBlock + text;
-    try {
-      _fs().writeFileSync(cssFile.path, text, 'utf8');
-      _noteOwnSourceWrite();
-      _showToast(`Extracted ${Object.keys(vars).length} CSS variables into :root`);
+    if (_writeCssUpdates(cssFile, updates)) {
+      _showToast(`Extracted ${Object.keys(vars).length} CSS variables into linked stylesheets`);
       _renderThemeManager();
-    } catch (err) {
-      _showToast('Could not write style.css: ' + err.message);
     }
   }
 
@@ -1898,13 +1948,13 @@
     if (!panel) return;
     const cssFile = _readStyleCss();
     if (!cssFile) {
-      panel.innerHTML = '<div class="nbpro-empty">No style.css found in this project.</div>';
+      panel.innerHTML = '<div class="nbpro-empty">No linked stylesheet found in this project.</div>';
       return;
     }
     const vars = _extractThemeVars(cssFile.text);
     const scopes = Object.keys(vars);
     if (!scopes.length) {
-      panel.innerHTML = '<div class="nbpro-empty">No CSS variables found in style.css.</div>' +
+      panel.innerHTML = '<div class="nbpro-empty">No CSS variables found in linked stylesheets.</div>' +
         '<button class="nbpro-btn nbpro-btn--primary" id="nbpro-tm-extract" style="margin-top:12px;">Extract CSS Variables from Colors</button>';
       const btn = panel.querySelector('#nbpro-tm-extract');
       if (btn) btn.addEventListener('click', () => {
@@ -1941,7 +1991,7 @@
     panel.innerHTML = presetRow + scopeHtml +
       `<div class="nbpro-ai-actions">
         <button class="nbpro-btn nbpro-btn--ghost" id="nbpro-tm-revert">Revert</button>
-        <button class="nbpro-btn nbpro-btn--primary" id="nbpro-tm-apply">Write to style.css</button>
+        <button class="nbpro-btn nbpro-btn--primary" id="nbpro-tm-apply">Write to stylesheets</button>
       </div>`;
     panel.querySelectorAll('.nbpro-var-input').forEach((el) => {
       el.addEventListener('input', (e) => {
@@ -2058,56 +2108,53 @@
 
   function _writeThemeVarsToCss() {
     const cssFile = _readStyleCss();
-    if (!cssFile) { _showToast('No style.css found'); return; }
+    if (!cssFile?.files?.length) { _showToast('No linked stylesheet found'); return; }
     if (Object.values(_themeLiveOverrides).some((vars) =>
       Object.values(vars).some((value) => /[;{}]/.test(value))
     )) {
       _showToast('A CSS variable value contains characters that cannot be written safely.');
       return;
     }
-    let text = cssFile.text;
-    let updatedScopes = 0;
-    Object.entries(_themeLiveOverrides).forEach(([scope, vars]) => {
-      // Find the scope's block, then replace each --var's value within it.
-      const selectorPattern = scope.split(/\s+/)
-        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('\\s+');
-      const scopeRe = new RegExp(
-        '(' + selectorPattern + '\\s*\\{)([^}]*)\\}',
-        'g'
-      );
-      let scopeUpdated = false;
-      text = text.replace(scopeRe, (_full, head, body) => {
-        scopeUpdated = true;
-        let newBody = body;
-        Object.entries(vars).forEach(([name, value]) => {
-          const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const varRe = new RegExp('(' + escapedName + '\\s*:\\s*)([^;]*);');
-          if (varRe.test(newBody)) {
-            newBody = value
-              ? newBody.replace(varRe, (_match, prefix) => prefix + value + ';')
-              : newBody.replace(varRe, '');
-          } else if (value) {
-            newBody = newBody.replace(/\s*$/, '') + `\n  ${name}: ${value};\n`;
-          }
+    const updatedScopes = new Set();
+    const updates = new Map();
+    for (const file of cssFile.files) {
+      let text = file.text;
+      Object.entries(_themeLiveOverrides).forEach(([scope, vars]) => {
+        const selectorPattern = scope.split(/\s+/)
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('\\s+');
+        const scopeRe = new RegExp(
+          '(' + selectorPattern + '\\s*\\{)([^}]*)\\}',
+          'g'
+        );
+        text = text.replace(scopeRe, (_full, head, body) => {
+          updatedScopes.add(scope);
+          let newBody = body;
+          Object.entries(vars).forEach(([name, value]) => {
+            const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const varRe = new RegExp('(' + escapedName + '\\s*:\\s*)([^;]*);');
+            if (varRe.test(newBody)) {
+              newBody = value
+                ? newBody.replace(varRe, (_match, prefix) => prefix + value + ';')
+                : newBody.replace(varRe, '');
+            } else if (value) {
+              newBody = newBody.replace(/\s*$/, '') + `\n  ${name}: ${value};\n`;
+            }
+          });
+          return head + newBody + '}';
         });
-        return head + newBody + '}';
       });
-      if (scopeUpdated) updatedScopes++;
-    });
-    if (Object.keys(_themeLiveOverrides).length && updatedScopes === 0) {
-      _showToast('Could not find the edited CSS variable scopes in style.css.');
+      if (text !== file.text) updates.set(file.path, text);
+    }
+    if (Object.keys(_themeLiveOverrides).length && updatedScopes.size === 0) {
+      _showToast('Could not find the edited CSS variable scopes in linked stylesheets.');
       return;
     }
-    try {
-      _fs().writeFileSync(cssFile.path, text, 'utf8');
-      _noteOwnSourceWrite();
-      _showToast('Theme variables written to style.css');
+    if (_writeCssUpdates(cssFile, updates)) {
+      _showToast('Theme variables written to linked stylesheets');
       _themeLiveOverrides = {};
       _themeLiveOriginals = {};
       _renderThemeManager();
-    } catch (err) {
-      _showToast('Could not write style.css: ' + err.message);
     }
   }
 
@@ -2313,7 +2360,7 @@
     _showToast(`Added transition to ${selector}`);
   }
 
-  // Pseudo-state and transition rules get written straight into style.css
+  // Pseudo-state and transition rules get written into the component stylesheet block
   // as `${selector} { ... }`, so a bare-tag selector (no id/class on the
   // element) would silently target every matching tag on the page instead
   // of just the one you picked -- e.g. writing `div:hover { ... }` and
@@ -2411,7 +2458,7 @@
   // highlight the affected DOM elements on the canvas.
 
   let _astSnapshot = {
-    html: null, css: null, htmlPath: null, cssPath: null, projectDir: null, ts: 0,
+    html: null, css: {}, htmlPath: null, projectDir: null, ts: 0,
   };
   let _diffQueue = []; // pending edits waiting for review
 
@@ -2420,9 +2467,8 @@
     const css = _readStyleCss();
     _astSnapshot = {
       html: html ? html.text : null,
-      css: css ? css.text : null,
+      css: Object.fromEntries((css?.files || []).map((file) => [file.path, file.text])),
       htmlPath: html?.path || null,
-      cssPath: css?.path || null,
       projectDir: _state()?.projectDir || null,
       ts: Date.now(),
     };
@@ -2482,9 +2528,22 @@
   function _computeAstDiff() {
     const html = _readIndexHtml();
     const css = _readStyleCss();
-    const htmlDiff = html ? _lineDiff(_astSnapshot.html, html.text) : [];
-    const cssDiff = css ? _lineDiff(_astSnapshot.css, css.text) : [];
-    return { htmlDiff, cssDiff, htmlPath: html?.path, cssPath: css?.path };
+    const htmlDiff = _astSnapshot.html === null && !html
+      ? []
+      : _lineDiff(_astSnapshot.html ?? '', html?.text ?? '');
+    const currentCss = Object.fromEntries((css?.files || []).map((file) => [file.path, file.text]));
+    const cssDiff = [];
+    const cssPaths = [...new Set([
+      ...Object.keys(_astSnapshot.css || {}),
+      ...Object.keys(currentCss),
+    ])].sort();
+    for (const cssPath of cssPaths) {
+      const diff = _lineDiff(_astSnapshot.css?.[cssPath] ?? '', currentCss[cssPath] ?? '');
+      if (diff.some((segment) => segment.type !== 'equal')) {
+        cssDiff.push({ type: 'equal', text: `/* ${cssPath} */` }, ...diff);
+      }
+    }
+    return { htmlDiff, cssDiff, htmlPath: html?.path, cssPath: cssPaths };
   }
 
   function _renderAstDiffPanel() {
@@ -2498,20 +2557,21 @@
       return;
     }
     const { htmlDiff, cssDiff, htmlPath, cssPath } = _computeAstDiff();
-    const renderDiff = (diff, path) => {
-      if (!diff.length) return `<div class="nbpro-diff-empty">No changes in ${path}</div>`;
+    const renderDiff = (diff, filePath) => {
+      if (!diff.length) return `<div class="nbpro-diff-empty">No changes in ${_esc(filePath)}</div>`;
       const lines = diff.slice(0, 500).map((seg) => {
         const cls = seg.type === 'add' ? 'nbpro-diff-add' :
                     seg.type === 'del' ? 'nbpro-diff-del' : 'nbpro-diff-eq';
         const prefix = seg.type === 'add' ? '+' : seg.type === 'del' ? '−' : ' ';
         return `<div class="nbpro-diff-line ${cls}"><span class="nbpro-diff-sign">${prefix}</span><span class="nbpro-diff-text">${_esc(seg.text)}</span></div>`;
       }).join('');
-      return `<div class="nbpro-diff-path">${path}</div><div class="nbpro-diff-body">${lines}</div>`;
+      return `<div class="nbpro-diff-path">${_esc(filePath)}</div><div class="nbpro-diff-body">${lines}</div>`;
     };
     modal.querySelector('#nbpro-ast-diff-left').innerHTML =
-      `<div class="nbpro-diff-title">index.html</div>` + renderDiff(htmlDiff, htmlPath || '(no file)');
+      `<div class="nbpro-diff-title">Entry HTML</div>` + renderDiff(htmlDiff, htmlPath || '(no file)');
     modal.querySelector('#nbpro-ast-diff-right').innerHTML =
-      `<div class="nbpro-diff-title">style.css</div>` + renderDiff(cssDiff, cssPath || '(no file)');
+      `<div class="nbpro-diff-title">Linked stylesheets</div>` +
+      renderDiff(cssDiff, cssPath.length ? cssPath.map((filePath) => _path().relative(_state().projectDir, filePath)).join(', ') : '(no linked stylesheets)');
     const stats = {
       add: htmlDiff.concat(cssDiff).filter((s) => s.type === 'add').length,
       del: htmlDiff.concat(cssDiff).filter((s) => s.type === 'del').length,
@@ -2555,25 +2615,25 @@
   function _revertAstDiff() {
     // Restore the snapshot, overwriting current files.
     const html = _readIndexHtml();
-    const css = _readStyleCss();
     const fs = _fs();
     if (!_state()?.projectDir || _astSnapshot.projectDir !== _state().projectDir) {
       _showToast('Capture a snapshot for the current project before reverting.');
       return;
     }
     const htmlPath = _astSnapshot.htmlPath || html?.path || null;
-    const cssPath = _astSnapshot.cssPath || css?.path || null;
-    if (!fs || (!htmlPath && !cssPath) ||
-        (_astSnapshot.html === null && _astSnapshot.css === null)) {
+    const baselineCss = _astSnapshot.css || {};
+    if (!fs || (!htmlPath && !Object.keys(baselineCss).length) ||
+        (_astSnapshot.html === null && !Object.keys(baselineCss).length)) {
       _showToast('No captured HTML/CSS baseline is available to restore.');
       return;
     }
-    let current;
+    let currentHtml = null;
+    const currentCss = new Map();
     try {
-      current = {
-        html: htmlPath && fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath, 'utf8') : null,
-        css: cssPath && fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : null,
-      };
+      currentHtml = htmlPath && fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath, 'utf8') : null;
+      for (const cssPath of Object.keys(baselineCss)) {
+        currentCss.set(cssPath, fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : null);
+      }
     } catch (err) {
       _showToast('Could not read current files for rollback: ' + err.message);
       return;
@@ -2587,14 +2647,11 @@
       }
     };
     try {
-      restoreFile(cssPath, _astSnapshot.css);
-      restoreFile(htmlPath, _astSnapshot.html);
+      for (const [cssPath, text] of Object.entries(baselineCss)) restoreFile(cssPath, text);
+      if (_astSnapshot.html !== null) restoreFile(htmlPath, _astSnapshot.html);
     } catch (err) {
       const rollbackErrors = [];
-      for (const [filePath, content] of [
-        [htmlPath, current.html],
-        [cssPath, current.css],
-      ]) {
+      for (const [filePath, content] of [[htmlPath, currentHtml], ...currentCss]) {
         try { restoreFile(filePath, content); }
         catch (rollbackErr) { rollbackErrors.push(rollbackErr.message); }
       }
@@ -2627,11 +2684,17 @@
     return (h >>> 0).toString(36);
   }
 
+  function _hashCssFiles(css) {
+    return _hashString((css?.files || [])
+      .map((file) => `${file.path}\0${file.text}`)
+      .join('\0'));
+  }
+
   function _captureKnownHashes() {
     const html = _readIndexHtml();
     const css = _readStyleCss();
     _lastKnownHash.html = html ? _hashString(html.text) : null;
-    _lastKnownHash.css = css ? _hashString(css.text) : null;
+    _lastKnownHash.css = _hashCssFiles(css);
     _lastKnownProjectDir = _state()?.projectDir || null;
   }
 
@@ -2644,9 +2707,15 @@
       return;
     }
     const html = _readIndexHtml();
+    const entryPath = window._designGetProjectFiles?.().html || null;
+    if (entryPath !== (_astSnapshot.htmlPath || null)) {
+      _captureAstSnapshot();
+      _captureKnownHashes();
+      return;
+    }
     const css = _readStyleCss();
     const htmlHash = html ? _hashString(html.text) : null;
-    const cssHash = css ? _hashString(css.text) : null;
+    const cssHash = _hashCssFiles(css);
     if (_lastKnownHash.html !== null && _lastKnownHash.html !== htmlHash) {
       _onSourceDrift('html', html);
       _lastKnownHash.html = htmlHash;
@@ -2672,7 +2741,7 @@
     _syncPollTimer = setInterval(_pollForSyncDrift, 1500);
   }
 
-  // Called by app.js right after it writes index.html/style.css from the
+  // Called by app.js right after it writes entry HTML/linked stylesheets from the
   // Design tab's own edit paths (debounced field edits, delete/insert/
   // duplicate, undo/redo). Those writes are expected -- not an external
   // change -- but _pollForSyncDrift has no way to tell the difference on

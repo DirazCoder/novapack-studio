@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
-const { pathToFileURL } = require('url');
+const { fileURLToPath, pathToFileURL } = require('url');
 // Used by the Design tab for source-accurate HTML/CSS patching (surgical
 // edits instead of whole-file overwrites) -- see the Design tab module
 // below for why. Requires `npm install parse5 css` in this project.
@@ -1005,6 +1005,7 @@ function loadProject(dir) {
           if (state.activeTab !== 'permissions') {
             populateManifestForm(updated);
           }
+          _designInvalidate();
         }
       }, 150);
     });
@@ -1532,6 +1533,7 @@ function saveManifest() {
     $('project-breadcrumb').textContent = state.projectName + '  \u00b7  ' + state.projectDir;
     addRecent(state.projectDir, state.projectName);
     showToast('manifest.json saved');
+    _designInvalidate();
 
     const manifestTab = tabs.find((t) => t.filePath === outPath);
     if (manifestTab) {
@@ -1717,7 +1719,7 @@ function initWindowDesigner() {
 }
 
 
-// Design tab: live click-to-select canvas over the project's index.html,
+// Design tab: live click-to-select canvas over the project's manifest entry HTML,
 // with an Attributes sidebar for editing the selected element and writing
 // changes back to disk.
 //
@@ -1725,7 +1727,7 @@ function initWindowDesigner() {
 // versions got each of these wrong:
 //
 // 1. SURGICAL WRITES, NOT FULL-FILE OVERWRITES. Every edit re-parses the
-//    *current on-disk* index.html/style.css with parse5/css (both track
+//    *current on-disk* entry HTML and linked stylesheets with parse5/css (both track
 //    exact source offsets), finds only the node/declaration that changed,
 //    and splices just that span. This preserves whatever formatting,
 //    comments, and structure the file already had, and means a hand-edit
@@ -1733,7 +1735,7 @@ function initWindowDesigner() {
 //    by a stale in-memory copy.
 //
 // 2. CLASS-AWARE STYLE EDITS. If the selected element has a class and
-//    that class has a real rule in style.css, editing e.g. "background"
+//    that class has a real rule in a linked stylesheet, editing e.g. "background"
 //    patches the CSS rule itself. Only falls back to an inline style
 //    attribute when there's no stylesheet rule to patch into -- and the
 //    Attributes panel says which mode is active so it's never a silent
@@ -1767,41 +1769,46 @@ let _designUndoProjectDir = null;
 let _designReloadPreserveSelection = false;
 const _DESIGN_MAX_UNDO = 50;
 
+function _designSnapshotFiles() {
+  const htmlPath = _designIndexPath();
+  if (!htmlPath) return null;
+  let html;
+  try { html = fs.readFileSync(htmlPath, 'utf8'); }
+  catch (err) {
+    showToast('Design: could not read the entry HTML for undo: ' + err.message);
+    return null;
+  }
+  const paths = _designProjectFiles(html, htmlPath).stylesheets;
+  const css = {};
+  try {
+    for (const filePath of paths) {
+      css[filePath] = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
+    }
+  } catch (err) {
+    showToast('Design: could not read a linked stylesheet for undo: ' + err.message);
+    return null;
+  }
+  return { html, css };
+}
+
 function _designPushUndo(label) {
   if (_designUndoProjectDir !== state.projectDir) {
     _designUndoStack = [];
     _designRedoStack = [];
     _designUndoProjectDir = state.projectDir;
   }
-  const htmlPath = _designIndexPath();
-  const cssPath = _designCssPath();
-  if (!htmlPath) {
+  const snapshot = _designSnapshotFiles();
+  if (!snapshot) {
     showToast('Design: open a project before editing.');
     return false;
   }
-  let htmlText;
-  try {
-    htmlText = fs.readFileSync(htmlPath, 'utf8');
-  } catch (err) {
-    showToast('Design: could not read index.html for undo: ' + err.message);
-    return false;
-  }
-  let cssText = null;
-  if (cssPath && fs.existsSync(cssPath)) {
-    try {
-      cssText = fs.readFileSync(cssPath, 'utf8');
-    } catch (err) {
-      showToast('Design: could not read style.css for undo: ' + err.message);
-      return false;
-    }
-  }
-  _designUndoStack.push({ html: htmlText, css: cssText, label: label || 'edit' });
+  _designUndoStack.push({ ...snapshot, label: label || 'edit' });
   if (_designUndoStack.length > _DESIGN_MAX_UNDO) _designUndoStack.shift();
   _designRedoStack.length = 0;
   return true;
 }
 
-function _designWriteSnapshot(target, current, htmlPath, cssPath, action) {
+function _designWriteSnapshot(target, current, htmlPath, action) {
   const restoreFile = (filePath, content) => {
     if (!filePath) return;
     if (content === null) {
@@ -1810,14 +1817,31 @@ function _designWriteSnapshot(target, current, htmlPath, cssPath, action) {
       fs.writeFileSync(filePath, content, 'utf8');
     }
   };
+  const cssPaths = Object.keys(target.css || {});
+  const rollbackCss = new Map();
   try {
-    restoreFile(cssPath, target.css);
+    for (const cssPath of cssPaths) {
+      rollbackCss.set(cssPath, fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : null);
+    }
+  } catch (err) {
+    showToast(`Could not read linked stylesheets before ${action}: ${err.message}`);
+    return false;
+  }
+  try {
+    for (const cssPath of cssPaths) {
+      if (Object.prototype.hasOwnProperty.call(target.css, cssPath)) {
+        restoreFile(cssPath, target.css[cssPath]);
+      }
+    }
     restoreFile(htmlPath, target.html);
     _designNoteOwnWrite();
     return true;
   } catch (err) {
     const rollbackErrors = [];
-    for (const [filePath, content] of [[htmlPath, current.html], [cssPath, current.css]]) {
+    for (const [filePath, content] of [
+      [htmlPath, current.html],
+      ...rollbackCss,
+    ]) {
       try { restoreFile(filePath, content); }
       catch (rollbackErr) { rollbackErrors.push(rollbackErr.message); }
     }
@@ -1840,20 +1864,11 @@ function _designDoUndo() {
     return;
   }
   const htmlPath = _designIndexPath();
-  const cssPath = _designCssPath();
   if (!htmlPath) { showToast('Design: open a project before undoing.'); return; }
-  let current;
-  try {
-    current = {
-      html: fs.readFileSync(htmlPath, 'utf8'),
-      css: cssPath && fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : null,
-    };
-  } catch (err) {
-    showToast('Could not undo: ' + err.message);
-    return;
-  }
+  const current = _designSnapshotFiles();
+  if (!current) return;
   const prev = _designUndoStack[_designUndoStack.length - 1];
-  if (!_designWriteSnapshot(prev, current, htmlPath, cssPath, 'undo')) return;
+  if (!_designWriteSnapshot(prev, current, htmlPath, 'undo')) return;
   _designUndoStack.pop();
   _designRedoStack.push(current);
   showToast('Undo: ' + (prev.label || 'edit'));
@@ -1870,20 +1885,11 @@ function _designDoRedo() {
     return;
   }
   const htmlPath = _designIndexPath();
-  const cssPath = _designCssPath();
   if (!htmlPath) { showToast('Design: open a project before redoing.'); return; }
-  let current;
-  try {
-    current = {
-      html: fs.readFileSync(htmlPath, 'utf8'),
-      css: cssPath && fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : null,
-    };
-  } catch (err) {
-    showToast('Could not redo: ' + err.message);
-    return;
-  }
+  const current = _designSnapshotFiles();
+  if (!current) return;
   const next = _designRedoStack[_designRedoStack.length - 1];
-  if (!_designWriteSnapshot(next, current, htmlPath, cssPath, 'redo')) return;
+  if (!_designWriteSnapshot(next, current, htmlPath, 'redo')) return;
   _designRedoStack.pop();
   _designUndoStack.push(current);
   if (_designUndoStack.length > _DESIGN_MAX_UNDO) _designUndoStack.shift();
@@ -1905,10 +1911,137 @@ function _designReloadFrame(preserveSelection = false) {
 }
 
 function _designIndexPath() {
-  return state.projectDir ? path.join(state.projectDir, 'index.html') : null;
+  if (!state.projectDir) return null;
+  const manifest = _readManifest(state.projectDir);
+  const entry = typeof manifest?.entry === 'string' && manifest.entry.trim()
+    ? manifest.entry.trim()
+    : 'index.html';
+  const projectRoot = path.resolve(state.projectDir);
+  const candidate = path.resolve(projectRoot, entry);
+  const relative = path.relative(projectRoot, candidate);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+
+  let rootReal;
+  try { rootReal = fs.realpathSync(projectRoot); }
+  catch (err) {
+    if (err.code === 'ENOENT') return candidate;
+    showToast('Design: could not resolve the project directory: ' + err.message);
+    return null;
+  }
+  let probe = candidate;
+  let probeReal;
+  while (true) {
+    try {
+      probeReal = fs.realpathSync(probe);
+      break;
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        showToast('Design: could not resolve the entry HTML path: ' + err.message);
+        return null;
+      }
+      const parent = path.dirname(probe);
+      if (parent === probe) return null;
+      probe = parent;
+    }
+  }
+  const realRelative = path.relative(rootReal, probeReal);
+  if (realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) return null;
+  const resolvedPath = path.resolve(probeReal, path.relative(probe, candidate));
+  const finalRelative = path.relative(rootReal, resolvedPath);
+  return finalRelative && finalRelative !== '..' &&
+    !finalRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(finalRelative)
+    ? resolvedPath
+    : null;
 }
-function _designCssPath() {
-  return state.projectDir ? path.join(state.projectDir, 'style.css') : null;
+
+function _designProjectFiles(htmlText, htmlPath = _designIndexPath()) {
+  if (!state.projectDir || !htmlPath) return { stylesheets: [], scripts: [] };
+  let root = path.resolve(state.projectDir);
+  try { root = fs.realpathSync(root); } catch { /* project may be newly created */ }
+  const doc = parse5.parse(htmlText, { sourceCodeLocationInfo: false });
+  let baseHref = null;
+  const findBase = (node) => {
+    if (baseHref !== null) return;
+    if (node.tagName === 'base') {
+      baseHref = node.attrs?.find((attr) => attr.name === 'href')?.value ?? null;
+      if (baseHref !== null) return;
+    }
+    for (const child of node.childNodes || []) findBase(child);
+  };
+  findBase(doc);
+  let assetBase = pathToFileURL(htmlPath).href;
+  if (baseHref) {
+    try { assetBase = new URL(baseHref, assetBase).href; }
+    catch { /* invalid base URL means local references cannot be resolved reliably */ }
+  }
+  const insideProject = (filePath) => {
+    const relative = path.relative(root, filePath);
+    return relative !== '' && relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  const resolveReference = (value) => {
+    if (!value || /^(?:data:|blob:|javascript:|#)/i.test(value.trim())) return null;
+    try {
+      const reference = value.trim().replace(/\\/g, '/');
+      const url = new URL(reference, assetBase);
+      if (url.protocol !== 'file:') return null;
+      let filePath = path.resolve(fileURLToPath(url));
+      if (!insideProject(filePath)) return null;
+      try {
+        filePath = fs.realpathSync(filePath);
+        if (!insideProject(filePath)) return null;
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      return filePath;
+    } catch {
+      return null;
+    }
+  };
+  const stylesheets = new Set();
+  const scripts = new Set();
+  const visit = (node) => {
+    if (node.tagName === 'link') {
+      const rel = node.attrs?.find((attr) => attr.name === 'rel')?.value || '';
+      const href = node.attrs?.find((attr) => attr.name === 'href')?.value || '';
+      if (rel.toLowerCase().split(/\s+/).includes('stylesheet')) {
+        const filePath = resolveReference(href);
+        if (filePath && path.extname(filePath).toLowerCase() === '.css') stylesheets.add(filePath);
+      }
+    } else if (node.tagName === 'script') {
+      const src = node.attrs?.find((attr) => attr.name === 'src')?.value || '';
+      const filePath = resolveReference(src);
+      if (filePath && /\.(?:m?js|cjs)$/i.test(filePath)) scripts.add(filePath);
+    }
+    for (const child of node.childNodes || []) visit(child);
+  };
+  visit(doc);
+  return { stylesheets: [...stylesheets], scripts: [...scripts] };
+}
+
+function _designLinkedCssPaths(htmlState) {
+  const entry = htmlState || _designReadHtml();
+  return entry ? _designProjectFiles(entry.text, entry.path).stylesheets : [];
+}
+
+function _designGetProjectFiles() {
+  const htmlState = _designReadHtml();
+  return htmlState
+    ? { html: htmlState.path, ..._designProjectFiles(htmlState.text, htmlState.path) }
+    : { html: _designIndexPath(), stylesheets: [], scripts: [] };
+}
+if (typeof window !== 'undefined') window._designGetProjectFiles = _designGetProjectFiles;
+function _designIsEntryAsset(filePath) {
+  if (!state.projectDir || !filePath) return false;
+  const projectFiles = _designGetProjectFiles();
+  const canonical = (assetPath) => {
+    try { return fs.realpathSync(assetPath); }
+    catch { return path.resolve(assetPath); }
+  };
+  const candidate = canonical(filePath);
+  return [projectFiles.html, ...projectFiles.stylesheets, ...projectFiles.scripts]
+    .filter(Boolean)
+    .some((assetPath) => path.relative(canonical(assetPath), candidate) === '');
 }
 
 // Writes a minimal starter index.html so a brand-new project has
@@ -1920,6 +2053,11 @@ function _designScaffoldIndexHtml() {
   const indexPath = _designIndexPath();
   if (!indexPath) return false;
   if (fs.existsSync(indexPath)) return true; // already there, nothing to do
+  try { fs.mkdirSync(path.dirname(indexPath), { recursive: true }); }
+  catch (err) {
+    showToast('Could not create entry HTML directory: ' + err.message);
+    return false;
+  }
   const starter = `<!DOCTYPE html>
 <html>
 <head>
@@ -1938,10 +2076,197 @@ function _designScaffoldIndexHtml() {
     fs.writeFileSync(indexPath, starter, 'utf8');
     return true;
   } catch (err) {
-    showToast('Could not create index.html: ' + err.message);
+    showToast('Could not create the entry HTML: ' + err.message);
     return false;
   }
 }
+
+function _designChooseScript(scripts) {
+  return [...scripts].sort((a, b) => {
+    const preferred = (filePath) => /^(?:app|main|index)(?:\.[^.]+)?$/i.test(path.basename(filePath)) ? 0 : 1;
+    return preferred(a) - preferred(b) || scripts.indexOf(a) - scripts.indexOf(b);
+  })[0] || null;
+}
+
+function _designResolveProjectFile(filePath) {
+  let rootReal;
+  try { rootReal = fs.realpathSync(state.projectDir); }
+  catch (err) { showToast('Design: could not resolve the project directory: ' + err.message); return null; }
+  let resolved;
+  try { resolved = fs.realpathSync(filePath); }
+  catch (err) {
+    if (err.code !== 'ENOENT') {
+      showToast('Design: could not resolve a project asset path: ' + err.message);
+      return null;
+    }
+    try { resolved = path.join(fs.realpathSync(path.dirname(filePath)), path.basename(filePath)); }
+    catch (parentErr) {
+      showToast('Design: could not resolve a project asset directory: ' + parentErr.message);
+      return null;
+    }
+  }
+  const relative = path.relative(rootReal, resolved);
+  return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+    ? resolved
+    : null;
+}
+
+function _designAssetReference(htmlState, assetPath) {
+  const doc = parse5.parse(htmlState.text, { sourceCodeLocationInfo: false });
+  let baseHref = null;
+  const findBase = (node) => {
+    if (baseHref !== null) return;
+    if (node.tagName === 'base') {
+      baseHref = node.attrs?.find((attr) => attr.name === 'href')?.value ?? null;
+      if (baseHref !== null) return;
+    }
+    for (const child of node.childNodes || []) findBase(child);
+  };
+  findBase(doc);
+  const entryUrl = pathToFileURL(htmlState.path).href;
+  let baseUrl;
+  try {
+    baseUrl = baseHref
+      ? new URL(baseHref, entryUrl)
+      : new URL(pathToFileURL(path.resolve(path.dirname(htmlState.path)) + path.sep).href);
+  } catch {
+    showToast('Could not add a local asset reference: entry HTML has an invalid base URL.');
+    return null;
+  }
+  if (baseUrl.protocol !== 'file:') {
+    showToast('Could not add a local asset reference while the entry HTML uses a remote base URL.');
+    return null;
+  }
+  let basePath;
+  try { basePath = fileURLToPath(baseUrl); }
+  catch (err) {
+    showToast('Could not resolve the entry HTML base URL: ' + err.message);
+    return null;
+  }
+  const baseDir = baseUrl.pathname.endsWith('/') ? basePath : path.dirname(basePath);
+  const relative = path.relative(baseDir, assetPath).split(path.sep).join('/');
+  const reference = relative.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  try {
+    if (fileURLToPath(new URL(reference, baseUrl)) !== assetPath) return null;
+  } catch {
+    return null;
+  }
+  return reference.startsWith('.') ? reference : `./${reference}`;
+}
+
+function _designEnsureEntryScript() {
+  const htmlState = _designReadHtml();
+  if (!htmlState) {
+    showToast('Could not prepare project script: entry HTML is unavailable.');
+    return null;
+  }
+  const { scripts } = _designProjectFiles(htmlState.text, htmlState.path);
+  const existing = _designChooseScript(scripts);
+  if (existing) return existing;
+
+  const scriptPath = _designResolveProjectFile(path.join(path.dirname(htmlState.path), 'app.js'));
+  if (!scriptPath) {
+    showToast('Could not create a project script outside the project directory.');
+    return null;
+  }
+  const doc = parse5.parse(htmlState.text, { sourceCodeLocationInfo: true });
+  let body = null;
+  let html = null;
+  const findNodes = (node) => {
+    if (node.tagName === 'body') body = node;
+    if (node.tagName === 'html') html = node;
+    for (const child of node.childNodes || []) findNodes(child);
+  };
+  findNodes(doc);
+  const insertAt = body?.sourceCodeLocation?.endTag?.startOffset ??
+    html?.sourceCodeLocation?.endTag?.startOffset ?? htmlState.text.length;
+  const src = _designAssetReference(htmlState, scriptPath);
+  if (!src) return null;
+  const updatedHtml = htmlState.text.slice(0, insertAt) +
+    `  <script src="${_escapeAttr(src)}"></script>\n` +
+    htmlState.text.slice(insertAt);
+  let createdScript = false;
+  try {
+    if (!fs.existsSync(scriptPath)) {
+      fs.writeFileSync(scriptPath, '', 'utf8');
+      createdScript = true;
+    }
+    fs.writeFileSync(htmlState.path, updatedHtml, 'utf8');
+    _designNoteOwnWrite();
+    return scriptPath;
+  } catch (err) {
+    if (createdScript) {
+      try { fs.unlinkSync(scriptPath); }
+      catch (cleanupErr) { console.error('[design] could not remove unreferenced script:', cleanupErr); }
+    }
+    showToast('Could not add a project script: ' + err.message);
+    return null;
+  }
+}
+
+if (typeof window !== 'undefined') window._designEnsureEntryScript = _designEnsureEntryScript;
+
+function _designEnsureEntryStylesheet() {
+  const htmlState = _designReadHtml();
+  if (!htmlState) {
+    showToast('Could not prepare a stylesheet: entry HTML is unavailable.');
+    return null;
+  }
+  const linked = _designProjectFiles(htmlState.text, htmlState.path).stylesheets;
+  if (linked.length) return linked[0];
+
+  const cssPath = _designResolveProjectFile(path.join(path.dirname(htmlState.path), 'style.css'));
+  if (!cssPath) {
+    showToast('Could not create a stylesheet outside the project directory.');
+    return null;
+  }
+  const doc = parse5.parse(htmlState.text, { sourceCodeLocationInfo: true });
+  let head = null;
+  let body = null;
+  let html = null;
+  const findNodes = (node) => {
+    if (node.tagName === 'head') head = node;
+    if (node.tagName === 'body') body = node;
+    if (node.tagName === 'html') html = node;
+    for (const child of node.childNodes || []) findNodes(child);
+  };
+  findNodes(doc);
+  const headClose = head?.sourceCodeLocation?.endTag?.startOffset;
+  const bodyOpen = body?.sourceCodeLocation?.startTag?.startOffset;
+  const htmlClose = html?.sourceCodeLocation?.endTag?.startOffset;
+  const href = _designAssetReference(htmlState, cssPath);
+  if (!href) return null;
+  const link = `<link rel="stylesheet" href="${_escapeAttr(href)}">\n`;
+  let updatedHtml;
+  if (Number.isInteger(headClose)) {
+    updatedHtml = htmlState.text.slice(0, headClose) + `  ${link}` + htmlState.text.slice(headClose);
+  } else if (Number.isInteger(bodyOpen)) {
+    updatedHtml = htmlState.text.slice(0, bodyOpen) + `<head>\n  ${link}</head>\n` + htmlState.text.slice(bodyOpen);
+  } else if (Number.isInteger(htmlClose)) {
+    updatedHtml = htmlState.text.slice(0, htmlClose) + `<head>\n  ${link}</head>\n` + htmlState.text.slice(htmlClose);
+  } else {
+    updatedHtml = `<head>\n  ${link}</head>\n` + htmlState.text;
+  }
+  let createdStylesheet = false;
+  try {
+    if (!fs.existsSync(cssPath)) {
+      fs.writeFileSync(cssPath, '', 'utf8');
+      createdStylesheet = true;
+    }
+    fs.writeFileSync(htmlState.path, updatedHtml, 'utf8');
+    _designNoteOwnWrite();
+    return cssPath;
+  } catch (err) {
+    if (createdStylesheet) {
+      try { fs.unlinkSync(cssPath); }
+      catch (cleanupErr) { console.error('[design] could not remove unreferenced stylesheet:', cleanupErr); }
+    }
+    showToast('Could not add a project stylesheet: ' + err.message);
+    return null;
+  }
+}
+
+if (typeof window !== 'undefined') window._designEnsureEntryStylesheet = _designEnsureEntryStylesheet;
 
 // Marker comments bracketing the auto-generated runtime block in the
 // project's app.js. Re-running this after another Modal/Data Table gets
@@ -2020,44 +2345,29 @@ ${_DESIGN_RUNTIME_END}`;
 // placed, so those components work the moment they're saved, not just
 // while previewed in the Design canvas.
 function _designEnsureRuntimeSupport() {
-  const projectDir = state.projectDir;
-  if (!projectDir) return;
-  const appJsPath = path.join(projectDir, 'app.js');
-  const indexPath = _designIndexPath();
-
-  let appJsText = '';
-  try { appJsText = fs.readFileSync(appJsPath, 'utf8'); } catch { appJsText = null; }
-
-  if (appJsText === null) {
-    const fresh = `(() => {\n${_designRuntimeSnippet()}\n})();\n`;
-    try {
-      fs.writeFileSync(appJsPath, fresh, 'utf8');
-    } catch (err) {
-      showToast('Could not create app.js: ' + err.message);
-      return;
-    }
-  } else if (!appJsText.includes(_DESIGN_RUNTIME_START)) {
-    const appended = appJsText.replace(/\s*$/, '') + `\n\n(() => {\n${_designRuntimeSnippet()}\n})();\n`;
-    try {
-      fs.writeFileSync(appJsPath, appended, 'utf8');
-    } catch (err) {
-      showToast('Could not update app.js: ' + err.message);
-      return;
-    }
+  const htmlState = _designReadHtml();
+  if (!htmlState) {
+    showToast('Could not prepare component runtime: entry HTML is unavailable.');
+    return false;
   }
-
-  // Make sure index.html actually loads app.js. Re-read fresh rather
-  // than trusting any in-memory copy, same rule the rest of this module
-  // follows.
-  let htmlText;
-  try { htmlText = fs.readFileSync(indexPath, 'utf8'); } catch { return; }
-  if (/<script[^>]+src=["']\.?\/?app\.js["']/.test(htmlText)) return; // already referenced
-  if (!/<\/body>/i.test(htmlText)) return; // no </body> to anchor on -- leave it, surface nothing (non-fatal)
-  const withScript = htmlText.replace(/<\/body>/i, '  <script src="app.js"></script>\n</body>');
+  let scriptPath = _designChooseScript(_designProjectFiles(htmlState.text, htmlState.path).scripts);
+  if (!scriptPath) scriptPath = _designEnsureEntryScript();
+  if (!scriptPath) return false;
+  let scriptText;
+  try { scriptText = fs.readFileSync(scriptPath, 'utf8'); }
+  catch (err) {
+    showToast(`Could not read linked script "${path.relative(state.projectDir, scriptPath)}": ${err.message}`);
+    return false;
+  }
+  if (scriptText.includes(_DESIGN_RUNTIME_START)) return true;
+  scriptText = scriptText.replace(/\s*$/, '') + `\n\n(() => {\n${_designRuntimeSnippet()}\n})();\n`;
   try {
-    fs.writeFileSync(indexPath, withScript, 'utf8');
+    fs.writeFileSync(scriptPath, scriptText, 'utf8');
+    _designNoteOwnWrite();
+    return true;
   } catch (err) {
-    showToast('Could not update index.html: ' + err.message);
+    showToast(`Could not update component runtime files: ${err.message}`);
+    return false;
   }
 }
 
@@ -2084,14 +2394,14 @@ function _parse5NodeAtPath(doc, pathArr) {
   return node;
 }
 
-// Returns { text, doc } for the current on-disk index.html, or null if it
+// Returns { text, doc } for the manifest entry HTML, or null if it
 // doesn't exist / can't be read.
 function _designReadHtml() {
   const p = _designIndexPath();
   if (!p) return null;
   let text;
   try { text = fs.readFileSync(p, 'utf8'); } catch (err) {
-    if (err.code !== 'ENOENT') showToast('Could not read index.html: ' + err.message);
+    if (err.code !== 'ENOENT') showToast('Could not read the entry HTML: ' + err.message);
     return null;
   }
   const doc = parse5.parse(text, { sourceCodeLocationInfo: true });
@@ -2182,19 +2492,23 @@ function _buildDeleteEdit(doc) {
 // ---------------------------------------------------------------------
 
 function _designReadCss() {
-  const p = _designCssPath();
-  if (!p) return null;
-  let text;
-  try { text = fs.readFileSync(p, 'utf8'); } catch (err) {
-    if (err.code !== 'ENOENT') showToast('Could not read style.css: ' + err.message);
-    return null;
+  const htmlState = _designReadHtml();
+  if (!htmlState) return null;
+  const cssFiles = [];
+  for (const filePath of _designProjectFiles(htmlState.text, htmlState.path).stylesheets) {
+    let text;
+    try { text = fs.readFileSync(filePath, 'utf8'); } catch (err) {
+      showToast(`Could not read linked stylesheet "${path.relative(state.projectDir, filePath)}": ${err.message}`);
+      return null;
+    }
+    let ast;
+    try { ast = cssParser.parse(text, { silent: false }); } catch (err) {
+      showToast(`Could not parse linked stylesheet "${path.relative(state.projectDir, filePath)}": ${err.message}`);
+      return null;
+    }
+    cssFiles.push({ text, ast, path: filePath });
   }
-  let ast;
-  try { ast = cssParser.parse(text, { silent: false }); } catch (err) {
-    showToast('Could not parse style.css: ' + err.message);
-    return null;
-  }
-  return { text, ast, path: p };
+  return cssFiles;
 }
 
 function _lineColToOffset(text, line, column) {
@@ -2370,8 +2684,8 @@ function _designFlushEdit() {
   );
 
   const htmlEdits = [];
-  let cssEditsNeeded = [];
-  let cssState = null;
+  const cssEditsByPath = new Map();
+  let cssFiles = null;
 
   if ('id' in edit) htmlEdits.push(..._buildAttrEdit(htmlState.doc, 'id', edit.id, htmlState.text));
   if ('className' in edit) htmlEdits.push(..._buildAttrEdit(htmlState.doc, 'class', edit.className, htmlState.text));
@@ -2380,15 +2694,24 @@ function _designFlushEdit() {
 
   const inlineStyleEdits = {};
   if (edit.style) {
-    cssState = className ? _designReadCss() : null;
-    if (className && !cssState && fs.existsSync(_designCssPath())) return false;
+    cssFiles = className ? _designReadCss() : [];
+    if (className && !cssFiles) return false;
     const remainingStyle = {};
     Object.entries(edit.style).forEach(([field, value]) => {
       const prop = _STYLE_PROP_MAP[field];
       if (!prop) return;
-      if (cssState && className && !inlineProperties.has(prop.toLowerCase())) {
-        const cssEdit = _buildCssPropertyEdit(cssState.text, cssState.ast, className, prop, value);
-        if (cssEdit) { cssEditsNeeded.push(...cssEdit); return; }
+      if (cssFiles && className && !inlineProperties.has(prop.toLowerCase())) {
+        for (const cssFile of cssFiles) {
+          const cssEdit = _buildCssPropertyEdit(cssFile.text, cssFile.ast, className, prop, value);
+          if (cssEdit) {
+            if (cssEdit.length) {
+              const edits = cssEditsByPath.get(cssFile.path) || [];
+              edits.push(...cssEdit);
+              cssEditsByPath.set(cssFile.path, edits);
+            }
+            return;
+          }
+        }
       }
       remainingStyle[prop] = value;
     });
@@ -2404,38 +2727,50 @@ function _designFlushEdit() {
     }
   }
 
-  if (!htmlEdits.length && !cssEditsNeeded.length) {
+  if (!htmlEdits.length && !cssEditsByPath.size) {
     _designPendingEdit = null;
     return true;
   }
   if (!_designPushUndo('attribute edit')) return false;
-  if (cssEditsNeeded.length && !cssState) {
-    _designUndoStack.pop();
-    return false;
-  }
   if (htmlEdits.length) {
     try {
       fs.writeFileSync(htmlState.path, _spliceEdits(htmlState.text, htmlEdits), 'utf8');
       _designNoteOwnWrite();
     } catch (err) {
-      showToast('Could not save index.html: ' + err.message);
+      let rollbackMessage = '';
+      try { fs.writeFileSync(htmlState.path, htmlState.text, 'utf8'); }
+      catch (rollbackErr) { rollbackMessage = ` Rollback failed: ${rollbackErr.message}`; }
+      showToast('Could not save the entry HTML: ' + err.message + rollbackMessage);
       _designUndoStack.pop();
       return false;
     }
   }
-  if (cssEditsNeeded.length) {
-    try {
-      fs.writeFileSync(cssState.path, _spliceEdits(cssState.text, cssEditsNeeded), 'utf8');
+  const writtenCssPaths = [];
+  try {
+    for (const [filePath, edits] of cssEditsByPath) {
+      const cssFile = cssFiles.find((file) => file.path === filePath);
+      if (!cssFile) throw new Error(`Linked stylesheet is no longer available: ${filePath}`);
+      writtenCssPaths.push(filePath);
+      fs.writeFileSync(filePath, _spliceEdits(cssFile.text, edits), 'utf8');
       _designNoteOwnWrite();
-    } catch (err) {
-      if (htmlEdits.length) {
-        try { fs.writeFileSync(htmlState.path, htmlState.text, 'utf8'); }
-        catch (rollbackErr) { console.error('[design] failed to roll back index.html:', rollbackErr); }
-      }
-      _designUndoStack.pop();
-      showToast('Could not save style.css: ' + err.message);
-      return false;
     }
+  } catch (err) {
+    const rollbackErrors = [];
+    for (const filePath of writtenCssPaths.reverse()) {
+      const original = cssFiles.find((file) => file.path === filePath);
+      try { fs.writeFileSync(filePath, original.text, 'utf8'); }
+      catch (rollbackErr) { rollbackErrors.push(rollbackErr.message); }
+    }
+    if (htmlEdits.length) {
+      try { fs.writeFileSync(htmlState.path, htmlState.text, 'utf8'); }
+      catch (rollbackErr) { rollbackErrors.push(rollbackErr.message); }
+    }
+    _designUndoStack.pop();
+    const rollbackMessage = rollbackErrors.length
+      ? ` Rollback incomplete: ${rollbackErrors.join('; ')}`
+      : '';
+    showToast('Could not save linked stylesheet: ' + err.message + rollbackMessage);
+    return false;
   }
   _designPendingEdit = null;
   return true;
@@ -2480,7 +2815,7 @@ function _designWriteImmediateHtmlEdits(edits) {
     return true;
   } catch (err) {
     _designUndoStack.pop();
-    showToast('Could not save index.html: ' + err.message);
+    showToast('Could not save the entry HTML: ' + err.message);
     _designReloadFrame();
     return false;
   }
@@ -3334,10 +3669,10 @@ function _designLoadFrame(force) {
   try {
     html = fs.readFileSync(indexPath, 'utf8');
   } catch {
-    // Project is open but index.html doesn't exist yet -- this is the
+    // Project is open but its entry HTML doesn't exist yet -- this is the
     // case the scaffold button actually solves, so show it.
     frame.srcdoc = '';
-    if (emptyMsg) emptyMsg.textContent = 'No index.html found in this project';
+    if (emptyMsg) emptyMsg.textContent = `No entry HTML found at ${path.relative(state.projectDir, indexPath)}`;
     emptyCreateBtn?.classList.remove('hidden');
     empty?.classList.remove('hidden');
     _designFrameLoadedForDir = null;
@@ -3348,8 +3683,25 @@ function _designLoadFrame(force) {
   _designFrameGen++;
   const gen = _designFrameGen;
 
-  const projectUrl = pathToFileURL(path.resolve(state.projectDir) + path.sep).href;
-  const base = `<base href="${_escapeAttr(projectUrl)}">`;
+  let previewBase = pathToFileURL(path.resolve(path.dirname(indexPath)) + path.sep).href;
+  const sourceDoc = parse5.parse(html, { sourceCodeLocationInfo: false });
+  const findBaseHref = (node) => {
+    if (node.tagName === 'base') {
+      const href = node.attrs?.find((attr) => attr.name === 'href')?.value;
+      if (href) return href;
+    }
+    for (const child of node.childNodes || []) {
+      const href = findBaseHref(child);
+      if (href) return href;
+    }
+    return null;
+  };
+  const sourceBaseHref = findBaseHref(sourceDoc);
+  if (sourceBaseHref) {
+    try { previewBase = new URL(sourceBaseHref, pathToFileURL(indexPath).href).href; }
+    catch { showToast('Design: invalid base URL in entry HTML; using the entry directory.'); }
+  }
+  const base = `<base href="${_escapeAttr(previewBase)}">`;
   const script = `<script>window.__NB_FRAME_GEN=${gen};(${_designInjectedScript.toString()})();<\/script>`;
   let withBase;
   if (/<head\b[^>]*>/i.test(html)) {
@@ -3389,7 +3741,7 @@ function _designLoadFrame(force) {
 }
 
 // Call this after any change made *outside* the Design tab that could
-// affect index.html/style.css (e.g. saving the file in the Editor tab
+// affect the entry HTML or its linked assets (e.g. saving in the Editor tab
 // while it's open), so the canvas doesn't silently go stale relative to
 // what's on disk.
 function _designInvalidate() {
@@ -3518,7 +3870,7 @@ function _designShowSelection(el) {
   const modeEl = $('design-attrs-mode');
   if (modeEl) {
     modeEl.textContent = el.className
-      ? `Style edits patch .${el.className.trim().split(/\s+/)[0]} in style.css (or fall back to inline style if that class has no rule there)`
+      ? `Style edits patch .${el.className.trim().split(/\s+/)[0]} in a linked stylesheet (or fall back to inline style if no rule is found)`
       : 'No class on this element — style edits write directly to its style attribute';
   }
   return true;
@@ -3760,7 +4112,7 @@ function _designInsertElement(elType) {
 
   const frame = $('design-frame');
   if (!frame?.contentWindow) return;
-  if (elType === 'modal' || elType === 'table') _designEnsureRuntimeSupport();
+  if ((elType === 'modal' || elType === 'table') && !_designEnsureRuntimeSupport()) return;
   frame.contentWindow.postMessage({ source: 'nb-design-host', type: 'insertInto', path: _designPathStr(), elType }, '*');
 }
 
@@ -4081,7 +4433,7 @@ function initDesignTab() {
       if (customCompId) { window.NBPro?.insertCustomComponent?.(customCompId); return; }
       const elType = e.dataTransfer.getData('text/nb-el-type');
       if (!elType) return;
-      if (elType === 'modal' || elType === 'table') _designEnsureRuntimeSupport();
+      if ((elType === 'modal' || elType === 'table') && !_designEnsureRuntimeSupport()) return;
       const { x: sx, y: sy, rect } = frameScale();
       _designFrameEl().contentWindow?.postMessage({
         source: 'nb-design-host', type: 'paletteDrop',
@@ -4489,7 +4841,7 @@ function _designInsertNewNodeIntoSource(msg) {
     _designNoteOwnWrite();
   } catch (err) {
     _designUndoStack.pop();
-    showToast('Could not save index.html: ' + err.message);
+    showToast('Could not save the entry HTML: ' + err.message);
     return false;
   }
 
@@ -4600,7 +4952,7 @@ function _designMoveNodeInSource(msg) {
     _designNoteOwnWrite();
   } catch (err) {
     _designUndoStack.pop();
-    showToast('Could not save index.html: ' + err.message);
+    showToast('Could not save the entry HTML: ' + err.message);
     return false;
   }
   return true;
@@ -6260,8 +6612,7 @@ function saveOpenFile() {
     showToast('Saved ' + path.basename(tab.filePath));
     _refreshPreviewIfVisible();
     if (state.projectDir) {
-      const base = path.basename(tab.filePath);
-      if (base === 'index.html' || base === 'style.css') _designInvalidate();
+      if (_designIsEntryAsset(tab.filePath)) _designInvalidate();
     }
   } catch (e) {
     showToast('Save failed: ' + e.message);
@@ -6293,8 +6644,7 @@ function saveAllOpenFiles() {
       tab.isDirty = false;
       saved++;
       if (state.projectDir) {
-        const base = path.basename(tab.filePath);
-        if (base === 'index.html' || base === 'style.css') _designInvalidate();
+        if (_designIsEntryAsset(tab.filePath)) _designInvalidate();
       }
     } catch {
       failed.push(path.basename(tab.filePath));
@@ -8962,29 +9312,178 @@ function runNovaByte() {
   );
 }
 
-// File pickers (NW.js). Both pickers swallow the "user cancelled" case
-// (no file selected) -- the original code passed an undefined value to the
-// callback, which then exploded downstream. We now no-op instead.
+// Keep the native input attached until NW.js has completed its picker event;
+// detached inputs have produced unstable native-dialog behavior in some NW builds.
+function _pickerStartDirectory() {
+  const candidates = [state.projectDir];
+  if (typeof __dirname !== 'undefined') candidates.push(__dirname);
+  let lastError = null;
+  try {
+    candidates.push(process.cwd());
+  } catch (err) {
+    lastError = err;
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (fs.statSync(candidate).isDirectory()) return path.resolve(candidate);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  showToast(`Could not determine a starting directory for the picker${lastError ? `: ${lastError.message}` : '.'}`);
+  return null;
+}
+
+function _openNativePicker(input, callback, expectedKind) {
+  const startDirectory = _pickerStartDirectory();
+  if (!startDirectory) return;
+  input.setAttribute('nwworkingdir', startDirectory);
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
+  input.style.cssText = 'position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;';
+  document.body.appendChild(input);
+  let finished = false;
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
+    input.remove();
+  };
+  input.addEventListener('cancel', cleanup, { once: true });
+  input.addEventListener('change', () => {
+    const selectedPath = input.files?.[0]?.path;
+    cleanup();
+    if (!selectedPath) return;
+    let stats;
+    try {
+      stats = fs.statSync(selectedPath);
+    } catch (err) {
+      showToast(`Could not access the selected ${expectedKind}: ${err.message}`);
+      return;
+    }
+    if (expectedKind === 'folder' && !stats.isDirectory()) {
+      showToast('The folder picker did not return a folder path.');
+      return;
+    }
+    if (expectedKind === 'file' && !stats.isFile()) {
+      showToast('The file picker did not return a file path.');
+      return;
+    }
+    try {
+      callback(selectedPath);
+    } catch (err) {
+      showToast(`Could not process the selected ${expectedKind}: ${err.message}`);
+    }
+  }, { once: true });
+  try {
+    input.click();
+  } catch (err) {
+    cleanup();
+    showToast(`Could not open the ${expectedKind} picker: ${err.message}`);
+  }
+}
+
+function _pickFolderWindows(callback) {
+  const startDirectory = _pickerStartDirectory();
+  if (!startDirectory) return;
+
+  const script = [
+    '$ErrorActionPreference = \'Stop\'',
+    '$cacheDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) \'NovaPack Studio\\Cache\'',
+    '$assemblyPath = Join-Path $cacheDirectory \'ModernFolderPicker-v1.dll\'',
+    'if (Test-Path -LiteralPath $assemblyPath) { Add-Type -Path $assemblyPath } else {',
+    '  New-Item -ItemType Directory -Path $cacheDirectory -Force | Out-Null',
+    '  Add-Type -TypeDefinition @\'',
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    '[ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")] public class FileOpenDialogComObject {}',
+    '[ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] public interface IFileOpenDialog : IFileDialog { void GetResults(out IntPtr items); void GetSelectedItems(out IntPtr items); }',
+    '[ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] public interface IFileDialog {',
+    '  void Show(IntPtr owner); void SetFileTypes(uint count, IntPtr filters); void SetFileTypeIndex(uint index); void GetFileTypeIndex(out uint index);',
+    '  void Advise(IntPtr events, out uint cookie); void Unadvise(uint cookie); void SetOptions(uint options); void GetOptions(out uint options);',
+    '  void SetDefaultFolder(IShellItem folder); void SetFolder(IShellItem folder); void GetFolder(out IShellItem folder); void GetCurrentSelection(out IShellItem item);',
+    '  void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name); void GetFileName(out IntPtr name); void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);',
+    '  void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text); void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label); void GetResult(out IShellItem item);',
+    '  void AddPlace(IShellItem item, uint alignment); void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string extension); void Close(int result);',
+    '  void SetClientGuid(ref Guid guid); void ClearClientData(); void SetFilter(IntPtr filter);',
+    '}',
+    '[ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] public interface IShellItem {',
+    '  void BindToHandler(IntPtr binding, ref Guid handler, ref Guid iid, out IntPtr result); void GetParent(out IShellItem parent);',
+    '  void GetDisplayName(uint nameType, out IntPtr name); void GetAttributes(uint mask, out uint attributes); void Compare(IShellItem item, uint hint, out int order);',
+    '}',
+    'public static class ModernFolderPicker {',
+    '  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)] static extern void SHCreateItemFromParsingName(string path, IntPtr binding, ref Guid iid, out IShellItem item);',
+    '  [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr memory);',
+    '  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);',
+    '  public static string Show(string startDirectory) {',
+    '    IntPtr previousDpiContext = IntPtr.Zero;',
+    '    try { previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { }',
+    '    try {',
+    '    var dialog = (IFileOpenDialog)new FileOpenDialogComObject(); dialog.SetOptions(0x20 | 0x40 | 0x800); dialog.SetTitle("Select a folder");',
+    '    var iid = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"); IShellItem startFolder;',
+    '    SHCreateItemFromParsingName(startDirectory, IntPtr.Zero, ref iid, out startFolder); dialog.SetFolder(startFolder);',
+    '    try { dialog.Show(IntPtr.Zero); } catch (COMException ex) { if ((uint)ex.ErrorCode == 0x800704C7) return null; throw; }',
+    '    IShellItem selected; dialog.GetResult(out selected); IntPtr displayName; selected.GetDisplayName(0x80058000, out displayName);',
+    '    try { return Marshal.PtrToStringUni(displayName); } finally { CoTaskMemFree(displayName); }',
+    '    } finally { if (previousDpiContext != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpiContext); }',
+    '  }',
+    '}',
+    '\'@ -OutputAssembly $assemblyPath',
+    '  Add-Type -Path $assemblyPath',
+    '}',
+    '$selected = [ModernFolderPicker]::Show($env:NOVAPACK_PICKER_START_DIR)',
+    'if ($selected) { [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($selected))) }',
+  ].join('\n');
+
+  execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    windowsHide: true,
+    env: { ...process.env, NOVAPACK_PICKER_START_DIR: startDirectory },
+  }, (err, stdout, stderr) => {
+    if (err) {
+      showToast(`Could not open the folder picker: ${stderr.trim() || err.message}`);
+      return;
+    }
+    const encodedPath = stdout.trim();
+    if (!encodedPath) return;
+
+    const selectedPath = Buffer.from(encodedPath, 'base64').toString('utf8');
+    let stats;
+    try {
+      stats = fs.statSync(selectedPath);
+    } catch (statError) {
+      showToast(`Could not access the selected folder: ${statError.message}`);
+      return;
+    }
+    if (!stats.isDirectory()) {
+      showToast('The folder picker did not return a folder path.');
+      return;
+    }
+    try {
+      callback(selectedPath);
+    } catch (callbackError) {
+      showToast(`Could not process the selected folder: ${callbackError.message}`);
+    }
+  });
+}
+
 function pickFolder(callback) {
+  if (process.platform === 'win32') {
+    _pickFolderWindows(callback);
+    return;
+  }
   const input = document.createElement('input');
   input.type = 'file';
   input.setAttribute('nwdirectory', '');
-  input.addEventListener('change', () => {
-    const picked = input.files?.[0]?.path;
-    if (picked) callback(picked);
-  });
-  input.click();
+  _openNativePicker(input, callback, 'folder');
 }
 
 function pickFile(accept, callback) {
   const input = document.createElement('input');
   input.type = 'file';
   if (accept) input.accept = accept;
-  input.addEventListener('change', () => {
-    const picked = input.files?.[0]?.path;
-    if (picked) callback(picked);
-  });
-  input.click();
+  _openNativePicker(input, callback, 'file');
 }
 
 // Modal helpers
@@ -9989,6 +10488,14 @@ if (typeof module !== 'undefined' && module.exports) {
     _loadWorkspaces,
     _saveWorkspaces,
     _readManifest,
+    _designIndexPath,
+    _designProjectFiles,
+    _designEnsureEntryScript,
+    _designEnsureEntryStylesheet,
+    _designEnsureRuntimeSupport,
+    _designGetProjectFiles,
+    pickFolder,
+    pickFile,
     applyTheme,
     setTheme,
     getDefaultTheme,

@@ -68,7 +68,7 @@ for (const target of platforms) {
     srcDir: staging,
     glob: false,
     ...target,
-    version: '0.114.0',
+    version: '0.118.0',
     flavor: 'normal',
     outDir,
     app: {
