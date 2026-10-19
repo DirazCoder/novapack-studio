@@ -1192,6 +1192,34 @@ await window.nova.ipc('nova:storage:clear', {});
 const { keys } = await window.nova.ipc('nova:storage:keys', {});
 ```
 
+### Modern storage — `window.novaOS.storage` (API v2)
+
+New apps can use the separate `window.novaOS` facade. It is additive: `window.nova` and its existing methods, IPC payloads, return objects, and error behavior remain unchanged for older `.novaapp` packages.
+
+```javascript
+if (window.novaOS.capabilities.has('storage.v2')) {
+  const theme = await window.novaOS.storage.get('theme'); // stored value, or null
+  await window.novaOS.storage.set('theme', 'dark');
+  await window.novaOS.storage.remove('draft');
+  const keys = await window.novaOS.storage.keys(); // string[]
+  await window.novaOS.storage.clear(); // clears this app's storage only
+}
+```
+
+`window.novaOS.apiVersion` is `2`. `capabilities.has(name)` returns `true` only for capabilities supported by this runtime; unsupported or unknown names return `false`. The initial v2 capability is `storage.v2`.
+
+| Behavior | Legacy API (V1) | Modern API (V2) |
+|---|---|---|
+| Global name | `window.nova` (preserved) | `window.novaOS` (new) |
+| Read a value | `await window.nova.ipc('nova:storage:get', { key })` returns `{ success, value }` | `await window.novaOS.storage.get(key)` returns the value directly, or `null` if missing |
+| Write a value | `window.nova.ipc('nova:storage:set', { key, value })` | `window.novaOS.storage.set(key, value)` |
+| Delete a key | `window.nova.ipc('nova:storage:delete', { key })` | `window.novaOS.storage.remove(key)` |
+| List keys | `window.nova.ipc('nova:storage:keys', {})` returns `{ success, keys }` | `window.novaOS.storage.keys()` returns `string[]` |
+| Clear storage | `window.nova.ipc('nova:storage:clear', {})` | `window.novaOS.storage.clear()` |
+| Results | Existing response objects are preserved | Mutations resolve with `undefined`; reads return normalized values |
+
+Both interfaces use the same host-side storage service and retain its per-app isolation, key validation, size limits, quota enforcement, and rejected IPC errors. The v2 facade does not introduce a parallel store or new privileged IPC route. Other v2 service namespaces are not advertised until implemented.
+
 ### File picker — `nova:dialog:*`
 
 ```javascript
