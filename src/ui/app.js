@@ -2561,26 +2561,20 @@ function _designInjectedScript() {
       el.setAttribute(PATH_ATTR, computePath(el).join('.'));
     });
   }
+  function notifyBindingPaths() {
+    const paths = [];
+    document.querySelectorAll('[data-nb-studio-action]').forEach((el) => {
+      const targetId = el.getAttribute('data-nb-studio-action');
+      if (targetId) paths.push([targetId, el.getAttribute(PATH_ATTR)]);
+    });
+    parent.postMessage({ source: 'nb-design', type: 'bindingPathsChanged', paths }, '*');
+  }
   tagAll();
-  new MutationObserver((mutations) => {
-    // DEBUG (temporary): the host has seen selection paths that don't
-    // match what a static parse of index.html would produce (e.g.
-    // expected 3 segments, got 4) with no code path that should be
-    // reparenting anything. Log what actually triggered each retag --
-    // added/removed nodes and their parents -- so the next occurrence
-    // shows the live DOM shape at fault instead of requiring more
-    // guessing. Safe to remove once the root cause is found.
-    for (const m of mutations) {
-      if (m.addedNodes.length || m.removedNodes.length) {
-        console.debug('[design] tagAll retrigger', {
-          target: m.target?.tagName,
-          added: [...m.addedNodes].map((n) => n.tagName || n.nodeName),
-          removed: [...m.removedNodes].map((n) => n.tagName || n.nodeName),
-        });
-      }
-    }
+  notifyBindingPaths();
+  new MutationObserver(() => {
     const prevSelectedPath = selected ? selected.getAttribute(PATH_ATTR) : null;
     tagAll();
+    notifyBindingPaths();
     // tagAll() just re-stamped every element's path client-side; if the
     // selected element's own path shifted as a *side effect* of some
     // unrelated mutation (an insert/delete/drag elsewhere in the tree),
@@ -3250,6 +3244,10 @@ function _designInjectedScript() {
       if (!selected || !selected.parentNode) return;
       const srcPath = selected.getAttribute(PATH_ATTR);
       const clone = selected.cloneNode(true);
+      clone.removeAttribute('data-nb-studio-action');
+      clone.querySelectorAll('[data-nb-studio-action]').forEach((el) => {
+        el.removeAttribute('data-nb-studio-action');
+      });
       selected.parentNode.insertBefore(clone, selected.nextSibling);
       tagAll();
       parent.postMessage({
@@ -3819,6 +3817,7 @@ function initDesignTab() {
         _designSelectedPath = msg.path.split('.').map(Number);
       }
     } else if (msg.type === 'contextmenu') {
+      if (!_designShowSelection(msg.element)) return;
       _designShowContextMenu(msg.x, msg.y, msg.element);
     } else if (msg.type === 'deleted') {
       // Deletion is a discrete action -- patch immediately rather than
@@ -3967,12 +3966,12 @@ function initDesignTab() {
     btn.addEventListener('dragend', () => {
       btn.classList.remove('dragging');
       _designHideDropIndicator();
+      setTimeout(() => { didDrag = false; }, 0);
     });
   });
 
-  const frameEl = $('design-frame');
   const stageEl = $('design-stage');
-  if (frameEl && stageEl) {
+  if (_designFrameEl() && stageEl) {
     // The frame can render at a different on-screen size than its own
     // internal pixel dimensions -- via the DPI-preset transform on the
     // frame itself and/or the pan/zoom transform on .design-stage-pan.

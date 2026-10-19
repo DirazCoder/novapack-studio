@@ -83,7 +83,7 @@ The flags also accept `--windows` and `--macos` aliases. A platform-specific bui
 |----------|-------------|
 | `blank` | Empty shell — start from scratch |
 | `webapp` | Pins one external site as its own app — fixed URL, no address bar or navigation |
-| `browser` | URL bar with back, forward, and reload — a real navigable browser view |
+| `browser` | URL bar with back, forward, and reload — requests `sandbox:nested-webview` and `net:external` access |
 | `utility` | File-access tool using NovaByte's virtual filesystem |
 | `game` | Game loop skeleton with canvas rendering |
 | `dashboard` | Data widget grid with live update pattern |

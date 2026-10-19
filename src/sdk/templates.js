@@ -1805,7 +1805,10 @@ function main() {
   }
 
   async function runAction(action) {
-    if (!browserView) return;
+    if (!browserView) {
+      setStatus('Browser is still starting.');
+      return;
+    }
     try {
       await action();
     } catch (error) {
@@ -1836,6 +1839,7 @@ function main() {
 
   void (async () => {
     try {
+      setStatus('Starting browser…');
       const initialUrl = await readLastUrl();
       const browser = await requireBrowserApi();
       browserView = await browser.createView({
@@ -1849,29 +1853,32 @@ function main() {
         return;
       }
       browserView.addEventListener('url-change', (event) => {
-        if (document.activeElement !== els.address) els.address.value = event.detail.url;
-        void saveLastUrl(event.detail.url);
+        const url = event.detail?.url;
+        if (typeof url !== 'string') return;
+        if (document.activeElement !== els.address) els.address.value = url;
+        void saveLastUrl(url);
       });
       browserView.addEventListener('title-change', (event) => {
-        document.title = event.detail.title || ${JSON.stringify(m.name)};
+        document.title = event.detail?.title || ${JSON.stringify(m.name)};
       });
       browserView.addEventListener('navigation-start', () => setStatus('Loading…'));
       browserView.addEventListener('navigation-complete', () => setStatus(''));
       browserView.addEventListener('navigation-error', (event) => {
-        setStatus(event.detail.errorDescription || event.detail.reason || 'Navigation failed');
+        setStatus(event.detail?.errorDescription || event.detail?.reason || 'Navigation failed');
       });
-      browserView.addEventListener('state-change', (event) => updateState(event.detail));
+      browserView.addEventListener('state-change', (event) => updateState(event.detail || {}));
       browserView.addEventListener('state-error', (event) => {
-        setStatus('Could not refresh browser state: ' + event.detail.error);
-        console.error('Could not refresh browser state:', event.detail.error);
+        const error = event.detail?.error || 'Unknown state error';
+        setStatus('Could not refresh browser state: ' + error);
+        console.error('Could not refresh browser state:', error);
       });
       browserView.addEventListener('new-window', (event) => {
-        setStatus('Popup blocked: ' + event.detail.url);
+        setStatus('Popup blocked: ' + (event.detail?.url || 'unknown URL'));
       });
       browserView.addEventListener('download-request', async (event) => {
         try {
           const result = await browser.download({
-            url: event.detail.url,
+            url: event.detail?.url,
             filename: 'download',
           });
           if (!result.cancelled) setStatus('Download saved.');

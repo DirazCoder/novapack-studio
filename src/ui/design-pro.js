@@ -141,6 +141,7 @@
   // initDesignTab() already routes) and snapshot the path.
   let _proSelected = null; // { path:[..], tag, id, className, raw }
   let _proPendingAction = null; // { path, actionId } — unsaved dropdown pick, cleared on apply/unbind/reselect
+  let _proPendingParams = null;
 
   // ── Persisted NBPro state (independent of app.js's storage key) ───────────
   const _PRO_STORAGE_KEY = 'novapack_design_pro_state';
@@ -168,6 +169,26 @@
       const validPresets = new Set(DPI_PRESETS.map((preset) => preset.id));
       const validScales = new Set(DPI_SCALES.map((scale) => scale.id));
       const validThemes = new Set(['nb-dark', 'nb-light', 'midnight-blue', 'amber']);
+      const validBindings = Array.isArray(saved.bindings)
+        ? saved.bindings.filter((binding) => {
+            if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
+                typeof binding.elementPath !== 'string' ||
+                !/^\d+(?:\.\d+)*$/.test(binding.elementPath) ||
+                (binding.orphaned != null && typeof binding.orphaned !== 'boolean') ||
+                (binding.targetId != null && (typeof binding.targetId !== 'string' ||
+                  !/^nb-\d+(?:-\d+)*$/.test(binding.targetId))) ||
+                typeof binding.action !== 'string' || !_IPC_ACTION_MAP[binding.action]) return false;
+            const schema = _IPC_ACTION_MAP[binding.action].params;
+            return Object.entries(binding.params || {}).every(([key, value]) => {
+              const expected = schema[key];
+              return expected !== undefined && (typeof expected === 'boolean'
+                ? typeof value === 'boolean' || value === 'true' || value === 'false'
+                : Array.isArray(expected)
+                  ? Array.isArray(value) && value.every((item) => typeof item === 'string')
+                  : typeof value === 'string');
+            });
+          }).slice(0, 1000)
+        : [];
       _proState = {
         ..._proState,
         dpiPreset: saved.dpiPreset === null || validPresets.has(saved.dpiPreset) ? saved.dpiPreset : null,
@@ -190,17 +211,7 @@
               component.props.length <= 50 && component.props.every((prop) => typeof prop === 'string')))
           ).slice(0, 100)
           : [],
-        bindings: Array.isArray(saved.bindings)
-          ? saved.bindings.filter((binding) =>
-            binding && typeof binding === 'object' &&
-            typeof binding.elementPath === 'string' &&
-            /^\d+(?:\.\d+)*$/.test(binding.elementPath) &&
-            typeof binding.action === 'string' && _IPC_ACTION_MAP[binding.action] &&
-            (binding.params == null || (binding.params && typeof binding.params === 'object' &&
-              !Array.isArray(binding.params) &&
-              Object.values(binding.params).every((value) => typeof value === 'string' || typeof value === 'boolean')))
-          ).slice(0, 1000)
-          : [],
+        bindings: validBindings,
       };
     } catch (err) {
       console.warn('[NBPro] Could not load saved Design state:', err);
@@ -968,7 +979,8 @@
       panel.innerHTML = '<div class="nbpro-empty">Select an element on the canvas to bind an action.</div>';
       return;
     }
-    const existing = _proState.bindings.find((b) => b.elementPath === sel.path.join('.'));
+    const existing = _proState.bindings.find((b) =>
+      !b.orphaned && b.elementPath === sel.path.join('.'));
     // Prefer whatever's pending in the dropdown for this element (an unsaved
     // pick that hasn't hit "Apply" yet) over the saved binding, so re-renders
     // triggered by the select's own change event don't stomp the user's pick.
@@ -986,7 +998,11 @@
     const permWarn = action?.perm && !permDeclared
       ? `<div class="nbpro-warn">⚠ This action requires <code>${action.perm}</code>, which is not enabled in your manifest.json. <button class="nbpro-link" data-jump-perm="${action.perm}">Enable it</button></div>`
       : '';
-    const savedParams = existing?.action === currentActionId ? existing.params || {} : {};
+    const pendingParams = _proPendingParams?.path === pathStr &&
+      currentActionId === _proPendingParams.actionId
+      ? _proPendingParams.values
+      : null;
+    const savedParams = pendingParams || (existing?.action === currentActionId ? existing.params || {} : {});
     const paramsHtml = action ? Object.entries(action.params).map(([k, defaultValue]) => {
       const value = savedParams[k] ?? defaultValue;
       const control = typeof defaultValue === 'boolean'
@@ -1022,11 +1038,16 @@
       </details>`;
     panel.querySelector('#nbpro-ai-action')?.addEventListener('change', (e) => {
       _proPendingAction = { path: pathStr, actionId: e.target.value };
+      _proPendingParams = null;
       _renderActionInspector(); // re-render with new action's params
     });
     panel.querySelectorAll('.nbpro-param-input').forEach((input) => {
-      input.addEventListener('input', _renderGeneratedCode);
-      input.addEventListener('change', _renderGeneratedCode);
+      const updateParams = () => {
+        _proPendingParams = { path: pathStr, actionId: currentActionId, values: _currentParamValues() };
+        _renderGeneratedCode();
+      };
+      input.addEventListener('input', updateParams);
+      input.addEventListener('change', updateParams);
     });
     panel.querySelector('[data-jump-perm]')?.addEventListener('click', (e) => {
       const perm = e.target.dataset.jumpPerm;
@@ -1079,10 +1100,15 @@
     if (!action) { codeEl.textContent = '// No action selected'; return; }
     const sel = _proSelected;
     const pathStr = sel?.path?.join('.') || '';
-    const binding = _proState.bindings.find((item) => item.elementPath === pathStr);
+    const binding = _proState.bindings.find((item) =>
+      !item.orphaned && item.elementPath === pathStr);
+    const pendingParams = _proPendingParams?.path === pathStr &&
+      _proPendingParams.actionId === actionId
+      ? _proPendingParams.values
+      : null;
     codeEl.textContent = _renderActionBindingCode({
       action: actionId,
-      params: _currentParamValues(),
+      params: pendingParams || _currentParamValues(),
       id: sel?.id || '',
       className: sel?.className || '',
       tag: sel?.tag || 'button',
@@ -1155,7 +1181,8 @@
     if (!action) { _showToast('That action is no longer available'); return; }
     const oldBindings = _proState.bindings;
     const pathStr = sel.path.join('.');
-    const previous = oldBindings.find((binding) => binding.elementPath === pathStr);
+    const previous = oldBindings.find((binding) =>
+      !binding.orphaned && binding.elementPath === pathStr);
     const targetId = previous?.targetId || `nb-${pathStr.replace(/\./g, '-')}`;
     // Update binding state.
     _proState.bindings = oldBindings.filter((b) => b.elementPath !== pathStr);
@@ -1170,6 +1197,7 @@
       perm: action.perm,
     });
     _proPendingAction = null;
+    _proPendingParams = null;
     if (!_injectBindingAttrs(pathStr, action.perm || '', targetId, previous?.perm || '')) {
       _proState.bindings = oldBindings;
       _saveProState();
@@ -1201,6 +1229,7 @@
     const removed = previousBindings.find((binding) => binding.elementPath === pathStr);
     _proState.bindings = previousBindings.filter((binding) => binding.elementPath !== pathStr);
     _proPendingAction = null;
+    _proPendingParams = null;
     if (!_injectBindingAttrs(pathStr, '', '', removed?.perm || '')) {
       _proState.bindings = previousBindings;
       _renderActionInspector();
@@ -1295,7 +1324,11 @@
   }
 
   function _injectHandlerToAppJs() {
-    const code = _proState.bindings.map(_renderActionBindingCode).filter(Boolean).join('\n\n');
+    const code = _proState.bindings
+      .filter((binding) => !binding.orphaned)
+      .map(_renderActionBindingCode)
+      .filter(Boolean)
+      .join('\n\n');
     const appFile = _readAppJs();
     if (!appFile) {
       if (!code) return true;
@@ -2708,8 +2741,14 @@
     if (!msg || msg.source !== 'nb-design') return;
     switch (msg.type) {
       case 'select':
+      case 'contextmenu': {
+        const nextPath = (msg.element?.path || '').split('.').map(Number).filter(Number.isSafeInteger);
+        if (_proSelected?.path.join('.') !== nextPath.join('.')) {
+          _proPendingAction = null;
+          _proPendingParams = null;
+        }
         _proSelected = {
-          path: (msg.element?.path || '').split('.').map(Number).filter((n) => !isNaN(n)),
+          path: nextPath,
           tag: msg.element?.tag,
           id: msg.element?.id,
           className: msg.element?.className,
@@ -2718,6 +2757,45 @@
         const active = document.querySelector('.nbpro-ins-tab.active');
         if (active) _switchInspectorTab(active.dataset.tab);
         break;
+      }
+      case 'pathChanged':
+        if (_proSelected && msg.tag === _proSelected.tag && /^\d+(?:\.\d+)*$/.test(msg.path || '')) {
+          _proSelected.path = msg.path.split('.').map(Number);
+          const active = document.querySelector('.nbpro-ins-tab.active');
+          if (active && active.dataset.tab === 'actions') _renderActionInspector();
+        }
+        break;
+      case 'bindingPathsChanged': {
+        if (!Array.isArray(msg.paths)) break;
+        const paths = new Map(msg.paths.filter((entry) =>
+          Array.isArray(entry) && entry.length === 2 &&
+          typeof entry[0] === 'string' &&
+          typeof entry[1] === 'string' &&
+          /^\d+(?:\.\d+)*$/.test(entry[1])
+        ));
+        let changed = false;
+        _proState.bindings = _proState.bindings.flatMap((binding) => {
+          if (!binding.targetId) return [binding];
+          const path = paths.get(binding.targetId);
+          if (!path) {
+            if (binding.orphaned) return [binding];
+            changed = true;
+            return [{ ...binding, orphaned: true }];
+          }
+          if (path !== binding.elementPath || binding.orphaned) {
+            changed = true;
+            return [{ ...binding, elementPath: path, orphaned: false }];
+          }
+          return [binding];
+        });
+        if (changed) {
+          _saveProState();
+          if (!_injectHandlerToAppJs()) {
+            _showToast('Could not synchronize generated action handlers after a canvas structure change.');
+          }
+        }
+        break;
+      }
       case 'nbpro:flexGizmo':
         _onFlexGizmo(msg);
         break;
