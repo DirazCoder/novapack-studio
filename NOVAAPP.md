@@ -31,8 +31,12 @@ Every app needs a `manifest.json` at the root of its directory.
   "entry": "index.html",
   "icon": "box",
   "type": "blank",
-  "permissions": ["vfs:read"],
+  "permissions": ["fs:read:images"],
   "optionalPermissions": ["device:notifications"],
+  "ipc": {
+    "exports": [],
+    "receives": []
+  },
   "defaultSize": [800, 560],
   "minSize": [400, 300],
   "maxSize": [1600, 1200],
@@ -65,7 +69,7 @@ Every app needs a `manifest.json` at the root of its directory.
 | `website` | string | — | Your site |
 | `icon` | string | `"box"` | Icon Lucide name, data URI, or URL |
 | `type` | string | `"blank"` | App type |
-| `unrestrictedEntry` | string | — | Packaged JavaScript entry for trusted system packages or apps granted `system:root` |
+| `guestEntry` | string | — | Optional packaged JavaScript entry loaded inside the app's sandbox |
 | `permissions` | array | `[]` | Required capabilities; missing sensitive grants are requested at launch, but denial does not block the app |
 | `optionalPermissions` | array | `[]` | Optional permissions — app must handle denial gracefully |
 | `defaultSize` | array | `[800, 560]` | `[width, height]` in pixels |
@@ -76,26 +80,19 @@ Every app needs a `manifest.json` at the root of its directory.
 | `transparent` | boolean | `false` | Enables an alpha-capable sandboxed app surface |
 | `categories` | array | `[]` | App categories for filtering |
 | `handles` | object | — | Declares file extensions, URL protocols, and/or MIME types your app can open — see [Default Apps](#default-apps) below |
+| `ipc` | object | — | Declares app-to-app service/provider endpoints and broadcast actions your app accepts — see [Inter-app communication](#inter-app-communication) |
 
 Set `transparent` to `true` when the app should let the desktop show through areas not painted by its UI. The OS makes the sandboxed webview alpha-capable and makes the document's `html` and `body` backgrounds transparent; it does not force child elements to be transparent, so your app can still paint opaque panels, cards, and controls. This is a visual setting only: it does not grant host-page access, bypass the app sandbox, or make the package trusted or system-signed.
 
-### Root access (high risk)
+### Sandboxed execution and system APIs
 
-Third-party `.novaapp` packages can request host-page execution with a required `system:root` permission and a packaged JavaScript entry:
+Packages run inside an isolated app webview by default, including packages signed by NovaByte System. `system:root` is a separate, critical permission: when Developer Mode and Root Access are enabled and the user has explicitly granted it, that app's packaged `guestEntry` may execute in the OS page with unrestricted host access. This exception is based on the app-scoped root grant, not on whether the app is a system app or who signed it.
 
-```json
-{
-  "entry": "index.html",
-  "permissions": ["system:root"],
-  "unrestrictedEntry": "root.js"
-}
-```
+`guestEntry` names an optional JavaScript file included in the package. The runtime loads it inside the same sandbox as the manifest's HTML entry. Older packages may still contain `unrestrictedEntry`; it is accepted as a compatibility alias. A package declaring `system:root` must include its declared entry file.
 
-`unrestrictedEntry` must name a `.js` file included in the package. That file is the **complete app entry** for root execution: it should register the app with `registerApp(...)` and render its window from the registered `init()` function, like a trusted built-in app. It can be named `app.js` instead of `root.js` if that is the app's single host-side implementation.
+Verified NovaByte System packages receive additional undocumented framework compatibility APIs through the sandbox bridge. The OS checks the package signature against its trust store before servicing those calls. These internal APIs are not available to third-party packages, are not part of the public app API, and may change without notice. This signature-gated framework access is independent of `system:root`.
 
-Root-approved apps do not run two copies of the app. When Developer Mode and Root Access are enabled and the user grants `system:root`, the OS loads only `unrestrictedEntry` directly into the OS page; the manifest's ordinary HTML `entry` and its scripts are not also loaded. If root is unavailable or not granted, the ordinary HTML `entry` runs in the app's sandbox instead. The two launch modes are alternatives, not communicating processes, so there is no app.js-to-root.js IPC bridge. Move the UI and behavior needed in root mode into the unrestricted entry; it can use host APIs directly.
-
-Users must enable Developer Mode, turn on Root Access in Settings, and explicitly approve the app through the conspicuous root permission prompt. Root grants do not expire automatically; revoke them explicitly in Settings. Root code runs in the OS page rather than an isolated app webview and can read or modify OS data and UI. Settings provides per-app grants and a persistent log of up to 1,000 recent observed OS API calls. The log is best-effort: direct JavaScript and browser activity is not completely observable, and a root app can potentially tamper with same-origin data. Disabling Developer Mode, Root Access, or an app's root grant closes root app windows and reloads the OS page if root code has run.
+`system:root` is granted per app through its explicit confirmation flow and is available only while Developer Mode and Root Access are enabled. It is not a system-app signature or a way for a package to claim system identity. Request it only when unrestricted OS-page execution is essential.
 
 ### App ID format
 
@@ -127,7 +124,7 @@ Declaring a `handles` block makes your app selectable in **Settings → Default 
 
 `protocols`, `extensions`, `mimeTypes`, and `roles` are optional independently — declare whichever applies, or omit `handles` entirely if your app doesn't want to be a default-openable target at all. `roles` currently supports `home`. Declaring it only makes the app eligible; the user must explicitly choose it in Settings. A selected third-party Home app is hosted in a full-screen sandboxed surface, not an OS application window, and does not receive host-page access. Home selection takes effect after the OS page reloads. Extensions are matched case-insensitively and should include the leading dot (`.mp3`, not `mp3`); protocols and MIME types are matched case-insensitively. MIME parameters are ignored, and subtype wildcards such as `image/*` are supported.
 
-This is purely a **discovery/selection** declaration, not a permission — it doesn't grant ambient access to files, and there's no `handles:*` permission string to request. When the user chooses your app through **Open with...**, the launch receives a `fileIntent` object in `window.__NOVA_APP_OPTIONS__` and the host grants that sandbox access to only that selected file. The scoped grant permits reading and writing that file through `nova:vfs:read` / `nova:vfs:write` by file id, without granting directory listing, access to other files, or broad `vfs:read` / `vfs:write` permission. A user can choose **Always use this app for this file type**; that preference is checked against the app's current declaration and installed status when the file is opened.
+This is purely a **discovery/selection** declaration, not a permission — it doesn't grant ambient access to files, and there's no `handles:*` permission string to request. When the user chooses your app through **Open with...**, the launch receives a `fileIntent` object in `window.__NOVA_APP_OPTIONS__` and the host grants that sandbox access to only that selected file. The scoped grant permits reading and writing that file through `nova:fs:read` / `nova:fs:write` by file id, without granting directory listing, access to other files, or broad filesystem access. A user can choose **Always use this app for this file type**; that preference is checked against the app's current declaration and installed status when the file is opened.
 
 A sandboxed file manager can show the same OS chooser for a file the app can access by calling `window.nova.openWith(fileId)`, for example from its own right-click menu:
 
@@ -142,15 +139,15 @@ fileMenuItems.push({
 });
 ```
 
-The host checks the file is within the calling app's accessible VFS scope before displaying the chooser. The app is not allowed to pass a path or file contents to this API. It resolves to `{ cancelled: true }` if the user dismisses the chooser (or there is no compatible installed app), or `{ cancelled: false, success, appId, windowId, defaultSaved }` after a choice. This API displays a chooser each time; it does not silently launch a remembered default.
+The host checks the file is within the calling app's accessible filesystem scope before displaying the chooser. The app is not allowed to pass a path or file contents to this API. It resolves to `{ cancelled: true }` if the user dismisses the chooser (or there is no compatible installed app), or `{ cancelled: false, success, appId, windowId, defaultSaved }` after a choice. This API displays a chooser each time; it does not silently launch a remembered default.
 
 ```javascript
 const intent = window.__NOVA_APP_OPTIONS__?.fileIntent;
 if (intent?.action === 'open') {
-  const file = await window.nova.ipc('nova:vfs:read', { id: intent.file.id });
+  const file = await window.nova.ipc('nova:fs:read', { id: intent.file.id });
   // `file.data` is the selected file's content.
   // Saving this same file is scoped to this launch:
-  await window.nova.ipc('nova:vfs:write', {
+  await window.nova.ipc('nova:fs:write', {
     id: intent.file.id,
     content: 'Updated content'
   });
@@ -176,9 +173,9 @@ When you hit Build in Studio, here's what happens under the hood:
 
 ### Headless system services
 
-NovaByte's built-in headless services are first-party `.novaapp` packages whose `service.js` runs in the OS page, preserving the global APIs and startup ordering used by their former standalone scripts. Their manifests use `system: true`, `systemService: true`, and `unrestrictedEntry: "service.js"`. They do not have a window or an HTML entry at runtime.
+NovaByte's built-in headless services are first-party `.novaapp` packages whose entry scripts run in dedicated AppSandbox guests. Their manifests use `system: true`, `systemService: true`, and a packaged `guestEntry`; they do not have a user-facing window. Verified system packages receive undocumented compatibility APIs through the signature-checked framework bridge, not direct OS-page access.
 
-Only IDs in `js/apps/novaapp-manifest.json` can pass the trusted system-package gate. Startup order is declared in `js/apps/system-service-manifest.json`; the loader checks package integrity and allowlist membership before executing each entry. If a service is missing or fails verification/startup, NovaByte logs the failure, skips that service, continues loading the rest, and starts the OS with a dismissible degraded-services warning. These packages execute with OS-page access and must remain first-party code. Framework/bootstrap pieces such as `boot.js`, `kernel.js`, `app-registry.js`, and trust/security initialization remain ordinary scripts because they are prerequisites for safely loading packages.
+Startup order is declared in `js/apps/system-service-manifest.json`. The loader checks package identity, integrity, and the NovaByte System signature against the trust store before launching each service in AppSandbox. A manifest's `system` field alone is not authoritative. Framework/bootstrap pieces such as `boot.js`, `kernel.js`, `app-registry.js`, and trust/security initialization remain OS-page scripts because they are prerequisites for safely loading packages.
 
 Rebuild the built-in services after changing their source with:
 
@@ -209,11 +206,39 @@ In **App Manager → Packages**, user-facing system apps remain visible in the p
 
 ### Launch — permission gate
 
-Declaring a permission explains what your app may request; it does not grant access by itself. Low-risk permissions—including public internet, public WebSockets, clipboard writing, notifications, and metadata—are auto-granted unless the user previously denied them. The broad `vfs:access` grant remains high-risk because it can edit shared files; use it when building a file editor or file manager. Missing required medium-or-higher permissions use the consent queue; denying one never blocks app launch, and only that capability fails when called. Optional sensitive permissions are not prompted at launch: request them with `window.nova.requestPermission(...)` when the related feature is used.
+Declaring a permission explains what your app may request; it does not grant access by itself. Low-risk permissions—including public internet, public WebSockets, clipboard writing, and notifications—are auto-granted unless the user previously denied them. `fs:access` is special all-files access: users enable it manually in Settings, and apps cannot prompt for it. Apps can always access their own `/data/` files; shared media uses type-specific read permissions, while documents are opened or saved only after user selection in a file picker. Missing required medium-or-higher permissions use the consent queue; denying one never blocks app launch, and only that capability fails when called. Optional sensitive permissions are not prompted at launch: request them with `window.nova.requestPermission(...)` when the related feature is used.
 
 This follows the Android distinction between ordinary install-time capabilities and sensitive access: public internet is available to apps that declare it, while internal-network access, personal data, broad shared-file editing, sensors, and powerful sandbox capabilities remain explicit. Auto-grant is based on the OS risk catalogue—not on an app's `required` label—and a previous denial is never silently replaced.
 
 Design your app so each sensitive feature is independently optional. Explain the reason at the moment of use, request the permission then, and offer a useful fallback if it is denied.
+
+### Linux per-app process mode
+
+On disk-installed NBOSP x86_64 systems, verified third-party packages are
+installed and launched in a separate NW.js process under a stable, app-specific
+Linux UID. The Linux runtime requires the opt-in Weston session; launches fail
+closed under Cage or if the restricted Wayland socket is unavailable. This is
+separate from the webview sandbox described below and is not available on
+other platforms.
+
+In this mode, renderer Node.js integration is disabled. The OS injects
+`window.nova.ipc(...)` and provides the same documented NovaByte API bridge;
+supported calls pass through the OS permission handlers. The app should use
+the documented APIs rather than relying on Node.js modules, direct process
+access, or the webview host DOM. Window-dependent and other unsupported APIs
+may be unavailable in this mode.
+
+Linux owner-match firewall rules block direct IPv4/IPv6 network egress from
+the app UID except to the local NovaByte broker. Use `nova:net:fetch` for
+network requests; it is checked by the OS permission manager. The UID
+boundary is reinforced by a seccomp syscall filter, per-process rlimits, and
+a cgroup v2 with a 2 GiB memory cap, two-CPU quota, and 256-process/thread
+limit. An SELinux reference policy and app domain are loaded in permissive
+mode during initial integration; SELinux labels and transitions exist, but
+SELinux is not yet enforcing access decisions. Do not treat this as an
+Android-equivalent security boundary. See the
+[OS isolation notes](./NBOSP/os/README.md#per-app-linux-process-isolation)
+for the trust assumptions and remaining limitations.
 
 ### Launch — sandbox
 
@@ -525,19 +550,19 @@ Permissions are declared in `manifest.json` and checked before the app loads. Lo
 
 The three Sandbox permissions have additional manifest opt-ins. `sandbox:nested-webview` requires either the top-level `allowNestedWebview` field or its declaration in `permissions`, as well as the user grant. `sandbox:same-origin` requires `sandbox.allowSameOrigin`, and `sandbox:escape-popups` requires `allowPopupsToEscapeSandbox`; those flags and the matching grants must both be present before the underlying sandbox attributes are added.
 
-`clipboard:read`/`clipboard:write` are distinct: reading clipboard contents remains high-risk, while writing is low-risk and auto-granted when declared. Existing apps with `vfs:read` retain the old clipboard fallback for compatibility; new manifests should request the clipboard permission they actually need.
+`clipboard:read`/`clipboard:write` are distinct: reading clipboard contents remains high-risk, while writing is low-risk and auto-granted when declared. New manifests should request the clipboard permission they actually need.
 
-`vfs:metadata` is worth calling out specifically: it existed in the permission registry from the start, but the handler behind it (`nova:vfs:stat`) checked `vfs:read` instead — declaring `vfs:metadata` alone in a manifest silently did nothing. That's now fixed; `vfs:metadata` genuinely gates `nova:vfs:stat` on its own (an app with `vfs:read` still works too, since full read is a superset of metadata-only access).
+Filesystem permissions follow scoped-storage rules: app-owned files need no grants; shared media requires a matching read grant; and document access is user-picker mediated. `fs:metadata` grants metadata-only access to shared files, not file contents. `fs:access` is manually enabled special access for the shared filesystem and never grants access to another app's private `/data/` directory.
 
 `system:background`, `system:background:live`, and `system:autostart` are three deliberately separate grants for background execution, not one permission in disguise — see [Background execution](#background-execution--novabackground) below for how they differ and how to use each.
 
 | Permission | Category | Risk | Useful for |
 |------------|----------|------|------------|
-| `vfs:access` | Filesystem | High | Reading and editing user files throughout the shared NovaByte VFS; one grant covers read/write |
-| `vfs:read` | Filesystem | Medium | Reading shared VFS files and your own app data |
-| `vfs:write` | Filesystem | High | Writing only to your own app data |
-| `vfs:delete` | Filesystem | Critical | Deleting shared files and your own app data |
-| `vfs:metadata` | Filesystem | Low | Listing/sizing files without reading contents |
+| `fs:access` | Filesystem | Critical | Special access to shared files; users enable it manually in Settings |
+| `fs:metadata` | Filesystem | Medium | Reading metadata for shared files without their contents |
+| `fs:read:images` | Filesystem | Medium | Reading shared images |
+| `fs:read:video` | Filesystem | Medium | Reading shared videos |
+| `fs:read:audio` | Filesystem | Medium | Reading shared audio |
 | `net:internal` | Network | High | Calling this OS's own API/server endpoints and explicitly authorized internal/private-network destinations; known cloud-metadata address literals are blocked by the network guards |
 | `net:external` | Network | Low | Calling public internet services (declare in the manifest; auto-granted unless previously denied) |
 | `net:websocket` | Network | Low | Public WebSocket connections (declare in the manifest; auto-granted unless previously denied) |
@@ -562,7 +587,7 @@ The three Sandbox permissions have additional manifest opt-ins. `sandbox:nested-
 | `system:apps` | System | Medium | Launchers, app-store-style installers, dock/dashboard replacements |
 | `system:app-launch` | System | Low | Launching an installed app without access to app inventory or management |
 | `system:events` | System | Medium | Reacting to OS-level events (theme change, etc.) |
-| `system:root` | System | Critical | Running the app's `unrestrictedEntry` as its complete host-page implementation instead of loading its HTML entry in the app sandbox; requires Developer Mode, Root Access, and a separate explicit confirmation |
+| `system:root` | System | Critical | Unrestricted OS-page execution for a packaged app entry when Developer Mode and Root Access are enabled |
 | `system:background` | System | Medium | Periodic sync/checks while closed — reminders, cache refresh, polling (see below) |
 | `system:background:live` | System | High | Staying alive after the window closes — timers, active transfers, live connections (see below) |
 | `system:autostart` | System | High | Launching automatically at OS startup with no user action at all (see below) |
@@ -580,7 +605,7 @@ The three Sandbox permissions have additional manifest opt-ins. `sandbox:nested-
 
 ```json
 {
-  "permissions": ["vfs:read", "net:internal"],
+  "permissions": ["fs:read:images", "net:internal"],
   "optionalPermissions": ["device:notifications"]
 }
 ```
@@ -592,7 +617,7 @@ Required medium-or-higher-risk permissions are prompted for at launch, but a den
 Use the `window.nova.requestPermission` convenience wrapper (or call `nova.ipc('nova:request-permission', ...)` directly — they're equivalent):
 
 ```javascript
-const { granted } = await window.nova.requestPermission('vfs:write', 'Needed to save your documents.');
+const { granted } = await window.nova.requestPermission('fs:read:images', 'Needed to display shared images.');
 console.log(granted); // true or false
 ```
 
@@ -600,8 +625,8 @@ console.log(granted); // true or false
 
 ```javascript
 const { granted } = await window.nova.ipc('nova:request-permission', {
-  permission: 'vfs:write',
-  reason: 'Needed to save your documents.',
+  permission: 'fs:read:images',
+  reason: 'Needed to display shared images.',
   permanent: false,
 });
 ```
@@ -621,7 +646,7 @@ If you need to check cooldown status without triggering a new prompt (e.g. to sh
 
 ```javascript
 const status = await window.nova.ipc('nova:permission-rate-limited', {
-  permission: 'vfs:write',
+  permission: 'fs:read:images',
 });
 // { limited: false }
 // or, mid-cooldown: { limited: true, retryAfterMs: 4213 }
@@ -672,7 +697,7 @@ const info = await window.nova.ipc('nova:ready', {});
 // {
 //   success: true,
 //   appId: 'com.example.myapp',
-//   permissions: ['vfs:read', 'device:notifications'],
+//   permissions: ['fs:read:images', 'device:notifications'],
 //   optionalPermissions: ['net:external'],
 //   osVersion: '3.0.0',
 //   securityPatch: '2026-05-01'
@@ -698,6 +723,59 @@ const removeStateListener = window.nova.app.onStateChange(({ visible, focused })
 ```
 
 `onLaunch` reports this app window's initial options; it is not an app-to-app broadcast channel. `onStateChange` reports this document's visibility/focus and returns an unsubscribe function. These lifecycle signals do not grant background execution; background work still requires the relevant `system:background*` permission.
+
+### Inter-app communication
+
+NovaByte uses host-brokered APIs rather than Android Binder. Explicit launches are available through `window.nova.app.launch(appId, options)` and require `system:app-launch`; this grant does not expose another app's data. `window.nova.openWith(fileId)` and `window.nova.openUrl(url)` use the OS's registered handlers/default apps for file and URL intents. A file opened through the OS chooser receives a temporary grant for that selected file only. Apps do not get a package-enumeration API through this broker, so there is no Android 11-style package-visibility query declaration.
+
+For service requests, content-provider-style data methods, and app broadcasts, both apps must have the high-risk `apps:communicate` permission. The receiving app must also declare each exported endpoint or broadcast action in its manifest; the host only routes requests to an active sandbox and never starts a provider app implicitly.
+
+```json
+{
+  "permissions": ["apps:communicate"],
+  "ipc": {
+    "exports": [
+      "service:com.example.weather.current",
+      "provider:com.example.contacts.lookup"
+    ],
+    "receives": ["com.example.notes.changed"]
+  }
+}
+```
+
+The endpoint prefixes distinguish service calls from provider-style data calls. Each endpoint is a request/reply callback implemented by the receiving app:
+
+```javascript
+const stopProviding = await window.nova.ipc.provide(
+  'provider:com.example.contacts.lookup',
+  async ({ sourceAppId, data }) => {
+    if (data.query !== 'Ada') return null;
+    return { id: 'contact-1', name: 'Ada' };
+  }
+);
+
+const response = await window.nova.ipc.call(
+  'com.example.contacts',
+  'provider:com.example.contacts.lookup',
+  { query: 'Ada' }
+);
+console.log(response.result);
+```
+
+Provider callbacks return data chosen by the provider; they do not grant direct access to its filesystem, database, or private app directory. Treat requests and returned data as untrusted, validate the request shape, and return only the minimum data needed. Calls require both apps to hold `apps:communicate`, target an exported endpoint, and reach a running sandbox. Requests time out after 25 seconds, allow up to 64 KB of JSON data, and are limited to 20 per app per minute.
+
+Broadcast actions are also opt-in and delivered only to active apps that declare the action under `ipc.receives`, subscribe to it, and hold `apps:communicate`:
+
+```javascript
+const stopListening = await window.nova.ipc.onBroadcast(
+  'com.example.notes.changed',
+  ({ sourceAppId, data }) => refreshNote(data.noteId)
+);
+
+await window.nova.ipc.broadcast('com.example.notes.changed', { noteId: 'note-1' });
+```
+
+Each `provide` and `onBroadcast` registration resolves to an unsubscribe function; call it when the app no longer needs the endpoint or subscription. `onEvent` remains the separate OS-event API. App broadcasts cannot forge system events.
 
 ### Appearance — `window.nova.appearance`
 
@@ -744,7 +822,7 @@ Only credential-free HTTP(S) links are accepted. Text is limited to 4000 charact
 
 ### Picker-scoped files — `window.nova.files`
 
-Use these methods when an app needs to import or export a document the user explicitly selects. They do not require broad `vfs:read` or `vfs:write`; the picker mediates access to one chosen VFS file or save destination. The picker can show shared user files and the calling app's own private data, never another app's private `/data/<app-id>/` folder. They do not provide unrestricted access to host disk or persistent file handles:
+Use these methods when an app needs to import or export a document the user explicitly selects. The picker mediates access to one chosen file or save destination. The picker can show shared user files and the calling app's own private data, never another app's private `/data/<app-id>/` folder. It does not provide unrestricted access to host disk or persistent file handles:
 
 ```javascript
 const opened = await window.nova.files.open({
@@ -752,7 +830,7 @@ const opened = await window.nova.files.open({
   accept: ['text/plain', 'application/json']
 });
 if (!opened.cancelled) {
-  console.log(opened.file.name, opened.file.content);
+  console.log(opened.file.id, opened.file.name, opened.file.content);
 }
 
 const saved = await window.nova.files.save({
@@ -764,61 +842,54 @@ const saved = await window.nova.files.save({
 if (!saved.cancelled) console.log('Saved:', saved.file.path);
 ```
 
-Open/save calls return `{ cancelled: true }` when dismissed. The first version is text-only and capped at 10 MB. Use the existing `nova:vfs:*` APIs when your app needs ongoing access to its own VFS data; use `nova:files` for a user-selected import/export flow.
+Open/save calls return `{ cancelled: true }` when dismissed. The first version is text-only and capped at 10 MB. A selected file's id can be used with `nova:fs:*` for the lifetime of that sandbox, with a confirmation for shared-file changes. Use `nova:files` for user-selected import/export.
 
-### Filesystem — `nova:vfs:*`
+### Filesystem — `nova:fs:*`
 
-The broad `vfs:access` permission enables reading and editing the shared user-visible tree with one grant. Separate `vfs:read` and `vfs:write` permissions remain available for narrower access; `vfs:write` alone is limited to your app's private data. `vfs:delete` is still separate and required to delete files. This is **NovaByte's own OS-managed virtual filesystem** — the same data the built-in Files app shows (worker/IndexedDB-backed), never real Node `fs` or real host disk.
+The filesystem is scoped by ownership and user choice:
 
-**Ownership scoping:** `vfs:read` and `vfs:access` can see shared files and your app's own `/data/<your-app-id>/` folder, but never another app's private `/data/<other-app-id>/` folder. `vfs:access` can create, edit, rename, move, and make folders in the shared tree as well as your app's own data. `vfs:write` without `vfs:access` remains limited to your app's private data. `vfs:delete` is separate, and apps cannot delete the filesystem root, `/data`, or the Trash folder. Deleting your app's private files keeps them private while they are in Trash; no grant gives access to another app's private data.
+- Apps can read, write, list, rename, move, and delete files in their own `/data/` directory without declaring a filesystem permission.
+- Shared images, videos, and audio require `fs:read:images`, `fs:read:video`, or `fs:read:audio`, respectively. `fs:metadata` permits metadata-only access; it does not permit reading contents.
+- Shared documents and other non-media files are accessed through a file picker. Selecting a file grants that sandbox access to that file for the session; modifying, renaming, moving, or deleting it asks the user to confirm.
+- `fs:access` enables broad access to shared files. It is special access managed manually in Settings, not a permission an app can prompt for. It does not expose another app's private `/data/` directory.
+- Apps cannot delete the filesystem root, `/data`, or the Trash folder. App-owned files remain private while in Trash.
 
 `<your-app-id>` above is filled in automatically by the host from whatever you pass — **you should never write your own literal app id into a path**. See [`/data/` path rewriting](#data-path-rewriting--read-this-before-you-build-anything) just below for the exact rules; getting this wrong is the single most common reason a fresh app's file tree looks empty, wrong, or throws `NOT_FOUND`.
 
 ```javascript
-// Read a file (requires vfs:read or vfs:access)
-const { content, size, modified } = await window.nova.ipc('nova:vfs:read', { path: '/docs/notes.txt' });
+// Read a file in your app's own storage (no permission required)
+const { content, size, modified } = await window.nova.ipc('nova:fs:read', { path: '/data/notes.txt' });
 
-// List a folder's contents (requires vfs:read or vfs:access) — separate channel from read
-const { files } = await window.nova.ipc('nova:vfs:list', { path: '/docs' });
+// Read shared media only after declaring the matching permission
+const image = await window.nova.ipc('nova:fs:read', { path: '/Pictures/photo.png' });
+
+// List your app's files (no permission required)
+const { files } = await window.nova.ipc('nova:fs:list', { path: '/data/' });
 // files: [{ id, name, type, mimeType, size, modified, created }, ...]
 
-// Get metadata only, no file content (requires vfs:metadata — vfs:read or vfs:access also
-// works, since full read is a superset of metadata-only access)
-const { stat } = await window.nova.ipc('nova:vfs:stat', { path: '/docs/notes.txt' });
+// Get metadata only for a shared file (requires fs:metadata or its media read grant)
+const { stat } = await window.nova.ipc('nova:fs:stat', { path: '/Pictures/photo.png' });
 // stat: { id, name, type, mimeType, size, path, parentId, created, modified, accessed, tags }
 
-// Write a shared file (requires vfs:access)
-await window.nova.ipc('nova:vfs:write', { path: '/Documents/notes.txt', content: 'Hello' });
+// Write under your app's data (no permission required)
+await window.nova.ipc('nova:fs:write', { path: '/data/notes.txt', content: 'Hello' });
 
-// Or use the narrower vfs:write grant to write only under your app's /data/
-await window.nova.ipc('nova:vfs:write', { path: '/data/notes.txt', content: 'Hello' });
-
-// Create a shared folder (requires vfs:access); 'path' is the parent folder.
-await window.nova.ipc('nova:vfs:mkdir', { path: '/Documents/', name: 'exports' });
-
-// Or create one under your app root with vfs:write; omit path for app root.
+// Create a folder under your app root; omit path for app root.
 // NOTE: 'path' must include the trailing slash ('/data/', not '/data') — see
 // the path-rewriting section right below for why this distinction matters.
-await window.nova.ipc('nova:vfs:mkdir', { path: '/data/', name: 'exports' });
+await window.nova.ipc('nova:fs:mkdir', { path: '/data/', name: 'exports' });
 
-// Rename a shared file/folder (requires vfs:access)
-await window.nova.ipc('nova:vfs:rename', { path: '/Documents/notes.txt', name: 'renamed.txt' });
+// Rename a file/folder in your app data
+await window.nova.ipc('nova:fs:rename', { path: '/data/notes.txt', name: 'renamed.txt' });
 
-// Rename a file/folder in your app data (requires vfs:write)
-await window.nova.ipc('nova:vfs:rename', { path: '/data/notes.txt', name: 'renamed.txt' });
+// Move a file/folder under your app data
+await window.nova.ipc('nova:fs:move', { path: '/data/notes.txt', destPath: '/data/exports/notes.txt' });
 
-// Move a shared file/folder (requires vfs:access); source and destination
-// must both be in the shared tree or your own app data.
-await window.nova.ipc('nova:vfs:move', { path: '/Documents/notes.txt', destPath: '/Documents/exports/' });
+// Delete a file in your app data (no permission required)
+await window.nova.ipc('nova:fs:delete', { path: '/data/notes.txt' });
 
-// Delete a shared or app-owned file (requires vfs:delete)
-await window.nova.ipc('nova:vfs:delete', { path: '/Documents/notes.txt' });
-
-// Move a file/folder under your app data with vfs:write
-await window.nova.ipc('nova:vfs:move', { path: '/data/notes.txt', destPath: '/data/exports/notes.txt' });
-
-// Delete a file (requires vfs:delete)
-await window.nova.ipc('nova:vfs:delete', { path: '/data/notes.txt' });
+// For shared documents, use nova:files.open() to choose one; destructive
+// changes through nova:fs require a separate confirmation from the user.
 ```
 
 #### `/data/` path rewriting — read this before you build anything
@@ -854,7 +925,7 @@ The first time your app's `/data/<your-app-id>/` folder is set up, the host pre-
   shared_prefs/   — simple key-value settings
 ```
 
-This mirrors Android's internal-storage convention by name, but **nothing in the VFS enforces any behavioral difference between them** — they're plain folders with suggestive names, not special-cased storage tiers. Writing directly to your app root (e.g. `/data/notes.txt`) works exactly the same as writing into one of these subfolders; using them is a naming convention for your own organization, not a requirement.
+This mirrors Android's internal-storage convention by name, but the subfolders are organizational only. Writing directly to your app root (e.g. `/data/notes.txt`) works exactly the same as writing into one of these subfolders; using them is a naming convention for your own organization, not a requirement.
 
 **Why this matters for you:** if your app lists its own root right after install and expects an empty folder, you'll see these four folders already sitting there. That's expected — it isn't stray data left by a previous run, and you don't need to (and can't meaningfully) delete and recreate them. If you're building a file browser or similar UI, decide up front whether to show these to the user as-is or filter them out of the view — most simple content apps (a notes app, a text editor) will want to hide or ignore them rather than surface OS-internal scaffolding as if it were user-created content.
 
@@ -878,7 +949,7 @@ Rate limited to 10 notifications per app per minute. Once exceeded, further call
 ### Clipboard — `nova:clipboard:*`
 
 ```javascript
-// Read clipboard (requires clipboard:read; vfs:read is a legacy fallback)
+// Read clipboard (requires clipboard:read)
 const { text } = await window.nova.ipc('nova:clipboard:read', {});
 
 // Write clipboard (declare clipboard:write; low-risk grant is auto-granted)
@@ -909,7 +980,7 @@ See [App management — `nova:app:*` / `window.nova.apps`](#app-management-novaa
 
 ### Network — `fetch()` / `nova:net:fetch`
 
-You generally don't need to call `nova:net:fetch` directly — `window.fetch` and `XMLHttpRequest` inside your app are already routed through the bridge, so plain `fetch(url, opts)` works as-is once the relevant `net:*` permission is granted:
+You generally don't need to call `nova:net:fetch` directly — `window.fetch` inside your app is routed through the bridge, so plain `fetch(url, opts)` works once the relevant `net:*` permission is granted:
 
 ```javascript
 // Requires net:external (or net:internal for same-origin requests)
@@ -920,6 +991,11 @@ const data = await res.json();
 ```
 
 **Exception — fetching your own bundled files:** a same-origin `fetch()` for a file this app already ships (e.g. `module.wasm` in the `native-cpp` template, loaded internally by Emscripten's glue code) does not require a `net:*` permission. It's treated the same as a `<script src>` or `<img src>` reading a bundled asset, not as outbound network access.
+
+On Linux per-app process mode, use `fetch()` rather than `XMLHttpRequest` or
+WebSocket: direct process network egress is blocked and those APIs are not
+bridged in that mode. The NovaByte broker enforces `net:external` and
+`net:internal` permissions for `fetch()` requests.
 
 ### WebSocket — `nova:net:websocket` / `window.nova.websocket`
 
@@ -1188,7 +1264,7 @@ There's no event for arbitrary custom app-to-app messaging — the bus is OS-to-
 
 ### Background execution — `nova:background:*`
 
-Three separate permissions cover three genuinely different questions — none of them implies another, the same way `vfs:read` doesn't imply `vfs:write`:
+Three separate permissions cover three genuinely different questions — none of them implies another, the same way `fs:read:images` doesn't imply `fs:read:audio`:
 
 | Permission | Answers | Your app needs to have been opened by the user first? |
 |------------|---------|---------|
@@ -1279,14 +1355,14 @@ Both interfaces use the same host-side storage service and retain its per-app is
 ### File picker — `nova:dialog:*`
 
 ```javascript
-// Open file picker (requires vfs:read or vfs:access)
+// Open file picker (user selection grants access to the chosen file)
 const file = await window.nova.ipc('nova:dialog:open', {
   accept: ['.txt', '.md'],
   multiple: false,
 });
 // { path, name, content }
 
-// Save file picker (requires vfs:write or vfs:access)
+// Save file picker (user selection grants access to the chosen destination)
 await window.nova.ipc('nova:dialog:save', {
   filename: 'notes.txt',
   content: 'Hello',
@@ -1295,13 +1371,13 @@ await window.nova.ipc('nova:dialog:save', {
 
 ### Styled file picker — `nova:sysdialog:*`
 
-A second, additional file-picker pair, separate from `nova:dialog:*` above and not a replacement for it — both keep working independently, so switching to this one is opt-in. Where `nova:dialog:*` renders its own minimal one-off overlay, `nova:sysdialog:*` opens the same shared, Files-app-styled VFS browser (`SystemDialogs`) that built-in apps like TextEdit use for Save As / Open — real folder navigation with back/up buttons and a path bar, an icon grid instead of a plain list, and no "save as type" dropdown (the payload already tells the host what kind of file this is; a type selector would be redundant). `vfs:access` also satisfies either operation; otherwise `vfs:read` opens and `vfs:write` saves within your app data.
+A second, additional file-picker pair, separate from `nova:dialog:*` above and not a replacement for it — both keep working independently, so switching to this one is opt-in. Where `nova:dialog:*` renders its own minimal one-off overlay, `nova:sysdialog:*` opens the same shared, Files-app-styled filesystem browser (`SystemDialogs`) that built-in apps like TextEdit use for Save As / Open — real folder navigation with back/up buttons and a path bar, an icon grid instead of a plain list, and no "save as type" dropdown (the payload already tells the host what kind of file this is; a type selector would be redundant). The picker itself grants access to the chosen item or destination.
 
 ```javascript
-// Open picker (requires vfs:read or vfs:access)
+// Open picker (user selection grants access to the chosen file)
 const result = await window.nova.ipc('nova:sysdialog:open', {
   title: 'Import',            // optional, defaults to "Open"
-  startFolderId: undefined,   // optional VFS folder id to start in; defaults to root
+  startFolderId: undefined,   // optional folder id to start in; defaults to root
 });
 if (result.cancelled) {
   // user backed out of the dialog — not an error
@@ -1309,12 +1385,12 @@ if (result.cancelled) {
   const { id, name, content, mimeType, size, path } = result.file;
 }
 
-// Save picker (requires vfs:write or vfs:access) — writes the file itself once a
+// Save picker — writes the file itself once a
 // destination is chosen, then returns the new node's info.
 const result = await window.nova.ipc('nova:sysdialog:save', {
   title: 'Save As',            // optional, defaults to "Save As"
   suggestedName: 'notes.txt',  // optional, prefills the filename box
-  startFolderId: undefined,    // optional VFS folder id to start in; defaults to root
+  startFolderId: undefined,    // optional folder id to start in; defaults to root
   content: 'Hello',
   mimeType: 'text/plain',      // optional, defaults to 'text/plain'
 });
@@ -1336,16 +1412,40 @@ Both channels are on the same interactive, long-timeout tier as `nova:dialog:*` 
 | `PERMISSION_DENIED` | Required permission not granted |
 | `INVALID_ARGS` | Missing or invalid payload fields |
 | `NOT_FOUND` | File or resource not found |
+| `REMOTE_ERROR` | A remote app's IPC callback failed or did not respond in time |
+| `ALREADY_REGISTERED` | This sandbox already registered the endpoint |
 | `QUOTA_EXCEEDED` | Storage limit reached |
 | `NETWORK_ERROR` | Fetch failed |
 | `RATE_LIMITED` | Too many calls to a rate-limited API in the current window (e.g. notifications) |
-| `UNAVAILABLE` | The underlying OS service isn't available, a required upstream connection isn't set up yet (e.g. no email account connected), or a machine-level gate is closed (e.g. `admin:*` when the machine isn't in admin mode) |
+| `UNAVAILABLE` | The underlying OS service isn't available, an IPC endpoint isn't running, a required upstream connection isn't set up yet (e.g. no email account connected), or a machine-level gate is closed (e.g. `admin:*` when the machine isn't in admin mode) |
 | `UNVERIFIED` | `nova:app:install` rejected an unsigned or trust-store-unverified package — this is a correct, fail-closed rejection, not a bug |
 | `GEOLOCATION_ERROR` | The browser's geolocation API itself failed or timed out (separate from `PERMISSION_DENIED`, which means the app-level grant was missing) |
 
 ---
 
 ## Security
+
+### Sandbox model and app isolation
+
+NovaByte's current app runtime uses NW.js webview guests and a host-side capability broker:
+
+```text
+[NovaByte app guest]
+        |
+        | validated nova:* IPC + per-app grants
+        v
+[NovaByte host broker] ---- [scoped FS / OS services]
+```
+
+The host broker checks the calling app identity and its grants for each privileged operation. App-private files are scoped under the app's own `/data/<app-id>/` directory; shared filesystem access is mediated by the FS API and picker-granted file IDs. Cross-app service/provider requests and broadcasts are separately permissioned and limited to manifest-declared targets. These boundaries are not equivalent to kernel-enforced per-UID isolation.
+
+This is not Android: apps do not run inside ART, and the current runtime does not assign a distinct Linux UID or SELinux domain to each app. An NW.js renderer guest is not a separate Linux user, and JavaScript's managed runtime must not be described as protection against all memory or native-code vulnerabilities.
+
+The x86_64 Buildroot configuration now includes an **experimental UID-provisioning substrate**: a root-only supervisor can allocate a stable UID for a validated app ID and prepare a private data directory. A root-owned local socket service permits the desktop UID to request provisioning and authenticates the peer UID; it does not accept launch commands or arbitrary paths. An opt-in Weston desktop-shell proof of concept can host the NovaByte interface beside a separate `weston-terminal` process; it is still the same desktop UID, and NovaByte apps still run in webviews. This is groundwork, not a completed app runtime migration. There is no trusted app registry, no launch under app UIDs, and no install/update/uninstall or desktop-launch integration. Provisioning requires persistent storage mounted at `/var/lib`; it deliberately fails on the live image's volatile filesystem.
+
+The actual NovaByte app runtime still uses NW.js webview guests and the host-side capability broker described above. It does not assign Linux UIDs to those renderer processes. Per-app Linux isolation is **not active yet**: the supervisor's `launch` command explicitly rejects requests until there is a root-owned package registration, a fixed runtime/entry contract, and authenticated broker integration. Do not treat an app manifest, permission grant, or provisioned UID as evidence that the app is running under that UID.
+
+The intended Linux design is a dedicated runtime process per app, launched under its stable UID with a private data directory. A narrowly scoped host broker will authenticate app identity at the process boundary and mediate OS capabilities and inter-app requests. UID separation provides kernel-enforced file/process ownership boundaries, but is not by itself a complete sandbox: graphical-session access, network access, runtime syscalls, and native-code vulnerabilities require separate policy and testing. SELinux domains or seccomp filters may be added only after the target Buildroot kernel/runtime and NW.js process model support them; no unverified policy is implied here. ART is Android-specific and is not part of the Linux design.
 
 
 ### `eval()` auditing
