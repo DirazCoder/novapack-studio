@@ -294,6 +294,55 @@ function collectProjectFiles(absDir, onSkip = () => {}) {
   return files;
 }
 
+function previewProjectFiles(projectDir) {
+  const absDir = path.resolve(projectDir);
+  if (!fs.existsSync(absDir) || !fs.statSync(absDir).isDirectory()) {
+    throw new Error(`Project directory not found: ${absDir}`);
+  }
+
+  const included = [];
+  const excluded = [];
+  const matcher = loadStudioIgnore(absDir);
+  const visit = (dir, base = '') => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const rel = base ? `${base}/${name}` : name;
+      const stats = fs.statSync(full);
+      const isDirectory = stats.isDirectory();
+
+      if (matcher.ignores(isDirectory ? `${rel}/` : rel)) {
+        excluded.push({ path: rel, reason: 'Excluded by .studioignore' });
+        continue;
+      }
+      if (name === 'node_modules' || name.startsWith('.')) {
+        excluded.push({ path: rel, reason: name === 'node_modules' ? 'Build excludes node_modules' : 'Build excludes dotfiles and dot-directories' });
+        continue;
+      }
+      if (isDirectory) {
+        visit(full, rel);
+      } else if (name === 'manifest.json' || name === 'novaapp.json') {
+        excluded.push({ path: rel, reason: 'Manifest is packaged separately' });
+      } else {
+        included.push(rel);
+      }
+    }
+  };
+  visit(absDir);
+
+  const generated = detectCppSources(absDir).flatMap((source) => {
+    const relative = path.relative(absDir, source).split(path.sep).join('/');
+    const js = relative.replace(/\.(cpp|cc|cxx|c)$/i, '.js');
+    return [`${js}`, `${js.replace(/\.js$/i, '.wasm')}`]
+      .map((output) => ({ path: output, reason: `Generated from ${relative} by bundled Emscripten` }));
+  });
+
+  return {
+    included: included.sort((a, b) => a.localeCompare(b)),
+    excluded: excluded.sort((a, b) => a.path.localeCompare(b.path)),
+    generated: generated.sort((a, b) => a.path.localeCompare(b.path)),
+  };
+}
+
 // ── Build ──────────────────────────────────────────────────────────────────
 
 /**
@@ -380,6 +429,30 @@ async function build({ projectDir, outDir, onLog = () => {}, signingKey, signerN
       const legacy = manifest[field].filter((permission) => LEGACY_PERMISSION_ALIASES[permission]);
       if (legacy.length) {
         warn(`Legacy permissions retained for compatibility: ${legacy.join(', ')}`);
+      }
+    }
+
+    if (manifest.permissionReasons !== undefined) {
+      const reasons = manifest.permissionReasons;
+      if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons)) {
+        err('manifest.json permissionReasons must be an object');
+        return { success: false, error: 'permissionReasons must be an object' };
+      }
+      const declaredPermissions = new Set([
+        ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+        ...(Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : []),
+      ]);
+      for (const [permission, reason] of Object.entries(reasons)) {
+        if (typeof reason !== 'string' || !reason.trim() || reason.trim().length > 500) {
+          err(`manifest.json permissionReasons.${permission} must be a non-empty string of at most 500 characters`);
+          return { success: false, error: `Invalid reason for ${permission}` };
+        }
+        if (!PERMISSION_IDS.has(permission) && !LEGACY_PERMISSION_ALIASES[permission]) {
+          warn(`Unknown permissionReasons key: ${permission}`);
+        }
+        if (!declaredPermissions.has(permission)) {
+          warn(`permissionReasons.${permission} is unused because the permission is not declared`);
+        }
       }
     }
 
@@ -564,4 +637,4 @@ function listActions(pkgPath) {
   return [...actions].sort();
 }
 
-module.exports = { build, inspect, verify, listActions, loadPackage, collectProjectFiles, walkProjectFiles, detectCppSources, findEmcc, emccInstallHints };
+module.exports = { build, inspect, verify, listActions, loadPackage, collectProjectFiles, walkProjectFiles, previewProjectFiles, detectCppSources, findEmcc, emccInstallHints };

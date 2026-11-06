@@ -1,7 +1,7 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <rect width="512" height="512" fill="#07090f"/>
-  <polygon points="256,44 436,148 436,356 256,460 76,356 76,148" fill="none" stroke="#22c55e" stroke-width="3"/>
-  <polygon points="256,96 396,176 396,316 256,396 116,316 116,176" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0.45"/>
-  <polygon points="256,148 356,204 356,276 256,332 156,276 156,204" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.2"/>
-  <text x="256" y="302" fill="#22c55e" font-size="108" font-weight="700" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" letter-spacing="-4">NB</text>
+  <polygon points="256,44 436,148 436,356 256,460 76,356 76,148" fill="none" stroke="#58a6ff" stroke-width="3"/>
+  <polygon points="256,96 396,176 396,316 256,396 116,316 116,176" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.45"/>
+  <polygon points="256,148 356,204 356,276 256,332 156,276 156,204" fill="none" stroke="#58a6ff" stroke-width="1" opacity="0.2"/>
+  <text x="256" y="302" fill="#58a6ff" font-size="108" font-weight="700" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" letter-spacing="-4">NB</text>
 </svg>

@@ -16,6 +16,12 @@
   const _state = () => (window.state || null);
   const _fs = () => (typeof require === 'function' ? require('fs') : null);
   const _path = () => (typeof require === 'function' ? require('path') : null);
+  const _themeAccent = () =>
+    getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#58a6ff';
+  const _themeOnAccent = () =>
+    getComputedStyle(document.documentElement).getPropertyValue('--on-accent').trim() || '#08111d';
+  const _iconSvg = (name, extraClass = '') =>
+    `<svg class="ui-icon${extraClass ? ` ${extraClass}` : ''}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#ui-icon-${name}"></use></svg>`;
 
   function _showToast(msg) {
     if (typeof window.showToast === 'function') return window.showToast(msg);
@@ -186,11 +192,11 @@
     showGridMatrix: false,
     showFlexGizmos: true,
     showPermBadges: true,
-    themePreset: null,          // 'dark'|'light'|'midnight'|'amber'|null
+    themePreset: null,          // A built-in theme ID, or null for the project default
     customComponents: [],       // [{ id, name, html, defaultProps }]
     bindings: [],               // [{ elementPath, action, eventId, perm }]
     diffPreviewEnabled: false,
-    astHighlightColor: '#22c55e',
+    astHighlightColor: '#58a6ff',
   };
 
   function _loadProState() {
@@ -203,7 +209,9 @@
       }
       const validPresets = new Set(DPI_PRESETS.map((preset) => preset.id));
       const validScales = new Set(DPI_SCALES.map((scale) => scale.id));
-      const validThemes = new Set(['nb-dark', 'nb-light', 'midnight-blue', 'amber']);
+      const validThemes = new Set([
+        'nb-dark', 'nb-light', 'legacy-green', 'amber', 'nightshade', 'high-contrast', 'forest',
+      ]);
       const validBindings = Array.isArray(saved.bindings)
         ? saved.bindings.filter((binding) => {
             if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
@@ -231,10 +239,13 @@
         showGridMatrix: typeof saved.showGridMatrix === 'boolean' ? saved.showGridMatrix : _proState.showGridMatrix,
         showFlexGizmos: typeof saved.showFlexGizmos === 'boolean' ? saved.showFlexGizmos : _proState.showFlexGizmos,
         showPermBadges: typeof saved.showPermBadges === 'boolean' ? saved.showPermBadges : _proState.showPermBadges,
-        themePreset: saved.themePreset === null || validThemes.has(saved.themePreset) ? saved.themePreset : null,
+        themePreset: saved.themePreset === 'midnight-blue'
+          ? 'legacy-green'
+          : saved.themePreset === null || validThemes.has(saved.themePreset) ? saved.themePreset : null,
         diffPreviewEnabled: typeof saved.diffPreviewEnabled === 'boolean' ? saved.diffPreviewEnabled : false,
         astHighlightColor: /^#[\da-f]{6}$/i.test(saved.astHighlightColor || '')
-          ? saved.astHighlightColor : '#22c55e',
+          ? saved.astHighlightColor === '#22c55e' ? '#58a6ff' : saved.astHighlightColor
+          : '#58a6ff',
         customComponents: Array.isArray(saved.customComponents)
           ? saved.customComponents.filter((component) =>
             component && typeof component === 'object' &&
@@ -295,6 +306,8 @@
       showPermBadges: _proState.showPermBadges,
       dpiPreset: _proState.dpiPreset,
       dpiScale: _proState.dpiScale,
+      accent: _themeAccent(),
+      onAccent: _themeOnAccent(),
     };
   }
 
@@ -306,7 +319,14 @@
     const PATH_ATTR = 'data-nb-design-path';
     let flags = {
       showGridMatrix: false, showFlexGizmos: true,
-      showPermBadges: true, dpiPreset: null, dpiScale: 1,
+      showPermBadges: true, dpiPreset: null, dpiScale: 1, accent: '#58a6ff', onAccent: '#08111d',
+    };
+    const _overlayIcon = (name) => {
+      const paths = {
+        plus: '<path d="M12 5v14M5 12h14"/>',
+        minus: '<path d="M5 12h14"/>',
+      };
+      return `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${paths[name]}</svg>`;
     };
 
     // ── Permission badge overlay ──────────────────────────────────────────
@@ -323,7 +343,7 @@
 
     const PERM_COLORS = {
       low: '#16a34a', medium: '#d29922', high: '#f0883e',
-      critical: '#f85149', _default: '#58a6ff',
+      critical: '#f85149',       _default: null,
     };
 
     function _permRisk(id) {
@@ -404,7 +424,7 @@
           const chip = document.createElement('div');
           chip.className = '__nbpro_perm_chip';
           const risk = _permRisk(perm);
-          const color = PERM_COLORS[risk] || PERM_COLORS._default;
+          const color = PERM_COLORS[risk] || flags.accent || '#58a6ff';
           chip.style.cssText =
             'position:absolute;' +
             `left:${rect.right - (4 + (perms.length - i) * 56)}px;` +
@@ -477,7 +497,7 @@
       const wrap = document.createElement('div');
       wrap.className = '__nbpro_gizmo __nbpro_gizmo--' + axis;
       wrap.style.cssText = 'position:absolute;display:flex;gap:2px;' +
-        'background:rgba(7,9,15,0.92);border:1px solid #22c55e;border-radius:6px;' +
+        `background:rgba(7,9,15,0.92);border:1px solid ${flags.accent};border-radius:6px;` +
         'padding:3px;pointer-events:auto;';
       const cap = document.createElement('span');
       cap.style.cssText = 'font:600 8px/1 "JetBrains Mono",monospace;color:#8b949e;' +
@@ -489,8 +509,8 @@
         const active = opt === current;
         b.style.cssText =
           `font:600 8px/1 "JetBrains Mono",monospace;border:none;border-radius:3px;` +
-          `padding:3px 5px;cursor:pointer;color:${active ? '#0d1117' : '#c9d1d9'};` +
-          `background:${active ? '#22c55e' : 'rgba(255,255,255,0.06)'};`;
+          `padding:3px 5px;cursor:pointer;color:${active ? flags.onAccent : '#c9d1d9'};` +
+          `background:${active ? flags.accent : 'rgba(255,255,255,0.06)'};`;
         b.textContent = opt.split('-')[0];
         b.title = opt;
         b.addEventListener('click', (e) => {
@@ -541,8 +561,8 @@
       gapHandle.style.cssText =
         `position:absolute;top:${top + rect.height + 6}px;left:${left}px;` +
         `font:600 8px/1 "JetBrains Mono",monospace;` +
-        `background:rgba(7,9,15,0.92);border:1px solid #22c55e;border-radius:6px;` +
-        `padding:4px 8px;pointer-events:auto;cursor:ew-resize;color:#22c55e;`;
+        `background:rgba(7,9,15,0.92);border:1px solid ${flags.accent};border-radius:6px;` +
+        `padding:4px 8px;pointer-events:auto;cursor:ew-resize;color:${flags.accent};`;
       gapHandle.textContent = 'gap: ' + cs.gap;
       gapHandle.title = 'Drag to adjust gap';
       let gStartX = 0, gStartGap = 0;
@@ -598,9 +618,10 @@
         const b = document.createElement('button');
         b.style.cssText =
           'font:600 8px/1 "JetBrains Mono",monospace;border:none;border-radius:3px;' +
-          'padding:3px 6px;cursor:pointer;background:rgba(34,197,94,0.18);color:#22c55e;';
-        b.textContent = '−';
+          `padding:3px 6px;cursor:pointer;background:color-mix(in srgb, ${flags.accent} 18%, transparent);color:${flags.accent};`;
+        b.innerHTML = _overlayIcon('minus');
         b.title = 'Remove column ' + (i + 1);
+        b.setAttribute('aria-label', b.title);
         b.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -614,9 +635,10 @@
       const addCol = document.createElement('button');
       addCol.style.cssText =
         'font:600 8px/1 "JetBrains Mono",monospace;border:none;border-radius:3px;' +
-        'padding:3px 6px;cursor:pointer;background:rgba(34,197,94,0.18);color:#22c55e;';
-      addCol.textContent = '+ col';
+        `padding:3px 6px;cursor:pointer;background:color-mix(in srgb, ${flags.accent} 18%, transparent);color:${flags.accent};`;
+      addCol.innerHTML = _overlayIcon('plus') + ' Column';
       addCol.title = 'Add a column track';
+      addCol.setAttribute('aria-label', addCol.title);
       addCol.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -636,9 +658,10 @@
         const b = document.createElement('button');
         b.style.cssText =
           'font:600 8px/1 "JetBrains Mono",monospace;border:none;border-radius:3px;' +
-          'padding:3px 5px;cursor:pointer;background:rgba(34,197,94,0.18);color:#22c55e;';
-        b.textContent = '−';
+          `padding:3px 5px;cursor:pointer;background:color-mix(in srgb, ${flags.accent} 18%, transparent);color:${flags.accent};`;
+        b.innerHTML = _overlayIcon('minus');
         b.title = 'Remove row ' + (i + 1);
+        b.setAttribute('aria-label', b.title);
         b.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -652,9 +675,10 @@
       const addRow = document.createElement('button');
       addRow.style.cssText =
         'font:600 8px/1 "JetBrains Mono",monospace;border:none;border-radius:3px;' +
-        'padding:3px 5px;cursor:pointer;background:rgba(34,197,94,0.18);color:#22c55e;';
-      addRow.textContent = '+ row';
+        `padding:3px 5px;cursor:pointer;background:color-mix(in srgb, ${flags.accent} 18%, transparent);color:${flags.accent};`;
+      addRow.innerHTML = _overlayIcon('plus') + ' Row';
       addRow.title = 'Add a row track';
+      addRow.setAttribute('aria-label', addRow.title);
       addRow.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -672,8 +696,8 @@
         areaHint.style.cssText =
           `position:absolute;top:${top + rect.height + 6}px;left:${left}px;` +
           `font:600 8px/1.4 "JetBrains Mono",monospace;` +
-          `background:rgba(7,9,15,0.92);border:1px solid #22c55e;border-radius:6px;` +
-          `padding:4px 8px;color:#22c55e;pointer-events:auto;white-space:pre;`;
+          `background:rgba(7,9,15,0.92);border:1px solid ${flags.accent};border-radius:6px;` +
+          `padding:4px 8px;color:${flags.accent};pointer-events:auto;white-space:pre;`;
         areaHint.textContent = 'areas:\n' + areas.join('\n');
         gridOverlay.appendChild(areaHint);
       }
@@ -867,10 +891,10 @@
     if (!bar) return;
     bar.innerHTML =
       `<button class="nbpro-chip ${_proState.showGridMatrix ? 'nbpro-chip--active' : ''}" ` +
-      `data-toggle="grid-matrix">⊞ Grid Matrix</button>` +
+      `data-toggle="grid-matrix"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg> Grid Matrix</button>` +
       `<button class="nbpro-chip ${_proState.showFlexGizmos ? 'nbpro-chip--active' : ''}" ` +
-      `data-toggle="flex-gizmos">⇄ Flex Gizmos</button>` +
-      `<button class="nbpro-chip nbpro-chip--ghost" data-action="grid-areas">⌗ Named Areas</button>`;
+      `data-toggle="flex-gizmos"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-flex" /></svg> Flex Gizmos</button>` +
+      `<button class="nbpro-chip nbpro-chip--ghost" data-action="grid-areas"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg> Named Areas</button>`;
     bar.querySelector('[data-toggle="grid-matrix"]')?.addEventListener('click', _toggleGridMatrix);
     bar.querySelector('[data-toggle="flex-gizmos"]')?.addEventListener('click', _toggleFlexGizmos);
     bar.querySelector('[data-action="grid-areas"]')?.addEventListener('click', _openGridAreasEditor);
@@ -1095,7 +1119,7 @@
     const action = _IPC_ACTION_MAP[currentActionId];
     const permDeclared = _isPermissionDeclared(action?.perm);
     const permWarn = action?.perm && !permDeclared
-      ? `<div class="nbpro-warn">⚠ This action requires <code>${action.perm}</code>, which is not enabled in your manifest.json. <button class="nbpro-link" data-jump-perm="${action.perm}">Enable it</button></div>`
+      ? `<div class="nbpro-warn"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-alert" /></svg> This action requires <code>${action.perm}</code>, which is not enabled in your manifest.json. <button class="nbpro-link" data-jump-perm="${action.perm}">Enable it</button></div>`
       : '';
     const pendingParams = _proPendingParams?.path === pathStr &&
       currentActionId === _proPendingParams.actionId
@@ -1635,25 +1659,27 @@
   // gets inserted into the canvas (and source files) on drag/click.
   const NATIVE_COMPONENTS = [
     {
-      id: 'nb-titlebar', label: 'Title Bar', icon: '▭',
+      id: 'nb-titlebar', label: 'Title Bar', icon: 'window',
       html: `<div class="nb-titlebar" data-nb-perm="">
         <span class="nb-titlebar-title">My App</span>
         <div class="nb-titlebar-controls">
-          <button class="nb-titlebar-btn nb-titlebar-btn--min" data-nb-action="win:minimize">−</button>
-          <button class="nb-titlebar-btn nb-titlebar-btn--max" data-nb-action="win:maximize">▢</button>
-          <button class="nb-titlebar-btn nb-titlebar-btn--close" data-nb-action="win:close">×</button>
+          <button class="nb-titlebar-btn nb-titlebar-btn--min" data-nb-action="win:minimize" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+          <button class="nb-titlebar-btn nb-titlebar-btn--max" data-nb-action="win:maximize" title="Maximize" aria-label="Maximize"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg></button>
+          <button class="nb-titlebar-btn nb-titlebar-btn--close" data-nb-action="win:close" title="Close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
         </div>
       </div>`,
       css: `.nb-titlebar{display:flex;align-items:center;justify-content:space-between;height:32px;padding:0 12px;background:#0e121c;border-bottom:1px solid rgba(255,255,255,0.07);-webkit-app-region:drag;user-select:none}
 .nb-titlebar-title{font:600 12px/1 "JetBrains Mono",monospace;color:#e6edf3}
 .nb-titlebar-controls{display:flex;gap:8px;-webkit-app-region:no-drag}
 .nb-titlebar-btn{width:14px;height:14px;border-radius:50%;border:none;cursor:pointer;font:600 8px/14px "JetBrains Mono",monospace;color:transparent;background:#f85149}
-.nb-titlebar-btn--max{background:#d29922}
-.nb-titlebar-btn--close{background:#22c55e}
-.nb-titlebar-btn:hover{color:#0d1117}`,
+.nb-titlebar-btn svg{display:block;width:8px;height:8px;margin:auto;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.nb-titlebar-btn--min{background:#d29922}
+.nb-titlebar-btn--max{background:var(--accent,#58a6ff)}
+.nb-titlebar-btn--close{background:#f85149}
+.nb-titlebar-btn:hover{color:#08111d}`,
     },
     {
-      id: 'nb-accordion', label: 'Accordion Sidebar', icon: '☰',
+      id: 'nb-accordion', label: 'Accordion Sidebar', icon: 'workspaces',
       html: `<div class="nb-accordion">
         <details class="nb-accordion-item" open>
           <summary class="nb-accordion-head">Section 1</summary>
@@ -1668,12 +1694,12 @@
 .nb-accordion-item{background:#0e121c}
 .nb-accordion-head{padding:10px 14px;cursor:pointer;font:600 12px/1 "JetBrains Mono",monospace;color:#e6edf3;list-style:none}
 .nb-accordion-head::-webkit-details-marker{display:none}
-.nb-accordion-head::before{content:"▸";display:inline-block;margin-right:8px;transition:transform 180ms ease}
+.nb-accordion-head::before{content:"";display:inline-block;width:0;height:0;margin:0 10px 1px 2px;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:5px solid currentColor;transition:transform 180ms ease}
 .nb-accordion-item[open] .nb-accordion-head::before{transform:rotate(90deg)}
 .nb-accordion-body{padding:8px 14px 14px;font:400 12px/1.5 "JetBrains Mono",monospace;color:#c9d1d9}`,
     },
     {
-      id: 'nb-form-group', label: 'Form Group', icon: '▦',
+      id: 'nb-form-group', label: 'Form Group', icon: 'input',
       html: `<div class="nb-form-group">
         <label class="nb-form-label">Email</label>
         <input class="nb-form-input" type="email" placeholder="you@example.com">
@@ -1682,14 +1708,14 @@
       css: `.nb-form-group{display:flex;flex-direction:column;gap:6px}
 .nb-form-label{font:600 11px/1 "JetBrains Mono",monospace;color:#c9d1d9}
 .nb-form-input{padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;background:#0e121c;color:#e6edf3;font:400 13px/1.4 "JetBrains Mono",monospace;outline:none}
-.nb-form-input:focus{border-color:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,0.2)}
+.nb-form-input:focus{border-color:var(--accent,#58a6ff);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#58a6ff) 20%,transparent)}
 .nb-form-input:invalid{border-color:#f85149}
 .nb-form-hint{font:400 10px/1 "JetBrains Mono",monospace}
-.nb-form-hint--ok{color:#22c55e}
+.nb-form-hint--ok{color:var(--accent,#58a6ff)}
 .nb-form-hint--err{color:#f85149}`,
     },
     {
-      id: 'nb-segmented', label: 'Segmented Control', icon: '⊙',
+      id: 'nb-segmented', label: 'Segmented Control', icon: 'diff',
       html: `<div class="nb-segmented" role="tablist">
         <button class="nb-segmented-btn nb-segmented-btn--active" role="tab">Day</button>
         <button class="nb-segmented-btn" role="tab">Week</button>
@@ -1698,10 +1724,10 @@
       css: `.nb-segmented{display:inline-flex;background:rgba(255,255,255,0.06);border-radius:8px;padding:2px;gap:2px}
 .nb-segmented-btn{padding:6px 14px;border:none;background:transparent;color:#8b949e;font:600 12px/1 "JetBrains Mono",monospace;border-radius:6px;cursor:pointer;transition:background 180ms ease,color 180ms ease}
 .nb-segmented-btn:hover{color:#c9d1d9}
-.nb-segmented-btn--active{background:#22c55e;color:#0d1117}`,
+.nb-segmented-btn--active{background:var(--accent,#58a6ff);color:var(--on-accent,#08111d)}`,
     },
     {
-      id: 'nb-toggle', label: 'Toggle Slider', icon: '◑',
+      id: 'nb-toggle', label: 'Toggle Slider', icon: 'check',
       html: `<label class="nb-toggle">
         <input type="checkbox" checked>
         <span class="nb-toggle-track"><span class="nb-toggle-thumb"></span></span>
@@ -1711,20 +1737,20 @@
 .nb-toggle input{display:none}
 .nb-toggle-track{width:36px;height:20px;background:rgba(255,255,255,0.1);border-radius:20px;position:relative;transition:background 180ms ease}
 .nb-toggle-thumb{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#e6edf3;border-radius:50%;transition:transform 180ms cubic-bezier(0.16,1,0.3,1)}
-.nb-toggle input:checked + .nb-toggle-track{background:#22c55e}
+.nb-toggle input:checked + .nb-toggle-track{background:var(--accent,#58a6ff)}
 .nb-toggle input:checked + .nb-toggle-track .nb-toggle-thumb{transform:translateX(16px)}
 .nb-toggle-label{font:400 12px/1 "JetBrains Mono",monospace;color:#c9d1d9}`,
     },
     {
-      id: 'nb-dropzone', label: 'Dropzone', icon: '⤓',
+      id: 'nb-dropzone', label: 'Dropzone', icon: 'upload',
       html: `<div class="nb-dropzone" data-nb-perm="">
-        <div class="nb-dropzone-icon">⤓</div>
+        <svg class="nb-dropzone-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" /></svg>
         <div class="nb-dropzone-text">Drop files here or click to browse</div>
         <div class="nb-dropzone-hint">File selection is user-mediated</div>
       </div>`,
-      css: `.nb-dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;border:2px dashed rgba(34,197,94,0.4);border-radius:12px;background:rgba(34,197,94,0.04);cursor:pointer;transition:background 180ms ease,border-color 180ms ease}
-.nb-dropzone:hover,.nb-dropzone--over{background:rgba(34,197,94,0.1);border-color:#22c55e}
-.nb-dropzone-icon{font-size:32px;color:#22c55e}
+      css: `.nb-dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;border:2px dashed color-mix(in srgb,var(--accent,#58a6ff) 40%,transparent);border-radius:12px;background:color-mix(in srgb,var(--accent,#58a6ff) 4%,transparent);cursor:pointer;transition:background 180ms ease,border-color 180ms ease}
+.nb-dropzone:hover,.nb-dropzone--over{background:color-mix(in srgb,var(--accent,#58a6ff) 10%,transparent);border-color:var(--accent,#58a6ff)}
+.nb-dropzone-icon{width:32px;height:32px;fill:none;stroke:var(--accent,#58a6ff);stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .nb-dropzone-text{font:600 12px/1 "JetBrains Mono",monospace;color:#e6edf3}
 .nb-dropzone-hint{font:400 10px/1 "JetBrains Mono",monospace;color:#8b949e}`,
     },
@@ -1735,14 +1761,14 @@
     if (!wrap) return;
     wrap.innerHTML = NATIVE_COMPONENTS.map((c) =>
       `<button class="nbpro-palette-item" data-nb-comp="${_escapeHtmlAttr(c.id)}" draggable="true">
-        <span class="nbpro-palette-icon">${c.icon}</span>
+        <span class="nbpro-palette-icon">${_iconSvg(c.icon)}</span>
         <span class="nbpro-palette-label">${c.label}</span>
       </button>`).join('') +
       `<div class="nbpro-palette-divider"></div>
        <div class="nbpro-palette-section">Custom Components</div>
        <div id="nbpro-custom-palette"></div>
        <button class="nbpro-palette-item nbpro-palette-item--ghost" id="nbpro-save-as-comp">
-         <span class="nbpro-palette-icon">+</span>
+         <span class="nbpro-palette-icon">${_iconSvg('plus')}</span>
          <span class="nbpro-palette-label">Save selection as component…</span>
        </button>`;
     wrap.querySelectorAll('[data-nb-comp]').forEach((btn) => {
@@ -1765,9 +1791,9 @@
     }
     wrap.innerHTML = _proState.customComponents.map((c) =>
       `<button class="nbpro-palette-item" data-nb-custom="${_escapeHtmlAttr(c.id)}" draggable="true" title="${_escapeHtmlAttr(c.name)}">
-        <span class="nbpro-palette-icon">⬢</span>
+        <span class="nbpro-palette-icon">${_iconSvg('package')}</span>
         <span class="nbpro-palette-label">${_esc(c.name)}</span>
-        <span class="nbpro-palette-del" data-del="${_escapeHtmlAttr(c.id)}" title="Delete">×</span>
+        <span class="nbpro-palette-del" data-del="${_escapeHtmlAttr(c.id)}" title="Delete">${_iconSvg('trash')}</span>
       </button>`).join('');
     wrap.querySelectorAll('[data-nb-custom]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -2034,8 +2060,11 @@
         <span class="nbpro-bar-label">Preset:</span>
         <button class="nbpro-chip${_proState.themePreset === 'nb-dark' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-dark">Dark</button>
         <button class="nbpro-chip${_proState.themePreset === 'nb-light' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-light">Light</button>
-        <button class="nbpro-chip${_proState.themePreset === 'midnight-blue' ? ' nbpro-chip--active' : ''}" data-theme-preset="midnight-blue">Midnight</button>
+        <button class="nbpro-chip${_proState.themePreset === 'legacy-green' ? ' nbpro-chip--active' : ''}" data-theme-preset="legacy-green">Legacy Green</button>
         <button class="nbpro-chip${_proState.themePreset === 'amber' ? ' nbpro-chip--active' : ''}" data-theme-preset="amber">Amber</button>
+        <button class="nbpro-chip${_proState.themePreset === 'nightshade' ? ' nbpro-chip--active' : ''}" data-theme-preset="nightshade">Nightshade</button>
+        <button class="nbpro-chip${_proState.themePreset === 'high-contrast' ? ' nbpro-chip--active' : ''}" data-theme-preset="high-contrast">High Contrast</button>
+        <button class="nbpro-chip${_proState.themePreset === 'forest' ? ' nbpro-chip--active' : ''}" data-theme-preset="forest">Forest</button>
         <button class="nbpro-chip nbpro-chip--ghost" data-theme-preset="preview">Preview on canvas</button>
       </div>`;
     const scopeHtml = scopes.map((scope) => {
@@ -2267,6 +2296,7 @@
     if (!frame?.contentDocument) return;
     frame.contentDocument.documentElement.setAttribute('data-theme', presetId);
     _proState.themePreset = presetId;
+    _postFrame({ type: 'nbpro:setFlags', flags: _canvasFlags() });
     _saveProState();
     _renderThemeManager();
     _showToast(`Canvas switched to ${presetId} preset`);
@@ -2276,6 +2306,7 @@
     const frame = $('design-frame');
     if (!frame?.contentDocument || !_proState.themePreset) return;
     frame.contentDocument.documentElement.setAttribute('data-theme', _proState.themePreset);
+    _postFrame({ type: 'nbpro:setFlags', flags: _canvasFlags() });
   }
 
   // ── Transitions & hover-state inspector ──────────────────────────────────
@@ -2355,7 +2386,7 @@
           const cls = ps.replace(/[^a-z-]/g, '');
           return `<div class="nbpro-pseudo-row">
             <button class="nbpro-chip nbpro-chip--ghost" data-pseudo="${ps}">${ps}</button>
-            <input class="nbpro-pseudo-input" data-pseudo-input="${ps}" placeholder="background:#22c55e; transform:scale(1.05)">
+            <input class="nbpro-pseudo-input" data-pseudo-input="${ps}" placeholder="background:var(--accent); transform:scale(1.05)">
           </div>`;
         }).join('')}
       </div>
@@ -2391,7 +2422,7 @@
     const durPct = (dur / total) * 100;
     const delayPct = (delay / total) * 100;
     track.style.cssText = `position:relative;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;`;
-    track.innerHTML = `<div style="position:absolute;left:${delayPct}%;width:${durPct}%;height:100%;background:#22c55e;border-radius:3px;transition:width 50ms linear;"></div>`;
+    track.innerHTML = `<div style="position:absolute;left:${delayPct}%;width:${durPct}%;height:100%;background:var(--accent);border-radius:3px;transition:width 50ms linear;"></div>`;
   }
 
   function _previewTransition() {
@@ -2407,7 +2438,7 @@
     sel.style.transition = `${prop} ${dur}ms ${easing} ${delay}ms`;
     // Toggle a fake state to demonstrate the transition
     const toggleBg = sel.style.background;
-    sel.style.background = 'rgba(34,197,94,0.3)';
+    sel.style.background = `color-mix(in srgb, ${_canvasFlags().accent} 30%, transparent)`;
     setTimeout(() => {
       sel.style.background = toggleBg;
       setTimeout(() => { sel.style.transition = original; }, parseInt(dur, 10) + parseInt(delay, 10) + 50);
@@ -3102,7 +3133,7 @@
         <div class="nbpro-modal-card">
           <div class="nbpro-modal-head">
             <span class="nbpro-modal-title">Edit CSS Grid Named Areas</span>
-            <button class="nbpro-modal-x" data-nbpro-close>×</button>
+            <button class="nbpro-modal-x" data-nbpro-close aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close"></use></svg></button>
           </div>
           <div class="nbpro-modal-body">
             <p class="nbpro-modal-hint">One row per line. Each row is a quoted string of space-separated area names. All rows must have the same number of columns.</p>
@@ -3119,7 +3150,7 @@
         <div class="nbpro-modal-card">
           <div class="nbpro-modal-head">
             <span class="nbpro-modal-title">Save as Custom Component</span>
-            <button class="nbpro-modal-x" data-nbpro-close>×</button>
+            <button class="nbpro-modal-x" data-nbpro-close aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close"></use></svg></button>
           </div>
           <div class="nbpro-modal-body">
             <div class="nbpro-form-row">
@@ -3146,7 +3177,7 @@
           <div class="nbpro-modal-head">
             <span class="nbpro-modal-title">AST Diff Preview</span>
             <span class="nbpro-modal-sub" id="nbpro-ast-diff-stats"></span>
-            <button class="nbpro-modal-x" data-nbpro-close>×</button>
+            <button class="nbpro-modal-x" data-nbpro-close aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close"></use></svg></button>
           </div>
           <div class="nbpro-modal-body nbpro-diff-split">
             <div class="nbpro-diff-side" id="nbpro-ast-diff-left"></div>

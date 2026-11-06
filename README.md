@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.10-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.20-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -10,10 +10,10 @@
 
 <br>
 
-[![NBOSP Compatible](https://img.shields.io/badge/NBOSP-Compatible-22c55e?style=flat-square)](https://github.com/NovaByteOfficial/novapack-studio)
+[![NBOSP Compatible](https://img.shields.io/badge/NBOSP-Compatible-22c55e?style=flat-square)](https://github.com/DirazCoder/novapack-studio)
 [![Node](https://img.shields.io/badge/Node.js-26+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-22c55e?style=flat-square)](#)
-[![Downloads](https://img.shields.io/badge/Download-Releases-22c55e?style=flat-square)](https://github.com/NovaByteOfficial/novapack-studio/releases)
+[![Downloads](https://img.shields.io/badge/Download-Releases-22c55e?style=flat-square)](https://github.com/DirazCoder/novapack-studio/releases)
 [![License](https://img.shields.io/badge/License-Apache--2.0-22c55e?style=flat-square)](./LICENSE)
 
 <br>
@@ -43,7 +43,7 @@ Studio creates `.novaapp` packages for NovaByte OS and compatible NBOSP systems.
 
 ## Download
 
-NovaByte Studio is available for Windows, macOS, and Linux. Download the latest release for your platform from the [Releases](https://github.com/NovaByteOfficial/novapack-studio/releases) page, extract the archive, and run the executable — no install required.
+NovaByte Studio is available for Windows, macOS, and Linux. Download the latest release for your platform from the [Releases](https://github.com/DirazCoder/novapack-studio/releases) page, extract the archive, and run the executable — no install required.
 
 ### Build from source
 
@@ -91,6 +91,22 @@ The flags also accept `--windows` and `--macos` aliases. A platform-specific bui
 | `markdown-viewer` | Live markdown preview using a bundled vendor library |
 | `chat` | Message list with input — client-side state, no permissions needed |
 | `native-cpp` | C++ compiled to WebAssembly, UI in HTML/CSS/JS — packaged releases include Emscripten |
+| `notifications-api` | Create channels, post notifications, and read notification actions |
+| `alarms-api` | Schedule named alarms and subscribe to alarm events |
+| `clipboard-api` | Copy text and request permission before reading the clipboard |
+| `dialogs-api` | Open user-mediated file and save pickers |
+| `app-integration-api` | Inspect, list, and launch apps or open the share sheet |
+| `settings-window-api` | Read or update allowlisted settings and inspect window state |
+| `device-apis` | Request geolocation, camera, or microphone access on demand |
+| `calendar-contacts-api` | Read or add sample records in shared calendar and contacts |
+| `data-backup-api` | Create and restore checksummed, app-scoped data backups |
+| `events-lifecycle-api` | Subscribe and unsubscribe from system events |
+| `secrets-api` | Store credentials in the encrypted app-scoped secrets store |
+| `share-target-api` | Receive content explicitly shared to the app by the user |
+
+NovaApp API starters use the v2 `window.novaOS` facade. Sensitive integrations are declared as optional permissions and requested only when the user chooses the corresponding action; each declared grant includes a `permissionReasons` entry.
+
+Template artwork is embedded as SVG data in both the project picker and the generated app's `manifest.json`; no external icon files or network fetches are needed.
 
 ### Bundled external dependencies (`vendor/`)
 
@@ -154,6 +170,13 @@ NovaByte Studio includes a full-featured CodeMirror 6 editor with:
 - **Build history** — persisted build log with success/failure status, timestamps, and re-run
 - **Syntax check** — esbuild-powered JS syntax validation with line-precise error reporting
 - **Package Inspector** — drop a `.novaapp` to inspect its manifest, files, signature validity, and statically inferred permission requirements (filesystem and network grants remain path/destination-dependent)
+- **Package comparison** — compare two `.novaapp` packages by manifest fields, file contents, package size, and recorded integrity; signature presence is shown separately from publisher trust
+- **Build contents preview** — review the exact included files and `.studioignore` exclusions before building; C/C++-derived JavaScript and WebAssembly outputs are identified as generated
+- **Named build profiles** — save output directory, clean-output, signing-method, and integrity-method choices (private signing keys are never stored in a profile)
+- **Source permission audit** — compare permissions inferred from known `window.novaOS` methods and `nova:` IPC strings in project text files with the current manifest; path-dependent access may not be inferable, and results are static hints
+- **User starter library** — save a project locally as a reusable starter, or import/export a `.novapack-template.json` file; saved starter content stays on this device unless exported, uses the build file filters, and should be checked for secrets before export
+- **Preview viewport profiles** — use a landscape preset, enter custom dimensions, and save up to eight named viewport sizes
+- **Opt-in API simulation** — the Review preview can prompt for simulated `nova.ipc`/`novaOS` calls; these synthetic results do not emulate NBOSP or call real OS APIs
 - **Update checker** — GitHub Releases API integration with semver badge and changelog modal
 - **Resizable file tree rail** — drag to resize, collapse/expand, persisted width
 - **Pinned recent projects** — pin frequently-used projects to the top of the recents list
@@ -165,7 +188,7 @@ NovaByte Studio includes a full-featured CodeMirror 6 editor with:
 
 ### Themes
 
-Eight total themes: seven built-in presets — NovaByte Dark, NovaByte Light, Midnight Blue, Amber, Nightshade, High Contrast, and Forest — plus a fully custom theme editor with per-CSS-variable color pickers and JSON import/export.
+Eight total themes: seven built-in presets — NovaByte Dark, NovaByte Light, Legacy Green, Amber, Nightshade, High Contrast, and Forest — plus a fully custom theme editor with per-CSS-variable color pickers and JSON import/export. Legacy Midnight Blue settings are migrated to Legacy Green.
 
 ### Autosave
 

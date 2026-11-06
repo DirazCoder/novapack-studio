@@ -76,6 +76,7 @@ Every app needs a `manifest.json` at the root of its directory (`novaapp.json` i
 | `unrestrictedEntry` | string | — | Packaged JavaScript entry used by OS-managed unrestricted launch paths |
 | `permissions` | array | `[]` | Required capabilities; missing sensitive grants are requested at launch, but denial does not block the app |
 | `optionalPermissions` | array | `[]` | Optional permissions — app must handle denial gracefully |
+| `permissionReasons` | object | — | Per-permission reason text shown in the grant dialogs — see [Declared reasons](#declared-reasons--permissionreasons) |
 | `defaultSize` | array | `[800, 560]` | `[width, height]` in pixels |
 | `minSize` | array | `[400, 300]` | Minimum window size |
 | `maxSize` | array | — | Maximum window size |
@@ -634,6 +635,28 @@ Filesystem permissions follow scoped-storage rules: app-owned files need no gran
 ```
 
 Required medium-or-higher-risk permissions are prompted for at launch, but a denial does not block the app from loading — check what was actually granted and degrade gracefully. Low-risk permissions are auto-granted regardless of which array they appear in, unless the user previously denied them. Optional sensitive permissions are not prompted at launch; users can grant them manually from Settings → Apps, or your app can request one at runtime.
+
+### Declared reasons — `permissionReasons`
+
+Every permission dialog shows a reason. You declare yours in the manifest with `permissionReasons` — a map from permission strings to a short explanation of why your app needs that grant:
+
+```json
+{
+  "permissions": ["system:root", "fs:read:images"],
+  "permissionReasons": {
+    "system:root": "Needed to manage system services on behalf of the user.",
+    "fs:read:images": "Displays a gallery of the user's shared images."
+  }
+}
+```
+
+When the OS prompts for one of these permissions — at launch, or at runtime via `nova:request-permission` — the dialog shows the declared text under the permission name, and the same text is stored with the grant so Settings shows why the app asked. If a runtime request passes its own `reason`, that call-specific text wins for that prompt; the manifest reason is the standing fallback. If neither exists, the dialog shows an explicit "This app declared no reason why it needs this permission." line rather than nothing, so an app that stays silent is visible as such.
+
+Rules:
+
+- Reasons must be non-empty strings, at most 500 characters after trimming. A package whose `permissionReasons` breaks this shape fails validation at install.
+- Keys must be real permission strings (legacy `vfs:*` names are translated to their `fs:*` equivalents at install, mirroring the `permissions` array). Unknown keys and unusable values are stripped at install with an EventLog warning; validation reports them as non-fatal warnings so you catch typos at build time.
+- A reason for a permission your manifest doesn't declare (in `permissions` or `optionalPermissions`) is kept but inert — no prompt can ever show it — and is flagged as a validation warning. Reasons never widen what an app can do; they are display text only.
 
 ### Requesting a permission at runtime
 

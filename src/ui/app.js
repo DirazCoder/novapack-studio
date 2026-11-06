@@ -25,7 +25,7 @@ const IS_MAC = (typeof process !== 'undefined' && process.platform
 ).toLowerCase().includes('darwin');
 const MOD_KEY = IS_MAC ? '\u2318' : 'Ctrl';
 
-const { build, inspect, verify, listActions, detectCppSources } = require('./src/sdk/builder.js');
+const { build, inspect, verify, listActions, loadPackage, detectCppSources, previewProjectFiles, walkProjectFiles } = require('./src/sdk/builder.js');
 const { TEMPLATES, create } = require('./src/sdk/templates.js');
 const AppPackage = require('./src/sdk/app-package.js');
 
@@ -83,8 +83,291 @@ const state = {
   autosaveMode: 'off',
   autosaveManifest: true,
   autosaveEditor: true,
+  uiDensity: 'comfortable',
 };
 window.state = state;
+
+function _uiIcon(name, extraClass = '') {
+  return `<svg class="ui-icon${extraClass ? ` ${extraClass}` : ''}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#ui-icon-${name}"></use></svg>`;
+}
+
+function _initCustomSelects() {
+  const instances = new WeakMap();
+  let nextId = 0;
+  let activeInstance = null;
+  let observer;
+
+  const selectedIndexDescriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
+  const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+
+  function _renderOptions(instance) {
+    const { select, listbox } = instance;
+    listbox.replaceChildren();
+    for (const child of select.children) {
+      if (child instanceof HTMLOptGroupElement) {
+        const group = document.createElement('div');
+        group.className = 'custom-select-group';
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-label', child.label);
+        const label = document.createElement('div');
+        label.className = 'custom-select-group-label';
+        label.textContent = child.label;
+        group.appendChild(label);
+        for (const option of child.children) {
+          if (option instanceof HTMLOptionElement) group.appendChild(_optionButton(instance, option));
+        }
+        listbox.appendChild(group);
+      } else if (child instanceof HTMLOptionElement) {
+        listbox.appendChild(_optionButton(instance, child));
+      }
+    }
+  }
+
+  function _optionButton(instance, option) {
+    const { select } = instance;
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'custom-select-option';
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(option.selected));
+    item.disabled = option.disabled || option.parentElement.disabled;
+    item.dataset.optionIndex = String(option.index);
+    const label = document.createElement('span');
+    label.className = 'custom-select-option-label';
+    label.textContent = option.label;
+    item.appendChild(label);
+    if (option.selected) item.insertAdjacentHTML('beforeend', _uiIcon('check'));
+    item.addEventListener('click', () => {
+      if (item.disabled) return;
+      if (select.multiple) {
+        option.selected = !option.selected;
+      } else if (selectedIndexDescriptor?.set) {
+        selectedIndexDescriptor.set.call(select, option.index);
+      } else {
+        select.selectedIndex = option.index;
+      }
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      instance.refresh();
+      if (!select.multiple) _close(instance, true);
+    });
+    return item;
+  }
+
+  function _position(instance) {
+    const rect = instance.trigger.getBoundingClientRect();
+    const gap = 6;
+    const maxHeight = Math.min(320, window.innerHeight - 24);
+    const below = window.innerHeight - rect.bottom - gap;
+    const above = rect.top - gap;
+    const openUp = below < Math.min(180, maxHeight) && above > below;
+    const listWidth = Math.min(Math.max(rect.width, 220), window.innerWidth - 16);
+    instance.listbox.style.left = `${Math.max(8, Math.min(rect.right - listWidth, window.innerWidth - listWidth - 8))}px`;
+    instance.listbox.style.width = `${listWidth}px`;
+    instance.listbox.style.maxHeight = `${Math.max(100, Math.min(maxHeight, openUp ? above : below))}px`;
+    instance.listbox.style.top = openUp
+      ? `${Math.max(8, rect.top - Math.min(instance.listbox.scrollHeight, Math.max(100, Math.min(maxHeight, above))) - gap)}px`
+      : `${rect.bottom + gap}px`;
+    instance.listbox.classList.toggle('custom-select-listbox--up', openUp);
+  }
+
+  function _open(instance, focusSelected = true) {
+    if (instance.select.disabled) return;
+    if (activeInstance && activeInstance !== instance) _close(activeInstance, false);
+    instance.refresh();
+    instance.listbox.hidden = false;
+    instance.trigger.setAttribute('aria-expanded', 'true');
+    activeInstance = instance;
+    _position(instance);
+    if (focusSelected) {
+      const selected = instance.listbox.querySelector('[aria-selected="true"]:not(:disabled)');
+      (selected || instance.listbox.querySelector('.custom-select-option:not(:disabled)'))?.focus();
+    }
+  }
+
+  function _close(instance, returnFocus = false) {
+    instance.listbox.hidden = true;
+    instance.trigger.setAttribute('aria-expanded', 'false');
+    if (activeInstance === instance) activeInstance = null;
+    if (returnFocus) instance.trigger.focus();
+  }
+
+  function _init(select) {
+    if (instances.has(select)) return;
+    const parent = select.parentElement;
+    if (!parent) return;
+    const computed = getComputedStyle(select);
+    const host = document.createElement('div');
+    host.className = `custom-select-host ${select.className}`;
+    host.style.width = select.style.width || computed.width;
+    host.style.minWidth = select.style.minWidth || computed.minWidth;
+    host.style.maxWidth = select.style.maxWidth || computed.maxWidth;
+    host.style.flex = select.style.flex || computed.flex;
+    host.style.alignSelf = computed.alignSelf;
+    parent.insertBefore(host, select);
+    host.appendChild(select);
+    select.classList.add('custom-select-native');
+    select.setAttribute('aria-hidden', 'true');
+    select.tabIndex = -1;
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = `custom-select-trigger ${select.className.replace(/\bcustom-select-native\b/g, '').trim()}`;
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-controls', `custom-select-list-${++nextId}`);
+    const associatedLabel = select.labels?.[0];
+    const accessibleName = select.getAttribute('aria-label')
+      || (select.getAttribute('aria-labelledby')
+        ? document.getElementById(select.getAttribute('aria-labelledby'))?.textContent?.trim()
+        : associatedLabel?.textContent?.trim())
+      || select.title
+      || select.id
+      || 'Choose an option';
+    trigger.setAttribute('aria-label', accessibleName);
+    if (select.title) trigger.title = select.title;
+    const value = document.createElement('span');
+    value.className = 'custom-select-value';
+    const caret = document.createElement('span');
+    caret.className = 'custom-select-caret';
+    caret.innerHTML = _uiIcon('chevron');
+    trigger.append(value, caret);
+
+    const listbox = document.createElement('div');
+    listbox.id = trigger.getAttribute('aria-controls');
+    listbox.className = 'custom-select-listbox';
+    listbox.setAttribute('role', 'listbox');
+    if (select.multiple) listbox.setAttribute('aria-multiselectable', 'true');
+    listbox.hidden = true;
+    document.body.appendChild(listbox);
+    host.appendChild(trigger);
+
+    const instance = {
+      select, host, trigger, value, listbox,
+      refresh() {
+        const selected = select.options[select.selectedIndex];
+        value.textContent = select.multiple
+          ? [...select.selectedOptions].map((option) => option.label).join(', ') || select.dataset.placeholder || 'Select options'
+          : selected?.label || select.dataset.placeholder || 'Select an option';
+        trigger.disabled = select.disabled;
+        trigger.setAttribute('aria-required', String(select.required));
+        trigger.setAttribute('aria-invalid', String(select.getAttribute('aria-invalid') === 'true'));
+        host.hidden = select.hidden || computedStyleDisplayNone(select);
+        _renderOptions(instance);
+        if (!listbox.hidden) _position(instance);
+      },
+    };
+
+    instance.refresh();
+
+    trigger.addEventListener('click', () => {
+      if (listbox.hidden) _open(instance);
+      else _close(instance);
+    });
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        _open(instance);
+      }
+    });
+    select.addEventListener('change', instance.refresh);
+    select.addEventListener('focus', () => trigger.focus());
+    associatedLabel?.addEventListener('click', () => trigger.focus());
+
+    if (valueDescriptor?.get && valueDescriptor.set) {
+      Object.defineProperty(select, 'value', {
+        configurable: true,
+        enumerable: valueDescriptor.enumerable,
+        get() { return valueDescriptor.get.call(this); },
+        set(nextValue) {
+          valueDescriptor.set.call(this, nextValue);
+          instance.refresh();
+        },
+      });
+    }
+    if (selectedIndexDescriptor?.get && selectedIndexDescriptor.set) {
+      Object.defineProperty(select, 'selectedIndex', {
+        configurable: true,
+        enumerable: selectedIndexDescriptor.enumerable,
+        get() { return selectedIndexDescriptor.get.call(this); },
+        set(nextIndex) {
+          selectedIndexDescriptor.set.call(this, nextIndex);
+          instance.refresh();
+        },
+      });
+    }
+
+    let search = '';
+    let searchTimer;
+    listbox.addEventListener('keydown', (event) => {
+      const options = [...listbox.querySelectorAll('.custom-select-option:not(:disabled)')];
+      const index = options.indexOf(document.activeElement);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        _close(instance, true);
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        options[Math.max(0, Math.min(options.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus();
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        (event.key === 'Home' ? options[0] : options.at(-1))?.focus();
+      } else if (event.key === 'Tab') {
+        _close(instance);
+      } else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        search += event.key.toLocaleLowerCase();
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => { search = ''; }, 650);
+        const match = options.find((option) => option.textContent.trim().toLocaleLowerCase().startsWith(search));
+        match?.focus();
+      }
+    });
+    instances.set(select, instance);
+  }
+
+  function _scan(root) {
+    if (root instanceof HTMLSelectElement) _init(root);
+    root.querySelectorAll?.('select').forEach(_init);
+  }
+
+  function computedStyleDisplayNone(select) {
+    return getComputedStyle(select).display === 'none';
+  }
+
+  document.addEventListener('pointerdown', (event) => {
+    if (activeInstance && !activeInstance.host.contains(event.target) && !activeInstance.listbox.contains(event.target)) {
+      _close(activeInstance);
+    }
+  });
+  window.addEventListener('resize', () => {
+    if (activeInstance) _position(activeInstance);
+  });
+  window.addEventListener('scroll', () => {
+    if (activeInstance) _position(activeInstance);
+  }, true);
+
+  _scan(document);
+  observer = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.type === 'attributes') {
+        const select = record.target instanceof HTMLSelectElement
+          ? record.target
+          : record.target.closest?.('select');
+        if (select) instances.get(select)?.refresh();
+      } else {
+        if (record.target instanceof HTMLSelectElement) instances.get(record.target)?.refresh();
+        record.addedNodes.forEach((node) => {
+          if (node instanceof Element) _scan(node);
+        });
+      }
+    }
+  });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['disabled', 'required', 'selected', 'label', 'aria-label', 'aria-invalid', 'style', 'class', 'hidden'],
+  });
+}
 
 // Precomputed lookup tables for the permissions catalogue. Built once so
 // hot paths (permission hover, audit rendering) don't iterate the array.
@@ -246,17 +529,17 @@ function _permSnippetCommands() {
     }));
 }
 const PERMISSION_CATEGORIES = {
-  fs:        { label: 'Filesystem',        icon: '\u{1F4C1}' },
-  apps:      { label: 'Apps',              icon: '\u{1F4F1}' },
-  net:       { label: 'Network',           icon: '\u21C4' },
-  mail:      { label: 'Mail',              icon: '\u2709' },
-  calendar:  { label: 'Calendar',          icon: '\u{1F4C5}' },
-  contacts:  { label: 'Contacts',          icon: '\u2630' },
-  device:    { label: 'Device',            icon: '\u25C9' },
-  data:      { label: 'Data',              icon: '\u{1F5C3}' },
-  system:    { label: 'System',            icon: '\u2699' },
-  admin:     { label: 'Admin',             icon: '\u{1F6E1}' },
-  sandbox:   { label: 'Sandbox',           icon: '\u29C8' },
+  fs: { label: 'Filesystem', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h6l2 2h9a1.5 1.5 0 0 1 1.5 1.5v7a2 2 0 0 1-2 2h-16a2 2 0 0 1-2-2v-8a2.5 2.5 0 0 1 2.5-2.5Z" stroke="#60a5fa" stroke-width="1.8"/><path d="M3 11h18l-1.6 6.2a1.5 1.5 0 0 1-1.5 1.1H4.4a1.5 1.5 0 0 1-1.5-1.8L4 11Z" fill="#38bdf8" fill-opacity=".2" stroke="#22d3ee" stroke-width="1.4"/></svg>' },
+  apps: { label: 'Apps', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="2" fill="#a78bfa" fill-opacity=".24" stroke="#a78bfa" stroke-width="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="2" fill="#22d3ee" fill-opacity=".2" stroke="#22d3ee" stroke-width="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="2" fill="#fb7185" fill-opacity=".2" stroke="#fb7185" stroke-width="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="2" fill="#60a5fa" fill-opacity=".2" stroke="#60a5fa" stroke-width="1.7"/></svg>' },
+  net: { label: 'Network', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" stroke="#34d399" stroke-width="1.7"/><path d="M3.8 12h16.4M12 3.5c2.2 2.3 3.3 5.1 3.3 8.5s-1.1 6.2-3.3 8.5c-2.2-2.3-3.3-5.1-3.3-8.5S9.8 5.8 12 3.5Z" stroke="#22d3ee" stroke-width="1.5"/><path d="M5.2 7.2h13.6M5.2 16.8h13.6" stroke="#a3e635" stroke-width="1.2"/></svg>' },
+  mail: { label: 'Mail', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3" fill="#fb923c" fill-opacity=".12" stroke="#fb923c" stroke-width="1.7"/><path d="m4.5 7 6.3 5a2 2 0 0 0 2.4 0l6.3-5" stroke="#f472b6" stroke-width="1.8"/><path d="m4.5 17 5-4M19.5 17l-5-4" stroke="#fbbf24" stroke-width="1.4"/></svg>' },
+  calendar: { label: 'Calendar', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="#f472b6" fill-opacity=".12" stroke="#f472b6" stroke-width="1.7"/><path d="M7.5 3.5v4M16.5 3.5v4M4 9.5h16" stroke="#22d3ee" stroke-width="1.7"/><path d="M8 13h2M14 13h2M8 16.5h2" stroke="#fbbf24" stroke-width="2"/></svg>' },
+  contacts: { label: 'Contacts', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="16" height="17" rx="3" fill="#34d399" fill-opacity=".1" stroke="#34d399" stroke-width="1.7"/><circle cx="12" cy="9" r="2.5" fill="#a78bfa" fill-opacity=".3" stroke="#a78bfa" stroke-width="1.5"/><path d="M7.5 17a4.5 4.5 0 0 1 9 0" stroke="#22d3ee" stroke-width="1.7"/><path d="M2.5 8v8M21.5 8v8" stroke="#fbbf24" stroke-width="1.5"/></svg>' },
+  device: { label: 'Device', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="3" fill="#60a5fa" fill-opacity=".13" stroke="#60a5fa" stroke-width="1.7"/><path d="M9 5.5h6" stroke="#22d3ee" stroke-width="1.5"/><circle cx="12" cy="18" r="1" fill="#fb7185" stroke="#fb7185"/><path d="M9 9.5h6M9 12.5h4" stroke="#a78bfa" stroke-width="1.5"/></svg>' },
+  data: { label: 'Data', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6c0-1.4 3.6-2.5 8-2.5s8 1.1 8 2.5-3.6 2.5-8 2.5S4 7.4 4 6Z" fill="#a78bfa" fill-opacity=".25" stroke="#a78bfa" stroke-width="1.6"/><path d="M4 6v6c0 1.4 3.6 2.5 8 2.5 1.3 0 2.5-.1 3.6-.3M20 6v4" stroke="#22d3ee" stroke-width="1.6"/><path d="M4 12v6c0 1.4 3.6 2.5 8 2.5 1.1 0 2.2-.1 3.2-.2" stroke="#60a5fa" stroke-width="1.6"/><circle cx="18" cy="16" r="3.3" fill="#fb923c" fill-opacity=".16" stroke="#fb923c" stroke-width="1.5"/><path d="m16.7 16 1 1 1.8-2" stroke="#34d399" stroke-width="1.4"/></svg>' },
+  system: { label: 'System', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m10 3.5.5-1h3l.5 1 1.8 1 .9-.3 2.1 2.1-.3.9 1 1.8 1 .5v3l-1 .5-1 1.8.3.9-2.1 2.1-.9-.3-1.8 1-.5 1h-3l-.5-1-1.8-1-.9.3-2.1-2.1.3-.9-1-1.8-1-.5v-3l1-.5 1-1.8-.3-.9 2.1-2.1.9.3 1.8-1Z" transform="translate(1 1) scale(.92)" fill="#60a5fa" fill-opacity=".12" stroke="#60a5fa" stroke-width="1.5"/><circle cx="12" cy="12" r="3.2" fill="#34d399" fill-opacity=".22" stroke="#34d399" stroke-width="1.7"/><circle cx="12" cy="12" r="1" fill="#fbbf24"/></svg>' },
+  admin: { label: 'Admin', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 20 5.7v5.5c0 5-3.4 8.4-8 10.3-4.6-1.9-8-5.3-8-10.3V5.7L12 2.5Z" fill="#f59e0b" fill-opacity=".16" stroke="#fbbf24" stroke-width="1.7"/><path d="m8.2 12.2 2.5 2.5 5.2-5.5" stroke="#fb7185" stroke-width="2"/><path d="M12 5.5v2" stroke="#22d3ee" stroke-width="1.5"/></svg>' },
+  sandbox: { label: 'Sandbox', icon: '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2.8 8 4.5v9.4l-8 4.5-8-4.5V7.3l8-4.5Z" fill="#a78bfa" fill-opacity=".14" stroke="#a78bfa" stroke-width="1.7"/><path d="m4.4 7.5 7.6 4.3 7.6-4.3M12 11.8v9" stroke="#22d3ee" stroke-width="1.6"/><path d="m8 5 8 4.5" stroke="#fb7185" stroke-width="1.4"/></svg>' },
 };
 
 // Permissions that need a second manifest flag beyond the permission
@@ -366,12 +649,14 @@ function loadStorage() {
   if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
 
   state.recentProjects = Array.isArray(data.recentProjects) ? data.recentProjects : [];
-  state.theme = _isValidTheme(data.theme) ? data.theme : getDefaultTheme();
+  const savedTheme = _migrateThemeId(data.theme);
+  state.theme = _isValidTheme(savedTheme) ? savedTheme : getDefaultTheme();
   state.customColors = (data.customColors && typeof data.customColors === 'object' && !Array.isArray(data.customColors))
     ? data.customColors
     : {};
-  state.lastNonCustomTheme = THEMES.some((t) => t.id === data.lastNonCustomTheme)
-    ? data.lastNonCustomTheme
+  const savedLastTheme = _migrateThemeId(data.lastNonCustomTheme);
+  state.lastNonCustomTheme = THEMES.some((t) => t.id === savedLastTheme)
+    ? savedLastTheme
     : DEFAULT_THEME;
   state.railWidth = (typeof data.railWidth === 'number' && data.railWidth >= 160 && data.railWidth <= 320)
     ? data.railWidth
@@ -383,6 +668,7 @@ function loadStorage() {
     : 'off';
   state.autosaveManifest = data.autosaveManifest !== false;
   state.autosaveEditor = data.autosaveEditor !== false;
+  state.uiDensity = data.uiDensity === 'compact' ? 'compact' : 'comfortable';
 }
 
 function saveStorage() {
@@ -399,6 +685,7 @@ function saveStorage() {
       autosaveMode: state.autosaveMode,
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
+      uiDensity: state.uiDensity,
     });
   } catch (err) {
     // JSON.stringify only fails on circular references or symbols on
@@ -459,6 +746,7 @@ function exportStudioSettings() {
       autosaveMode: state.autosaveMode,
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
+      uiDensity: state.uiDensity,
       editorSettings: null,
     },
   };
@@ -493,7 +781,8 @@ function importStudioSettings(jsonText) {
     return { success: false, error: 'Malformed settings data' };
   }
 
-  if (_isValidTheme(data.theme)) state.theme = data.theme;
+  const importedTheme = _migrateThemeId(data.theme);
+  if (_isValidTheme(importedTheme)) state.theme = importedTheme;
   if (data.customColors && typeof data.customColors === 'object' && !Array.isArray(data.customColors)) {
     // Same known-keys allowlist filter as the existing "Paste theme JSON"
     // import (_renderCustomThemeSection's importBtn handler), so an
@@ -505,8 +794,9 @@ function importStudioSettings(jsonText) {
     }
     state.customColors = clean;
   }
-  if (THEMES.some((t) => t.id === data.lastNonCustomTheme)) {
-    state.lastNonCustomTheme = data.lastNonCustomTheme;
+  const importedLastTheme = _migrateThemeId(data.lastNonCustomTheme);
+  if (THEMES.some((t) => t.id === importedLastTheme)) {
+    state.lastNonCustomTheme = importedLastTheme;
   }
   if (typeof data.railWidth === 'number' && data.railWidth >= 160 && data.railWidth <= 320) {
     state.railWidth = data.railWidth;
@@ -518,6 +808,7 @@ function importStudioSettings(jsonText) {
   }
   if (typeof data.autosaveManifest === 'boolean') state.autosaveManifest = data.autosaveManifest;
   if (typeof data.autosaveEditor === 'boolean') state.autosaveEditor = data.autosaveEditor;
+  state.uiDensity = data.uiDensity === 'compact' ? 'compact' : 'comfortable';
 
   saveStorage();
 
@@ -548,6 +839,7 @@ function importStudioSettings(jsonText) {
   if ($('lbl-font-size')) $('lbl-font-size').textContent = window.CM?.getSettings()?.fontSize ?? 13;
   if ($('sel-tab-size')) $('sel-tab-size').value = String(window.CM?.getSettings()?.tabSize ?? 2);
   if ($('chk-word-wrap')) $('chk-word-wrap').checked = !!window.CM?.getSettings()?.wordWrap;
+  _updateEditorToolbar();
   const selMode = $('sel-autosave-mode');
   if (selMode) {
     selMode.value = state.autosaveMode === 'realtime' || (typeof state.autosaveMode === 'number')
@@ -654,14 +946,14 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.10';
-const GITHUB_REPO = 'NovaByteOfficial/novapack-studio';
+const STUDIO_VERSION = '1.2.20';
+const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme
 const THEMES = [
-  { id: 'nb-dark', label: 'NovaByte Dark', swatch: '#22c55e' },
-  { id: 'nb-light', label: 'NovaByte Light', swatch: '#16a34a' },
-  { id: 'midnight-blue', label: 'Midnight Blue', swatch: '#3b82f6' },
+  { id: 'nb-dark', label: 'NovaByte Dark', swatch: '#58a6ff' },
+  { id: 'nb-light', label: 'NovaByte Light', swatch: '#58a6ff' },
+  { id: 'legacy-green', label: 'Legacy Green', swatch: '#22c55e' },
   { id: 'amber', label: 'Amber', swatch: '#d2952b' },
   { id: 'nightshade', label: 'Nightshade', swatch: '#c084fc' },
   { id: 'high-contrast', label: 'High Contrast', swatch: '#ffd60a' },
@@ -669,6 +961,7 @@ const THEMES = [
 ];
 const DEFAULT_THEME = 'nb-dark';
 const CUSTOM_THEME_ID = 'custom';
+const LEGACY_THEME_ALIASES = new Map([['midnight-blue', 'legacy-green']]);
 
 // All CSS vars a theme can define, grouped for the custom editor UI.
 // Order here drives render order in _renderCustomThemeEditor().
@@ -726,6 +1019,10 @@ function _isValidTheme(themeId) {
   return themeId === CUSTOM_THEME_ID || THEMES.some((t) => t.id === themeId);
 }
 
+function _migrateThemeId(themeId) {
+  return LEGACY_THEME_ALIASES.get(themeId) || themeId;
+}
+
 // Reads the currently-active theme's computed values for every custom var.
 // Used to seed the custom editor so users start from something coherent
 // instead of blank/black fields.
@@ -757,6 +1054,13 @@ function _applyCustomColors(colors) {
   }
 }
 
+function _syncDesignSelectionAccent() {
+  const root = $('design-frame')?.contentDocument?.documentElement;
+  if (!root) return;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#58a6ff';
+  root.style.setProperty('--nb-studio-accent', accent);
+}
+
 function applyTheme(themeId) {
   const valid = _isValidTheme(themeId) ? themeId : DEFAULT_THEME;
   document.documentElement.setAttribute('data-theme', valid);
@@ -767,6 +1071,12 @@ function applyTheme(themeId) {
   } else {
     _applyCustomColors(null); // strip any leftover inline overrides
   }
+  _applyUiDensity();
+  _syncDesignSelectionAccent();
+}
+
+function _applyUiDensity() {
+  document.documentElement.setAttribute('data-density', state.uiDensity === 'compact' ? 'compact' : 'comfortable');
 }
 
 function setTheme(themeId) {
@@ -812,7 +1122,7 @@ function renderThemePicker() {
     if (state.theme === t.id) {
       const check = document.createElement('span');
       check.className = 'theme-option-check';
-      check.textContent = '\u2713';
+      check.innerHTML = _uiIcon('check');
       btn.appendChild(check);
     }
     btn.addEventListener('click', () => {
@@ -885,8 +1195,8 @@ function initWindowControls() {
   $('btn-maximize').addEventListener('click', () => {
     if (maximized) win.restore(); else win.maximize();
   });
-  $('btn-close').addEventListener('click', () => {
-    _promptUnsaved();
+  $('btn-close').addEventListener('click', async () => {
+    if (await _promptUnsaved() === null) return;
     win.close(true);
   });
 }
@@ -898,28 +1208,36 @@ function _hasDirtyTabs() {
   return tabs.some((t) => t.isDirty);
 }
 
-function _promptUnsaved() {
-  if (!_hasDirtyTabs()) return;
+async function _promptUnsaved() {
+  if (!_hasDirtyTabs()) return true;
   const names = tabs.filter((t) => t.isDirty).map((t) => path.basename(t.filePath)).join(', ');
-  const ok = confirm(`You have unsaved changes in: ${names}\n\nClick OK to save and exit, or Cancel to exit without saving.`);
-  if (ok) {
+  const choice = await _queueStudioDialog({
+    type: 'confirm',
+    title: 'Unsaved changes',
+    message: `Changes in ${names} have not been saved.`,
+    confirmLabel: 'Save and exit',
+    cancelLabel: 'Exit without saving',
+  });
+  if (choice === null) return null;
+  if (choice) {
     try { saveAllOpenFiles(); } catch { /* swallow -- we're closing anyway */ }
   }
-  // Suppress the dirty flag on every tab regardless of save outcome -- the
-  // window is about to close, so re-prompting serves no purpose.
+  // The chosen action is to exit, so suppress the close guard on the second pass.
   for (const t of tabs) t.isDirty = false;
+  return choice;
 }
 
 function _initCloseGuard() {
   const win = nw.Window.get();
-  win.on('close', (e) => {
+  win.on('close', async (e) => {
     if (!_hasDirtyTabs()) return;
     e.preventDefault();
-    _promptUnsaved();
-    // win.close(true) skips this close handler (force flag) so we don't
-    // recurse; that's also why _promptUnsaved clears every dirty flag --
-    // even if force didn't skip the handler, the next pass would no-op.
-    win.close(true);
+    try {
+      if (await _promptUnsaved() !== null) win.close(true);
+    } catch (error) {
+      console.error('Could not confirm closing with unsaved changes:', error);
+      showToast(`Could not close safely: ${error.message}`);
+    }
   });
 }
 
@@ -983,19 +1301,23 @@ function _teardownProjectHandlers() {
   }
 }
 
-function loadProject(dir) {
+async function loadProject(dir) {
   if (!dir || typeof dir !== 'string') {
     showToast('Invalid project path');
     return;
   }
   if (!fs.existsSync(dir)) {
-    alert(`Folder not found: ${dir}`);
+    await studioAlert(`Folder not found: ${dir}`, { title: 'Project folder not found' });
     return;
   }
   if (state.projectDir && state.projectDir !== dir &&
       !_designFlushPendingBeforeSelectionChange()) {
     if (_designPendingEdit) {
-      if (!window.confirm('A pending Design edit could not be saved. Switch projects and discard that edit?')) return;
+      if (!await studioConfirm('A pending Design edit could not be saved. Switch projects and discard that edit?', {
+        title: 'Discard pending design edit',
+        confirmLabel: 'Discard edit',
+        danger: true,
+      })) return;
       clearTimeout(_designWriteTimer);
       _designWriteTimer = null;
       _designPendingEdit = null;
@@ -1012,6 +1334,11 @@ function loadProject(dir) {
 
   state.projectDir = dir;
   state.projectName = manifest.name || path.basename(dir);
+  if (_fileTreeFilterTimer) clearTimeout(_fileTreeFilterTimer);
+  _fileTreeFilterTimer = null;
+  $('file-tree-filter').value = '';
+  $('btn-clear-file-filter')?.classList.add('hidden');
+  _fileTreeExpandedBeforeFilter = null;
 
   $('project-breadcrumb').textContent = state.projectName + '  \u00b7  ' + dir;
   addRecent(dir, state.projectName);
@@ -1039,6 +1366,7 @@ function loadProject(dir) {
           }
           _designInvalidate();
         }
+        _renderBuildContentsPreview();
       }, 150);
     });
   } catch {
@@ -1054,7 +1382,10 @@ function loadProject(dir) {
       if (_isOwnWrite(filename)) return;
       if (_fileTreeWatcherTimer) clearTimeout(_fileTreeWatcherTimer);
       _fileTreeWatcherTimer = setTimeout(() => {
-        if (state.projectDir === dir) populateFileTree(dir);
+        if (state.projectDir === dir) {
+          populateFileTree(dir);
+          _renderBuildContentsPreview();
+        }
         _fileTreeWatcherTimer = null;
       }, 250);
     });
@@ -1063,6 +1394,8 @@ function loadProject(dir) {
   }
 
   $('build-outdir').value = path.join(dir, 'dist');
+  _renderBuildContentsPreview();
+  _renderBuildProfiles();
   $('file-tree-path').textContent = dir;
 
   // Wire drag-and-drop on the tree. One AbortController per project so
@@ -1073,6 +1406,7 @@ function loadProject(dir) {
   _wireFileTreeDragDrop($('file-tree'), dir, _fileTreeDragAbort.signal);
 
   showScreen('project');
+  _updateEditorToolbar();
   window._nbproOnProjectLoaded?.(dir);
   switchTab('editor');
 }
@@ -1081,18 +1415,26 @@ function loadProject(dir) {
 // loadProject() so the listener set is clearly tied to one signal.
 function _wireFileTreeDragDrop(tree, dir, signal) {
   if (!tree) return;
-  const clearTreeDragState = () => tree.classList.remove('drag-over');
+  const clearTreeDragState = () => {
+    tree.classList.remove('drag-over');
+    tree.querySelectorAll('.file-item.drag-over').forEach((item) => item.classList.remove('drag-over'));
+  };
 
-  tree.addEventListener('dragenter', () => {
-    if (_fileDragData) tree.classList.add('drag-over');
+  tree.addEventListener('dragenter', (e) => {
+    if (!_fileDragData) return;
+    if (e.target.closest?.('.file-item')) tree.classList.remove('drag-over');
+    else tree.classList.add('drag-over');
   }, { signal });
   tree.addEventListener('dragleave', (e) => {
     if (!tree.contains(e.relatedTarget)) clearTreeDragState();
   }, { signal });
+  tree.addEventListener('dragend', clearTreeDragState, { signal });
   tree.addEventListener('dragover', (e) => {
     if (!_fileDragData) return;
     e.preventDefault();
     e.stopPropagation();
+    if (e.target.closest?.('.file-item')) tree.classList.remove('drag-over');
+    else tree.classList.add('drag-over');
     e.dataTransfer.dropEffect = 'move';
   }, { signal });
   tree.addEventListener('drop', (e) => {
@@ -1184,8 +1526,21 @@ function populateManifestForm(manifest) {
   $('mf-transparent').checked = manifest.transparent || false;
 
   // Permissions -- render grouped by category with the granted ones pre-selected.
-  const granted = new Set(Array.isArray(manifest.permissions) ? manifest.permissions : []);
-  renderPermissions(granted);
+  const granted = new Set((Array.isArray(manifest.permissions) ? manifest.permissions : [])
+    .filter((permission) => PERMISSION_IDS.has(permission)));
+  const optionalGranted = new Set((Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : [])
+    .filter((permission) => PERMISSION_IDS.has(permission)));
+  _permissionDeclaredExtras = new Set([
+    ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+    ...(Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : []),
+  ].filter((permission) => typeof permission === 'string' && !PERMISSION_IDS.has(permission)));
+  _permissionReasons = manifest.permissionReasons === undefined
+    ? new Map()
+    : manifest.permissionReasons && typeof manifest.permissionReasons === 'object' && !Array.isArray(manifest.permissionReasons)
+      ? new Map(Object.entries(manifest.permissionReasons))
+      : null;
+  for (const permission of granted) optionalGranted.delete(permission);
+  renderPermissions(granted, optionalGranted);
 
   _validateAppIdField();
   _syncWindowPreview();
@@ -1212,7 +1567,7 @@ function _renderManifestPreview() {
   if (previewId) previewId.textContent = appId;
   if (previewEntry) previewEntry.textContent = entry;
   if (previewPermissions) {
-    const count = $('permissions-grid')?.querySelectorAll('.perm-item.selected').length || 0;
+    const count = new Set([..._requiredPermissionIds, ..._optionalPermissionIds]).size;
     previewPermissions.textContent = `${count} selected`;
   }
 }
@@ -1224,10 +1579,110 @@ function _permCategory(id) {
 }
 
 let _permSearchQuery = '';
+let _requiredPermissionIds = new Set();
+let _optionalPermissionIds = new Set();
+let _permissionMode = 'required';
+let _permissionCategoryFilter = 'all';
+let _permissionRiskFilter = 'all';
+let _permissionReasons = new Map();
+let _permissionDeclaredExtras = new Set();
 
-function renderPermissions(granted) {
+function renderPermissionReasons() {
+  const grid = $('permissions-reasons-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+
+  if (_permissionReasons === null) {
+    const warning = document.createElement('div');
+    warning.className = 'permissions-reasons-invalid';
+    const message = document.createElement('span');
+    message.textContent = 'The manifest permissionReasons value is not an object. Replace it with a valid reason map to edit reasons here.';
+    const reset = document.createElement('button');
+    reset.className = 'permissions-text-action';
+    reset.type = 'button';
+    reset.textContent = 'Replace invalid value';
+    reset.addEventListener('click', () => {
+      _permissionReasons = new Map();
+      renderPermissionReasons();
+      _onManifestFormChanged();
+    });
+    warning.append(message, reset);
+    grid.appendChild(warning);
+    $('permissions-reasons-count').textContent = 'Invalid map';
+    return;
+  }
+
+  const declared = new Set([
+    ..._permissionDeclaredExtras,
+    ..._requiredPermissionIds,
+    ..._optionalPermissionIds,
+  ]);
+  const ids = new Set([...declared, ..._permissionReasons.keys()]);
+  const orderedIds = [...ids].sort((a, b) => {
+    const ai = PERMISSIONS.findIndex((permission) => permission.id === a);
+    const bi = PERMISSIONS.findIndex((permission) => permission.id === b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) - (bi === -1 ? Number.MAX_SAFE_INTEGER : bi);
+    return a.localeCompare(b);
+  });
+  let reasonCount = 0;
+
+  for (const id of orderedIds) {
+    const permission = _PERMISSION_MAP[id];
+    const value = _permissionReasons.get(id);
+    const reason = typeof value === 'string' ? value : '';
+    if (reason.trim()) reasonCount++;
+
+    const field = document.createElement('label');
+    field.className = 'permissions-reason-field' + (declared.has(id) ? '' : ' permissions-reason-field--inactive');
+    const heading = document.createElement('span');
+    heading.className = 'permissions-reason-heading';
+    const name = document.createElement('span');
+    name.className = 'permissions-reason-name';
+    name.textContent = permission?.label || 'Unknown permission';
+    const permissionId = document.createElement('code');
+    permissionId.textContent = id;
+    heading.append(name, permissionId);
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'permissions-reason-input';
+    textarea.rows = 2;
+    textarea.maxLength = 500;
+    textarea.value = reason;
+    textarea.placeholder = 'Describe the feature that needs this permission…';
+    textarea.setAttribute('aria-label', `Reason for ${id}`);
+    const footer = document.createElement('span');
+    footer.className = 'permissions-reason-footer';
+    const hint = document.createElement('span');
+    hint.textContent = declared.has(id)
+      ? (typeof value === 'string' || value === undefined ? 'Shown when this permission is requested' : 'Stored value is not text; edit or clear it to fix')
+      : 'Not currently declared — kept in the manifest but will not appear in a prompt';
+    const count = document.createElement('span');
+    count.textContent = `${reason.length}/500`;
+    footer.append(hint, count);
+    textarea.addEventListener('input', () => {
+      if (textarea.value.trim()) _permissionReasons.set(id, textarea.value);
+      else _permissionReasons.delete(id);
+      count.textContent = `${textarea.value.length}/500`;
+      _onManifestFormChanged();
+    });
+    field.append(heading, textarea, footer);
+    grid.appendChild(field);
+  }
+
+  if (!orderedIds.length) {
+    const empty = document.createElement('p');
+    empty.className = 'permissions-reasons-empty';
+    empty.textContent = 'Select a permission to add an explanation. Existing reasons for unselected permissions will be preserved.';
+    grid.appendChild(empty);
+  }
+  $('permissions-reasons-count').textContent = `${reasonCount} ${reasonCount === 1 ? 'reason' : 'reasons'}`;
+}
+
+function renderPermissions(granted = _requiredPermissionIds, optionalGranted = _optionalPermissionIds) {
   const grid = $('permissions-grid');
   if (!grid) return;
+  _requiredPermissionIds = new Set(granted);
+  _optionalPermissionIds = new Set(optionalGranted);
   grid.replaceChildren();
 
   const query = _permSearchQuery.trim().toLowerCase();
@@ -1242,21 +1697,24 @@ function renderPermissions(granted) {
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat).push(perm);
   }
+  _populatePermissionCategoryFilter(groups);
 
   let visibleCount = 0;
-  let selectedCount = 0;
+  const selectedIds = _permissionMode === 'required' ? _requiredPermissionIds : _optionalPermissionIds;
 
   for (const [cat, perms] of groups) {
-    const matched = query
-      ? perms.filter((p) =>
+    const matched = perms.filter((p) => {
+      if (_permissionCategoryFilter !== 'all' && _permissionCategoryFilter !== cat) return false;
+      if (_permissionRiskFilter !== 'all' && p.risk !== _permissionRiskFilter) return false;
+      return !query ||
           p.id.toLowerCase().includes(query) ||
           p.label.toLowerCase().includes(query) ||
-          (p.description || '').toLowerCase().includes(query))
-      : perms;
+          (p.description || '').toLowerCase().includes(query);
+    });
 
     if (matched.length === 0) continue;
 
-    const meta = PERMISSION_CATEGORIES[cat] || { label: cat, icon: '\u2022' };
+    const meta = PERMISSION_CATEGORIES[cat] || { label: cat, icon: _uiIcon('workspaces') };
     const section = document.createElement('div');
     section.className = 'perm-group';
 
@@ -1264,7 +1722,9 @@ function renderPermissions(granted) {
     header.className = 'perm-group-header';
     const headerIcon = document.createElement('span');
     headerIcon.className = 'perm-group-icon';
-    headerIcon.textContent = meta.icon;
+    headerIcon.setAttribute('aria-hidden', 'true');
+    if (meta.icon.startsWith('<svg ')) headerIcon.innerHTML = meta.icon;
+    else headerIcon.textContent = meta.icon;
     const headerLabel = document.createElement('span');
     headerLabel.className = 'perm-group-label';
     headerLabel.textContent = meta.label;
@@ -1278,39 +1738,83 @@ function renderPermissions(granted) {
 
     let groupSelected = 0;
     for (const perm of matched) {
-      const isSelected = granted.has(perm.id);
-      if (isSelected) { groupSelected++; selectedCount++; }
+      const isSelected = selectedIds.has(perm.id);
+      if (isSelected) groupSelected++;
       visibleCount++;
 
       const item = document.createElement('div');
-      item.className = 'perm-item' + (isSelected ? ' selected' : '');
+      item.className = `perm-item perm-item--${perm.risk}` + (isSelected ? ' selected' : '');
       item.dataset.id = perm.id;
+      item.dataset.risk = perm.risk;
       item.setAttribute('role', 'button');
       item.setAttribute('tabindex', '0');
       item.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+      item.setAttribute('aria-label', `${perm.label}, ${perm.id}, ${perm.risk} risk${isSelected ? ', selected' : ''}. ${perm.description || ''}`);
+      item.setAttribute('aria-description', perm.description || '');
 
       const risk = document.createElement('span');
       risk.className = `perm-risk-badge risk-badge--${perm.risk}`;
       risk.textContent = perm.risk;
 
+      const copy = document.createElement('span');
+      copy.className = 'perm-item-copy';
       const label = document.createElement('span');
       label.className = 'perm-item-label';
       label.textContent = perm.label;
-
-      item.append(risk, label);
+      const id = document.createElement('code');
+      id.className = 'perm-item-id';
+      id.textContent = perm.id;
+      const description = document.createElement('span');
+      description.className = 'perm-item-description';
+      description.textContent = perm.description || '';
+      copy.append(label, id, description);
+      if (perm.id === 'system:root' && _permissionMode === 'optional') {
+        const requiredOnly = document.createElement('span');
+        requiredOnly.className = 'perm-required-only';
+        requiredOnly.textContent = 'Required only · click to move';
+        copy.appendChild(requiredOnly);
+      }
+      const check = document.createElement('span');
+      check.className = 'perm-item-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.innerHTML = isSelected ? _uiIcon('check') : '';
+      item.append(risk, copy, check);
 
       if (PERMISSIONS_NEEDING_MANIFEST_FLAG.has(perm.id)) {
         const flagBadge = document.createElement('span');
         flagBadge.className = 'perm-flag-badge';
-        flagBadge.title = 'Also requires a matching flag in manifest.json -- see the description on hover.';
-        flagBadge.textContent = '+flag';
+        flagBadge.title = 'This permission also requires a matching manifest opt-in.';
+        flagBadge.textContent = 'OPT-IN';
         item.appendChild(flagBadge);
       }
 
       const toggle = () => {
-        item.classList.toggle('selected');
-        item.setAttribute('aria-pressed', item.classList.contains('selected') ? 'true' : 'false');
+        if (perm.id === 'system:root') {
+          if (_permissionMode === 'optional') {
+            _optionalPermissionIds.delete(perm.id);
+            _requiredPermissionIds.add(perm.id);
+            renderPermissions();
+            showToast('system:root is a required permission');
+            _onManifestFormChanged();
+            return;
+          }
+          if (_requiredPermissionIds.has(perm.id)) _requiredPermissionIds.delete(perm.id);
+          else _requiredPermissionIds.add(perm.id);
+        } else {
+          const current = _permissionMode === 'required' ? _requiredPermissionIds : _optionalPermissionIds;
+          const other = _permissionMode === 'required' ? _optionalPermissionIds : _requiredPermissionIds;
+          if (current.has(perm.id)) current.delete(perm.id);
+          else {
+            current.add(perm.id);
+            other.delete(perm.id);
+          }
+        }
+        const nowSelected = selectedIds.has(perm.id);
+        item.classList.toggle('selected', nowSelected);
+        item.setAttribute('aria-pressed', nowSelected ? 'true' : 'false');
+        check.innerHTML = nowSelected ? _uiIcon('check') : '';
         _updatePermissionsSummary();
+        renderPermissionReasons();
         _onManifestFormChanged();
       };
       item.addEventListener('click', toggle);
@@ -1320,7 +1824,7 @@ function renderPermissions(granted) {
       list.appendChild(item);
     }
 
-    headerCount.textContent = `${groupSelected}/${matched.length}`;
+    headerCount.textContent = `${groupSelected} of ${matched.length} selected`;
     section.appendChild(list);
     grid.appendChild(section);
   }
@@ -1328,19 +1832,60 @@ function renderPermissions(granted) {
   if (visibleCount === 0) {
     const empty = document.createElement('div');
     empty.className = 'perm-empty-state';
-    empty.textContent = `No permissions match "${_permSearchQuery.trim()}"`;
+    empty.textContent = query || _permissionCategoryFilter !== 'all' || _permissionRiskFilter !== 'all'
+      ? 'No permissions match these filters. Try changing your search or filters.'
+      : 'No permissions are available.';
     grid.appendChild(empty);
   }
 
   _attachPermissionTooltips();
   _updatePermissionsSummary();
+  renderPermissionReasons();
+}
+
+function _populatePermissionCategoryFilter(groups) {
+  const filter = $('permissions-category-filter');
+  if (!filter || filter.dataset.initialized) return;
+  for (const category of groups.keys()) {
+    const meta = PERMISSION_CATEGORIES[category] || { label: category };
+    const option = document.createElement('option');
+    option.value = category;
+    option.textContent = meta.label;
+    filter.appendChild(option);
+  }
+  filter.value = _permissionCategoryFilter;
+  filter.dataset.initialized = 'true';
 }
 
 function _updatePermissionsSummary() {
   const summary = $('permissions-summary');
   if (!summary) return;
-  const count = $('permissions-grid').querySelectorAll('.perm-item.selected').length;
-  summary.textContent = `${count} selected`;
+  const current = _permissionMode === 'required' ? _requiredPermissionIds : _optionalPermissionIds;
+  const allSelected = new Set([..._requiredPermissionIds, ..._optionalPermissionIds]);
+  const riskCount = [...allSelected].filter((id) => {
+    const risk = _PERMISSION_MAP[id]?.risk;
+    return risk === 'high' || risk === 'critical';
+  }).length;
+  summary.textContent = `${current.size} ${_permissionMode} selected`;
+  if ($('permissions-total-count')) $('permissions-total-count').textContent = String(allSelected.size);
+  if ($('permissions-risk-count')) $('permissions-risk-count').textContent = String(riskCount);
+  if ($('permissions-catalog-count')) $('permissions-catalog-count').textContent = String(PERMISSIONS.length);
+  if ($('permissions-required-count')) $('permissions-required-count').textContent = String(_requiredPermissionIds.size);
+  if ($('permissions-optional-count')) $('permissions-optional-count').textContent = String(_optionalPermissionIds.size);
+  const status = $('permissions-header-status');
+  if (status) status.textContent = state.projectDir ? state.projectName || path.basename(state.projectDir) : 'No project loaded';
+  const modeDescription = $('permissions-mode-description');
+  if (modeDescription) modeDescription.textContent = _permissionMode === 'required'
+    ? 'Required permissions are declared in the manifest; OS grant behavior depends on risk and user settings.'
+    : 'Optional grants are requested by your app at runtime; it must work when users decline.';
+  const clearButton = $('permissions-clear');
+  if (clearButton) clearButton.textContent = `Clear ${_permissionMode}`;
+  const requiredTab = $('permissions-mode-required');
+  const optionalTab = $('permissions-mode-optional');
+  requiredTab?.classList.toggle('is-active', _permissionMode === 'required');
+  optionalTab?.classList.toggle('is-active', _permissionMode === 'optional');
+  requiredTab?.setAttribute('aria-pressed', _permissionMode === 'required' ? 'true' : 'false');
+  optionalTab?.setAttribute('aria-pressed', _permissionMode === 'optional' ? 'true' : 'false');
 }
 
 function _initPermissionsSearch() {
@@ -1348,12 +1893,41 @@ function _initPermissionsSearch() {
   if (!input) return;
   input.addEventListener('input', () => {
     _permSearchQuery = input.value;
-    // Re-render from the currently-selected set so filtering never loses
-    // a selection that's just temporarily out of view.
-    const granted = new Set(
-      [...$('permissions-grid').querySelectorAll('.perm-item.selected')].map((el) => el.dataset.id)
-    );
-    renderPermissions(granted);
+    renderPermissions();
+  });
+  $('permissions-category-filter')?.addEventListener('change', (event) => {
+    _permissionCategoryFilter = event.target.value;
+    renderPermissions();
+  });
+  $('permissions-risk-filter')?.addEventListener('change', (event) => {
+    _permissionRiskFilter = event.target.value;
+    renderPermissions();
+  });
+  $('permissions-mode-required')?.addEventListener('click', () => {
+    _permissionMode = 'required';
+    renderPermissions();
+  });
+  $('permissions-mode-optional')?.addEventListener('click', () => {
+    _permissionMode = 'optional';
+    renderPermissions();
+  });
+  $('permissions-select-low')?.addEventListener('click', () => {
+    const current = _permissionMode === 'required' ? _requiredPermissionIds : _optionalPermissionIds;
+    const other = _permissionMode === 'required' ? _optionalPermissionIds : _requiredPermissionIds;
+    for (const item of $('permissions-grid')?.querySelectorAll('.perm-item[data-risk="low"]') || []) {
+      const id = item.dataset.id;
+      if (_permissionMode === 'optional' && id === 'system:root') continue;
+      current.add(id);
+      other.delete(id);
+    }
+    renderPermissions();
+    _onManifestFormChanged();
+  });
+  $('permissions-clear')?.addEventListener('click', () => {
+    const current = _permissionMode === 'required' ? _requiredPermissionIds : _optionalPermissionIds;
+    current.clear();
+    renderPermissions();
+    _onManifestFormChanged();
   });
 }
 
@@ -1361,8 +1935,9 @@ function _attachPermissionTooltips() {
   const tooltip = $('perm-tooltip');
   const dot = $('perm-tooltip-dot');
   const idEl = $('perm-tooltip-id');
+  const riskEl = $('perm-tooltip-risk');
   const body = $('perm-tooltip-body');
-  if (!tooltip || !dot || !idEl || !body) return;
+  if (!tooltip || !dot || !idEl || !riskEl || !body) return;
 
   const riskColors = {
     low: '#3fb950',
@@ -1383,7 +1958,10 @@ function _attachPermissionTooltips() {
     item.addEventListener('mouseenter', (e) => {
       dot.style.background = riskColors[perm.risk] || '#8b949e';
       idEl.textContent = perm.id;
+      riskEl.textContent = `${perm.risk} risk`;
+      riskEl.dataset.risk = perm.risk;
       body.textContent = perm.description || '';
+      item.setAttribute('aria-describedby', 'perm-tooltip');
       tooltip.classList.remove('hidden');
       tooltip.classList.add('is-visible');
       _positionPermTooltip(e.clientX, e.clientY);
@@ -1416,8 +1994,9 @@ function _initEditorPermissionHover() {
   const tooltip = $('perm-tooltip');
   const dot = $('perm-tooltip-dot');
   const idEl = $('perm-tooltip-id');
+  const riskEl = $('perm-tooltip-risk');
   const body = $('perm-tooltip-body');
-  if (!tooltip || !dot || !idEl || !body) return;
+  if (!tooltip || !dot || !idEl || !riskEl || !body) return;
 
   const riskColors = {
     low: '#3fb950',
@@ -1451,6 +2030,8 @@ function _initEditorPermissionHover() {
 
     dot.style.background = riskColors[match.permission.risk] || '#8b949e';
     idEl.textContent = match.id;
+    riskEl.textContent = `${match.permission.risk} risk`;
+    riskEl.dataset.risk = match.permission.risk;
     body.textContent = match.permission.description || '';
     tooltip.classList.remove('hidden');
     tooltip.classList.add('is-visible');
@@ -1487,13 +2068,16 @@ function readManifestForm() {
   const maxWidth = parseInt($('mf-max-width').value, 10) || undefined;
   const maxHeight = parseInt($('mf-max-height').value, 10) || undefined;
 
-  const selectedPerms = [...$('permissions-grid').querySelectorAll('.perm-item.selected')]
-    .map((el) => el.dataset.id);
+  const selectedPerms = [..._requiredPermissionIds];
+  const selectedOptionalPerms = [..._optionalPermissionIds].filter((id) => !_requiredPermissionIds.has(id));
 
   const diskManifest = state.projectDir ? _readManifest(state.projectDir) : null;
   const manifest = diskManifest && !diskManifest._error ? { ...diskManifest } : {};
   const existingPermissions = Array.isArray(manifest.permissions) ? manifest.permissions : [];
   const preservedPermissions = existingPermissions.filter((permission) => !PERMISSION_IDS.has(permission));
+  const hadOptionalPermissions = Array.isArray(manifest.optionalPermissions);
+  const existingOptionalPermissions = hadOptionalPermissions ? manifest.optionalPermissions : [];
+  const preservedOptionalPermissions = existingOptionalPermissions.filter((permission) => !PERMISSION_IDS.has(permission));
 
   Object.assign(manifest, {
     id: $('mf-id').value.trim(),
@@ -1502,6 +2086,19 @@ function readManifestForm() {
     entry: $('mf-entry').value.trim() || 'index.html',
     permissions: [...new Set([...preservedPermissions, ...selectedPerms])],
   });
+  if (hadOptionalPermissions || selectedOptionalPerms.length) {
+    manifest.optionalPermissions = [...new Set([...preservedOptionalPermissions, ...selectedOptionalPerms])];
+  } else {
+    delete manifest.optionalPermissions;
+  }
+  if (_permissionReasons !== null) {
+    const reasons = Object.fromEntries([..._permissionReasons].map(([permission, reason]) => [
+      permission,
+      typeof reason === 'string' ? reason.trim() : reason,
+    ]).filter(([, reason]) => typeof reason !== 'string' || reason.length > 0));
+    if (Object.keys(reasons).length) manifest.permissionReasons = reasons;
+    else delete manifest.permissionReasons;
+  }
 
   manifest.description = $('mf-description').value.trim() || undefined;
   manifest.author = $('mf-author').value.trim() || undefined;
@@ -1561,18 +2158,18 @@ function _windowSettingsError() {
   return '';
 }
 
-function saveManifest() {
-  if (!state.projectDir) return;
+async function saveManifest() {
+  if (!state.projectDir) return false;
   const windowError = _windowSettingsError();
   if (windowError) {
-    alert(windowError);
-    return;
+    await studioAlert(windowError, { title: 'Check window dimensions' });
+    return false;
   }
   const manifest = readManifestForm();
 
   if (!manifest.id || !manifest.name) {
-    alert('App ID and Name are required.');
-    return;
+    await studioAlert('App ID and Name are required.', { title: 'Manifest needs an app ID and name' });
+    return false;
   }
 
   try {
@@ -1595,8 +2192,10 @@ function saveManifest() {
         window.CM.setValue(savedJson);
       }
     }
+    return true;
   } catch (err) {
-    alert('Could not save manifest: ' + err.message);
+    await studioAlert('Could not save manifest: ' + err.message, { title: 'Manifest save failed' });
+    return false;
   }
 }
 
@@ -1625,7 +2224,7 @@ function _validateAppIdField() {
   const valid = value.startsWith('webapp_') || APP_ID_RE.test(value);
 
   input.classList.toggle('is-invalid', !valid);
-  status.textContent = valid ? '\u2713' : '\u2715';
+  status.innerHTML = valid ? _uiIcon('check') : _uiIcon('close');
   status.className = 'mf-id-status ' + (valid ? 'is-valid' : 'is-invalid');
   feedback.className = 'mf-id-feedback ' + (valid ? 'is-valid' : 'is-invalid');
   feedback.textContent = valid
@@ -3086,7 +3685,7 @@ function _designInjectedScript() {
     h.dataset.handle = spec.id;
     const isCorner = spec.id.length === 2;
     h.style.cssText = `position:absolute;width:${isCorner ? 9 : 7}px;height:${isCorner ? 9 : 7}px;` +
-      `background:#fff;border:1.5px solid #22c55e;border-radius:50%;` +
+      `background:#fff;border:1.5px solid var(--accent, #58a6ff);border-radius:50%;` +
       `pointer-events:auto;cursor:${spec.cursor};transform:translate(-50%,-50%);`;
     resizeOverlay.appendChild(h);
     handleEls[spec.id] = h;
@@ -3530,8 +4129,10 @@ function _designInjectedScript() {
   }, true);
 
   const style = document.createElement('style');
-  style.textContent = '.__nb_hover{outline:1.5px dashed #22c55e!important;outline-offset:1px;cursor:pointer;}' +
-    '.__nb_selected{outline:2px solid #22c55e!important;outline-offset:1px;}' +
+  document.documentElement.style.setProperty('--nb-studio-accent',
+    parent.getComputedStyle(parent.document.documentElement).getPropertyValue('--accent').trim() || '#58a6ff');
+  style.textContent = '.__nb_hover{outline:1.5px dashed var(--nb-studio-accent, #58a6ff)!important;outline-offset:1px;cursor:pointer;}' +
+    '.__nb_selected{outline:2px solid var(--nb-studio-accent, #58a6ff)!important;outline-offset:1px;}' +
     '.__nb_dragging{opacity:0.4!important;}' +
     '#nb-design-viewport{transform-origin:0 0;will-change:transform;}';
   document.head.appendChild(style);
@@ -5014,11 +5615,11 @@ function _designMoveNodeInSource(msg) {
 
 // File tree
 
-// Fallback emoji for extensions with no Devicon equivalent (images, audio, plain text).
+// Custom SVG fallback icons for file types without a dedicated Devicon.
 const FILE_ICONS = {
-  '.png': '\u{1F5BC}', '.jpg': '\u{1F5BC}', '.jpeg': '\u{1F5BC}', '.gif': '\u{1F5BC}', '.svg': '\u{1F5BC}', '.webp': '\u{1F5BC}',
-  '.mp3': '\u{1F3B5}', '.wav': '\u{1F3B5}', '.ogg': '\u{1F3B5}',
-  '.txt': '\u{1F4C4}',
+  '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.svg': 'image', '.webp': 'image',
+  '.mp3': 'audio', '.wav': 'audio', '.ogg': 'audio',
+  '.txt': 'file',
 };
 
 // Extension -> devicon class suffix (used as `devicon-${name}-plain`).
@@ -5056,15 +5657,15 @@ const DEVICON_MAP = {
 };
 
 // Returns HTML for a file's icon: a Devicon <i> tag if we have a mapping,
-// otherwise an emoji span from FILE_ICONS, otherwise the generic file emoji.
+// otherwise a custom SVG for the file type.
 // `extraClass` lets callers add their own class (e.g. sizing) to the <i> tag.
 function _fileIconHtml(ext, extraClass) {
   const dev = DEVICON_MAP[ext];
   if (dev) {
     return `<i class="devicon-${dev}-plain colored${extraClass ? ' ' + extraClass : ''}"></i>`;
   }
-  const emoji = FILE_ICONS[ext] || '\u{1F4C4}';
-  return `<span class="file-icon-emoji${extraClass ? ' ' + extraClass : ''}">${emoji}</span>`;
+  const icon = FILE_ICONS[ext] || 'file';
+  return `<span class="file-icon-custom${extraClass ? ' ' + extraClass : ''}">${_uiIcon(icon)}</span>`;
 }
 
 // HTML escape helper. Escapes the four characters that matter in HTML text
@@ -5078,13 +5679,136 @@ function _escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+let _fileTreeExpandedBeforeFilter = null;
+let _fileTreeFilterTimer = null;
+
 function populateFileTree(dir) {
   const tree = $('file-tree');
   if (!tree) return;
   tree.replaceChildren();
-  _buildTreeItems(dir, tree, 0);
+  const query = $('file-tree-filter')?.value.trim();
+  if (query) {
+    _renderFilteredFileTree(dir, query);
+  } else {
+    _buildTreeItems(dir, tree, 0);
+    if (_fileTreeExpandedBeforeFilter) {
+      const expandedPaths = _fileTreeExpandedBeforeFilter;
+      _fileTreeExpandedBeforeFilter = null;
+      expandedPaths
+        .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length)
+        .forEach((expandedPath) => {
+          const item = tree.querySelector(`.file-item[data-path="${CSS.escape(expandedPath)}"]`);
+          if (item?.dataset.isdir === '1' && item.dataset.expanded !== '1') {
+            _toggleDirExpand(item, expandedPath, Number(item.dataset.depth));
+          }
+        });
+    }
+  }
   _applyGitStatusToTree();
+  _renderOpenEditors();
   _refreshGitStatus(dir);
+}
+
+const EXPLORER_FILTER_MAX_FILES = 3000;
+
+function _collectExplorerFiles(rootDir) {
+  const files = [];
+  let truncated = false;
+  let scannedEntries = 0;
+  const walk = (dir, depth = 0) => {
+    if (depth > 64) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir).filter((entry) => !entry.startsWith('.') && entry !== 'node_modules');
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (files.length >= EXPLORER_FILTER_MAX_FILES || scannedEntries >= 8000) {
+        truncated = true;
+        return;
+      }
+      scannedEntries++;
+      const full = path.join(dir, entry);
+      let stat;
+      try { stat = fs.lstatSync(full); } catch { continue; }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) walk(full, depth + 1);
+      else files.push(full);
+    }
+  };
+  walk(rootDir);
+  return { files, truncated };
+}
+
+function _renderFilteredFileTree(rootDir, query) {
+  const tree = $('file-tree');
+  if (!tree) return;
+  const normalizedQuery = query.toLowerCase();
+  const { files, truncated } = _collectExplorerFiles(rootDir);
+  const matches = files
+    .filter((filePath) => path.relative(rootDir, filePath).toLowerCase().includes(normalizedQuery))
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 250);
+  tree.replaceChildren();
+
+  if (!matches.length) {
+    const empty = document.createElement('div');
+    empty.className = 'file-filter-empty';
+    empty.textContent = truncated
+      ? 'No matches in the scanned files. Refine your filter.'
+      : `No files match “${query}”.`;
+    tree.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const fullPath of matches) {
+    const item = _buildTreeItem(fullPath, 0);
+    if (!item) continue;
+    const location = document.createElement('span');
+    location.className = 'file-filter-path';
+    const relativeDirectory = path.dirname(path.relative(rootDir, fullPath));
+    location.textContent = relativeDirectory === '.' ? '' : relativeDirectory;
+    item.appendChild(location);
+    fragment.appendChild(item);
+  }
+  tree.appendChild(fragment);
+
+  const status = document.createElement('div');
+  status.className = 'file-filter-status';
+  status.textContent = `${matches.length}${matches.length === 250 ? '+' : ''} match${matches.length === 1 ? '' : 'es'}${truncated ? ' · refine to search more' : ''}`;
+  tree.appendChild(status);
+}
+
+function _filterProjectFiles(query) {
+  const input = $('file-tree-filter');
+  const clearButton = $('btn-clear-file-filter');
+  const normalizedQuery = query.trim();
+  clearButton?.classList.toggle('hidden', !normalizedQuery);
+  if (!state.projectDir) return;
+
+  if (normalizedQuery && !_fileTreeExpandedBeforeFilter) {
+    _fileTreeExpandedBeforeFilter = [...document.querySelectorAll('#file-tree .file-item--dir[data-expanded="1"]')]
+      .map((item) => item.dataset.path);
+  }
+  if (normalizedQuery) {
+    _renderFilteredFileTree(state.projectDir, normalizedQuery);
+    _applyGitStatusToTree();
+    return;
+  }
+  if (input) input.value = '';
+  populateFileTree(state.projectDir);
+}
+
+function _collapseAllFileTreeFolders() {
+  if (_fileTreeFilterTimer) clearTimeout(_fileTreeFilterTimer);
+  _fileTreeFilterTimer = null;
+  const input = $('file-tree-filter');
+  if (input) input.value = '';
+  _fileTreeExpandedBeforeFilter = null;
+  $('btn-clear-file-filter')?.classList.add('hidden');
+  if (state.projectDir) populateFileTree(state.projectDir);
 }
 
 // Git status (file tree indicators). Best-effort: if `git` isn't on PATH,
@@ -5102,9 +5826,12 @@ function _refreshGitStatus(dir) {
       // Not a repo (or git isn't installed) -- clear any stale state from a
       // previously open project and leave the tree as-is.
       state.gitRoot = null;
+      state.gitBranches = [];
       state.gitStatus = null;
       state.gitNumstat = null;
       _applyGitStatusToTree();
+      _updateSidebarQuickAccess();
+      if (state.activeTab === 'git') refreshGitPanel();
       return;
     }
 
@@ -5133,6 +5860,7 @@ function _refreshGitStatus(dir) {
         state.gitRoot = root;
         state.gitStatus = statusMap;
         _applyGitStatusToTree();
+        _updateSidebarQuickAccess();
 
         // +/- line counts per file, best-effort -- used only for the small
         // stat badges in the Changes list. Failure here (e.g. binary files,
@@ -5308,18 +6036,28 @@ function gitCreateBranch(name) {
   });
 }
 
-function gitDeleteBranch(name) {
-  if (!confirm(`Delete branch "${name}"? This cannot be undone if it isn't merged elsewhere.`)) return;
+async function gitDeleteBranch(name) {
+  if (!await studioConfirm(`Delete branch "${name}"? This cannot be undone if it isn't merged elsewhere.`, {
+    title: 'Delete branch',
+    confirmLabel: 'Delete branch',
+    danger: true,
+  })) return;
   _gitExecFile(['branch', '-d', name], (err) => {
     if (err) {
       // -d refuses on unmerged branches; offer the force path explicitly
       // rather than silently escalating to -D on the user's behalf.
-      if (/not fully merged/i.test(err.message) &&
-          confirm(`"${name}" has unmerged changes. Force delete anyway?`)) {
+      if (/not fully merged/i.test(err.message)) {
+        studioConfirm(`"${name}" has unmerged changes. Force delete anyway?`, {
+          title: 'Force delete unmerged branch',
+          confirmLabel: 'Force delete',
+          danger: true,
+        }).then((confirmed) => {
+          if (!confirmed) return;
         _gitExecFile(['branch', '-D', name], (err2) => {
           if (err2) { _gitLog('error', `Delete failed: ${err2.message}`); return; }
           _gitLog('success', `Force-deleted ${name}`);
           refreshGitPanel();
+        });
         });
         return;
       }
@@ -5340,9 +6078,12 @@ function gitRenameBranch(oldName, newName) {
   });
 }
 
-function gitMergeBranch(name) {
+async function gitMergeBranch(name) {
   const current = _currentGitBranch();
-  if (!confirm(`Merge "${name}" into "${current ? current.name : 'current branch'}"?`)) return;
+  if (!await studioConfirm(`Merge "${name}" into "${current ? current.name : 'current branch'}"?`, {
+    title: 'Merge branch',
+    confirmLabel: 'Merge branch',
+  })) return;
   _gitExecFile(['merge', '--no-edit', name], (err, out) => {
     if (err) { _gitLog('error', `Merge failed: ${err.message}`); return; }
     _gitLog('success', (out || '').trim() || `Merged ${name}`);
@@ -5439,7 +6180,7 @@ function _renderGitHistory(commits) {
     empty.className = 'git-empty-state';
     const icon = document.createElement('div');
     icon.className = 'git-empty-state-icon';
-    icon.textContent = '\u23F1';
+    icon.innerHTML = _uiIcon('clock', 'ui-icon--empty');
     const text = document.createElement('div');
     text.className = 'git-empty-state-text';
     text.textContent = 'No commits yet';
@@ -5527,8 +6268,12 @@ function gitStashApply(ref) {
   });
 }
 
-function gitStashDrop(ref) {
-  if (!confirm(`Drop stash ${ref}? This cannot be undone.`)) return;
+async function gitStashDrop(ref) {
+  if (!await studioConfirm(`Drop stash ${ref}? This cannot be undone.`, {
+    title: 'Drop stash',
+    confirmLabel: 'Drop stash',
+    danger: true,
+  })) return;
   _gitExecFile(['stash', 'drop', ref], (err, out) => {
     if (err) { _gitLog('error', `Stash drop failed: ${err.message}`); return; }
     _gitLog('success', (out || '').trim() || `Dropped ${ref}`);
@@ -5552,7 +6297,7 @@ function _renderGitStashes(stashes) {
     empty.className = 'git-empty-state';
     const icon = document.createElement('div');
     icon.className = 'git-empty-state-icon';
-    icon.textContent = '\u{1F4E6}';
+    icon.innerHTML = _uiIcon('package', 'ui-icon--empty');
     const text = document.createElement('div');
     text.className = 'git-empty-state-text';
     text.textContent = 'No stashes';
@@ -5582,19 +6327,22 @@ function _renderGitStashes(stashes) {
     const popBtn = document.createElement('button');
     popBtn.className = 'icon-btn';
     popBtn.title = 'Pop (apply and remove)';
-    popBtn.textContent = '\u21E4';
+    popBtn.setAttribute('aria-label', 'Pop stash');
+    popBtn.innerHTML = _uiIcon('arrow-up');
     popBtn.addEventListener('click', () => gitStashPop(s.ref));
 
     const applyBtn = document.createElement('button');
     applyBtn.className = 'icon-btn';
     applyBtn.title = 'Apply (keep stash)';
-    applyBtn.textContent = '\u21E5';
+    applyBtn.setAttribute('aria-label', 'Apply stash');
+    applyBtn.innerHTML = _uiIcon('upload');
     applyBtn.addEventListener('click', () => gitStashApply(s.ref));
 
     const dropBtn = document.createElement('button');
     dropBtn.className = 'icon-btn git-file-action--danger';
     dropBtn.title = 'Drop';
-    dropBtn.textContent = '\u2715';
+    dropBtn.setAttribute('aria-label', 'Drop stash');
+    dropBtn.innerHTML = _uiIcon('trash');
     dropBtn.addEventListener('click', () => gitStashDrop(s.ref));
 
     actions.append(popBtn, applyBtn, dropBtn);
@@ -5658,12 +6406,16 @@ function gitShowFileDiff(absPath, staged) {
 
 // Changes list rendering
 
-function gitDiscardChange(absPath, code) {
+async function gitDiscardChange(absPath, code) {
   const name = path.basename(absPath);
   if (code === '??') {
     // Untracked file -- "discard" means delete it, since git has nothing to
     // restore it to. Confirm explicitly since this is unrecoverable.
-    if (!confirm(`Delete untracked file "${name}"? This cannot be undone.`)) return;
+    if (!await studioConfirm(`Delete untracked file "${name}"? This cannot be undone.`, {
+      title: 'Delete untracked file',
+      confirmLabel: 'Delete file',
+      danger: true,
+    })) return;
     try { fs.unlinkSync(absPath); }
     catch (e) { _gitLog('error', `Delete failed: ${e.message}`); return; }
     _gitLog('success', `Deleted ${name}`);
@@ -5671,7 +6423,11 @@ function gitDiscardChange(absPath, code) {
     refreshGitPanel();
     return;
   }
-  if (!confirm(`Discard changes to "${name}"? This cannot be undone.`)) return;
+  if (!await studioConfirm(`Discard changes to "${name}"? This cannot be undone.`, {
+    title: 'Discard file changes',
+    confirmLabel: 'Discard changes',
+    danger: true,
+  })) return;
   _gitExecFile(['checkout', '--', absPath], (err) => {
     if (err) { _gitLog('error', `Discard failed: ${err.message}`); return; }
     _gitLog('success', `Discarded changes to ${name}`);
@@ -5700,6 +6456,8 @@ function _renderGitFileLists() {
     unstagedEl.appendChild(empty('No changes'));
     if ($('git-staged-count')) $('git-staged-count').textContent = '0';
     if ($('git-unstaged-count')) $('git-unstaged-count').textContent = '0';
+    if ($('git-overview-changes')) $('git-overview-changes').textContent = '0';
+    if ($('git-overview-staged')) $('git-overview-staged').textContent = '0';
     $('git-changes-count')?.classList.add('hidden');
     return;
   }
@@ -5760,7 +6518,8 @@ function _renderGitFileLists() {
     const discardBtn = document.createElement('button');
     discardBtn.className = 'icon-btn git-file-action git-file-action--danger';
     discardBtn.title = code === '??' ? 'Delete file' : 'Discard changes';
-    discardBtn.textContent = '\u21BA';
+    discardBtn.setAttribute('aria-label', code === '??' ? 'Delete file' : 'Discard changes');
+    discardBtn.innerHTML = _uiIcon(code === '??' ? 'trash' : 'refresh');
     discardBtn.addEventListener('click', (e) => { e.stopPropagation(); gitDiscardChange(absPath, code); });
 
     actions.append(actionBtn);
@@ -5797,6 +6556,8 @@ function _renderGitFileLists() {
 
   if ($('git-staged-count')) $('git-staged-count').textContent = String(stagedCount);
   if ($('git-unstaged-count')) $('git-unstaged-count').textContent = String(unstagedCount);
+  if ($('git-overview-changes')) $('git-overview-changes').textContent = String(state.gitStatus.size);
+  if ($('git-overview-staged')) $('git-overview-staged').textContent = String(stagedCount);
   const totalEl = $('git-changes-count');
   if (totalEl) {
     const total = stagedCount + unstagedCount;
@@ -5882,6 +6643,29 @@ function _renderBranchChip() {
   const hasRepo = !!state.gitRoot;
   if (pullBtn) pullBtn.disabled = !hasRepo || !current?.upstream;
   if (pushBtn) pushBtn.disabled = !hasRepo;
+  const overviewBranch = $('git-overview-branch');
+  if (overviewBranch) overviewBranch.textContent = current?.name || '—';
+  const overviewSync = $('git-overview-sync');
+  if (overviewSync) {
+    overviewSync.textContent = !current?.upstream
+      ? 'No upstream configured'
+      : current.ahead || current.behind
+        ? `${current.ahead} ahead · ${current.behind} behind`
+        : 'Up to date';
+  }
+  const repoName = $('git-repo-name');
+  const repoPath = $('git-repo-path');
+  const repoState = $('git-repo-state');
+  if (repoName) repoName.textContent = hasRepo ? path.basename(state.gitRoot) : 'No repository';
+  if (repoPath) repoPath.textContent = hasRepo ? state.gitRoot : (state.projectDir || 'Open a project inside a Git repository');
+  if (repoState) {
+    repoState.textContent = hasRepo ? 'Repository detected' : 'Not connected';
+    repoState.classList.toggle('is-connected', hasRepo);
+  }
+  const workspace = $('git-workspace');
+  workspace?.classList.toggle('is-no-repository', !hasRepo);
+  $('git-no-repository')?.classList.toggle('hidden', hasRepo);
+  $('panel-git')?.classList.toggle('git-panel--no-repo', !hasRepo);
 }
 
 function _renderBranchDropdownList(filter = '') {
@@ -5897,7 +6681,7 @@ function _renderBranchDropdownList(filter = '') {
 
     const icon = document.createElement('span');
     icon.className = 'git-branch-dropdown-item-icon';
-    icon.textContent = '\u2102';
+    icon.innerHTML = _uiIcon('branch');
 
     const name = document.createElement('span');
     name.className = 'git-branch-dropdown-item-name';
@@ -5908,7 +6692,7 @@ function _renderBranchDropdownList(filter = '') {
     if (b.current) {
       const check = document.createElement('span');
       check.className = 'git-branch-dropdown-item-check';
-      check.textContent = '\u2713';
+      check.innerHTML = _uiIcon('check');
       item.append(check);
     } else {
       item.addEventListener('click', () => {
@@ -5941,7 +6725,7 @@ function _renderGitBranchesPane(filter = '') {
 
     const icon = document.createElement('span');
     icon.className = 'git-branch-item-icon';
-    icon.textContent = '\u2102';
+    icon.innerHTML = _uiIcon('branch');
 
     const info = document.createElement('div');
     info.className = 'git-branch-item-info';
@@ -5982,28 +6766,36 @@ function _renderGitBranchesPane(filter = '') {
       const switchBtn = document.createElement('button');
       switchBtn.className = 'icon-btn';
       switchBtn.title = 'Switch to this branch';
-      switchBtn.textContent = '\u21C4';
+      switchBtn.setAttribute('aria-label', 'Switch to this branch');
+      switchBtn.innerHTML = _uiIcon('branch');
       switchBtn.addEventListener('click', () => gitCheckoutBranch(b.name));
 
       const mergeBtn = document.createElement('button');
       mergeBtn.className = 'icon-btn';
       mergeBtn.title = 'Merge into current branch';
-      mergeBtn.textContent = '\u2103';
+      mergeBtn.setAttribute('aria-label', 'Merge into current branch');
+      mergeBtn.innerHTML = _uiIcon('merge');
       mergeBtn.addEventListener('click', () => gitMergeBranch(b.name));
 
       const renameBtn = document.createElement('button');
       renameBtn.className = 'icon-btn';
       renameBtn.title = 'Rename';
-      renameBtn.textContent = '\u270F';
-      renameBtn.addEventListener('click', () => {
-        const next = prompt(`Rename "${b.name}" to:`, b.name);
+      renameBtn.setAttribute('aria-label', 'Rename branch');
+      renameBtn.innerHTML = _uiIcon('edit');
+      renameBtn.addEventListener('click', async () => {
+        const next = await studioPrompt(`Rename "${b.name}" to:`, b.name, {
+          title: 'Rename branch',
+          confirmLabel: 'Rename',
+          maxLength: 255,
+        });
         if (next && next.trim()) gitRenameBranch(b.name, next.trim());
       });
 
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'icon-btn git-file-action--danger';
       deleteBtn.title = 'Delete';
-      deleteBtn.textContent = '\u{1F5D1}';
+      deleteBtn.setAttribute('aria-label', 'Delete branch');
+      deleteBtn.innerHTML = _uiIcon('trash');
       deleteBtn.addEventListener('click', () => gitDeleteBranch(b.name));
 
       actions.append(switchBtn, mergeBtn, renameBtn, deleteBtn);
@@ -6075,6 +6867,8 @@ function refreshGitPanel() {
 }
 
 function _initGitPanel() {
+  $('btn-git-open-project')?.addEventListener('click', () => pickFolder(loadProject));
+
   // Branch chip -> dropdown
   $('git-branch-chip')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -6153,12 +6947,13 @@ function _buildTreeItem(full, depth) {
 
   const isDir = stat.isDirectory();
   const ext = path.extname(full).toLowerCase();
-  const iconHtml = isDir ? '<span class="file-icon-emoji">\u{1F4C1}</span>' : _fileIconHtml(ext);
+  const iconHtml = isDir ? `<span class="file-icon-custom">${_uiIcon('folder')}</span>` : _fileIconHtml(ext);
   const size = isDir ? '' : _formatSize(stat.size);
   const name = path.basename(full);
 
   const item = document.createElement('div');
   item.className = 'file-item' + (isDir ? ' file-item--dir' : '');
+  item.draggable = true;
   item.dataset.path = full;
   item.dataset.isdir = isDir ? '1' : '0';
   item.dataset.depth = String(depth);
@@ -6310,7 +7105,7 @@ function _toggleDirExpand(item, dirPath, depth) {
   const isExpanded = item.dataset.expanded === '1';
   if (isExpanded) {
     item.dataset.expanded = '0';
-    item.querySelector('[data-icon]').innerHTML = '<span class="file-icon-emoji">\u{1F4C1}</span>';
+    item.querySelector('[data-icon]').innerHTML = `<span class="file-icon-custom">${_uiIcon('folder')}</span>`;
     let sib = item.nextSibling;
     while (sib) {
       const sibDepth = parseInt(sib.dataset?.depth ?? '-1', 10);
@@ -6322,7 +7117,7 @@ function _toggleDirExpand(item, dirPath, depth) {
     }
   } else {
     item.dataset.expanded = '1';
-    item.querySelector('[data-icon]').innerHTML = '<span class="file-icon-emoji">\u{1F4C2}</span>';
+    item.querySelector('[data-icon]').innerHTML = `<span class="file-icon-custom">${_uiIcon('folder-open')}</span>`;
     const frag = document.createDocumentFragment();
     const temp = document.createElement('div');
     _buildTreeItems(dirPath, temp, depth + 1);
@@ -6366,7 +7161,7 @@ function _renderTabs() {
       `<span class="editor-tab-icon">${_fileIconHtml(tabExt)}</span>` +
       `<span class="editor-tab-name">${_escHtml(path.basename(tab.filePath))}</span>` +
       `<span class="editor-tab-dirty ${tab.isDirty ? '' : 'hidden'}" title="Unsaved">\u25CF</span>` +
-      `<button class="editor-tab-close" data-index="${i}" title="Close">\u2715</button>`;
+      `<button class="editor-tab-close" data-index="${i}" title="Close" aria-label="Close ${_escHtml(path.basename(tab.filePath))}">${_uiIcon('close')}</button>`;
 
     el.addEventListener('click', (e) => {
       if (e.target.classList.contains('editor-tab-close')) return;
@@ -6382,6 +7177,142 @@ function _renderTabs() {
     });
     bar.appendChild(el);
   });
+  _renderOpenEditors();
+  _updateEditorToolbar();
+}
+
+function _renderOpenEditors() {
+  const section = $('open-editors-section');
+  const list = $('open-editors-list');
+  const count = $('open-editors-count');
+  if (!section || !list) return;
+  section.classList.toggle('hidden', tabs.length === 0);
+  if (count) count.textContent = String(tabs.length);
+  list.replaceChildren();
+
+  tabs.forEach((tab, index) => {
+    const item = document.createElement('div');
+    item.className = 'open-editor-item' + (index === activeTabIndex ? ' open-editor-item--active' : '');
+    item.title = tab.filePath;
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    if (index === activeTabIndex) item.setAttribute('aria-current', 'page');
+
+    const icon = document.createElement('span');
+    icon.className = 'open-editor-icon';
+    icon.innerHTML = _fileIconHtml(path.extname(tab.filePath).toLowerCase());
+
+    const name = document.createElement('span');
+    name.className = 'open-editor-name';
+    name.textContent = path.basename(tab.filePath);
+
+    const dirty = document.createElement('span');
+    dirty.className = `open-editor-dirty${tab.isDirty ? '' : ' hidden'}`;
+    dirty.textContent = '\u25CF';
+    dirty.title = 'Unsaved changes';
+
+    const close = document.createElement('button');
+    close.className = 'open-editor-close';
+    close.type = 'button';
+    close.title = `Close ${path.basename(tab.filePath)}`;
+    close.setAttribute('aria-label', close.title);
+    close.innerHTML = _uiIcon('close');
+    close.addEventListener('click', (event) => {
+      event.stopPropagation();
+      _closeTab(index);
+    });
+
+    item.append(icon, name, dirty, close);
+    item.addEventListener('click', () => {
+      _switchToTab(index);
+      switchTab('editor');
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.target === close || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      item.click();
+    });
+    list.appendChild(item);
+  });
+}
+
+function _updateEditorToolbar() {
+  const tab = _getActiveTab();
+  const hasProject = !!state.projectDir;
+  const ext = tab ? path.extname(tab.filePath).toLowerCase() : '';
+  const isImage = !!tab && IMAGE_EXTS.has(ext);
+  const isHtml = ext === '.html' || ext === '.htm';
+  const canCheckSyntax = !!_SYNTAX_LOADER_MAP[ext]
+    || ['.json', '.css', '.html', '.htm'].includes(ext);
+  const breadcrumbs = $('editor-breadcrumbs');
+
+  if (breadcrumbs) {
+    breadcrumbs.replaceChildren();
+    breadcrumbs.title = tab?.filePath || '';
+    if (!tab) {
+      const empty = document.createElement('span');
+      empty.className = 'editor-context-empty';
+      empty.textContent = state.projectDir ? 'Choose a file to start editing' : 'No project open';
+      breadcrumbs.appendChild(empty);
+    } else {
+      const root = path.resolve(state.projectDir || path.dirname(tab.filePath));
+      const relative = path.relative(root, tab.filePath);
+      const parts = [path.basename(root), ...relative.split(path.sep).filter(Boolean)];
+      parts.forEach((part, index) => {
+        if (index) {
+          const separator = document.createElement('span');
+          separator.className = 'editor-breadcrumb-separator';
+          separator.setAttribute('aria-hidden', 'true');
+          separator.textContent = '/';
+          breadcrumbs.appendChild(separator);
+        }
+        const segment = document.createElement('span');
+        segment.className = index === parts.length - 1
+          ? 'editor-breadcrumb editor-breadcrumb--active'
+          : 'editor-breadcrumb';
+        segment.textContent = part;
+        if (index === parts.length - 1) segment.setAttribute('aria-current', 'page');
+        breadcrumbs.appendChild(segment);
+      });
+    }
+  }
+
+  const settings = window.CM?.getSettings();
+  const controls = [
+    ['btn-editor-find', !!tab && !isImage],
+    ['btn-editor-wrap', !!tab && !isImage],
+    ['btn-editor-preview', !!tab && isHtml],
+    ['btn-editor-font-dec', !!tab && !isImage && (settings?.fontSize ?? 13) > 10],
+    ['btn-editor-font-inc', !!tab && !isImage && (settings?.fontSize ?? 13) < 24],
+    ['btn-diff-vs-saved', !!tab && !isImage],
+    ['btn-check-syntax', !!tab && !isImage && canCheckSyntax],
+    ['btn-editor-save', !!tab && !isImage],
+    ['btn-editor-save-all', tabs.some((openTab) =>
+      openTab.isDirty && !IMAGE_EXTS.has(path.extname(openTab.filePath).toLowerCase()))],
+  ];
+  controls.forEach(([id, enabled]) => {
+    const button = $(id);
+    if (button) button.disabled = !enabled;
+  });
+
+  const wrapButton = $('btn-editor-wrap');
+  if (wrapButton) wrapButton.setAttribute('aria-pressed', String(settings?.wordWrap === true));
+  const previewButton = $('btn-editor-preview');
+  if (previewButton) previewButton.setAttribute('aria-pressed', String(_previewVisible && isHtml));
+  const fontSize = $('editor-font-size');
+  if (fontSize) fontSize.textContent = `${settings?.fontSize ?? 13}px`;
+  const tabbar = $('editor-tabbar');
+  if (tabbar) tabbar.classList.toggle('hidden', tabs.length === 0);
+
+  const openButton = $('btn-editor-empty-open');
+  if (openButton) {
+    const icon = openButton.querySelector('.ui-icon use');
+    const label = openButton.querySelector('span');
+    const shortcut = openButton.querySelector('kbd');
+    if (icon) icon.setAttribute('href', hasProject ? '#ui-icon-search' : '#ui-icon-folder-open');
+    if (label) label.textContent = hasProject ? 'Quick Open' : 'Open Project';
+    if (shortcut) shortcut.textContent = hasProject ? `${MOD_KEY}+P` : `${MOD_KEY}+O`;
+  }
 }
 
 function _stashActiveTabContent() {
@@ -6402,11 +7333,15 @@ function _switchToTab(index) {
   _highlightActiveFile();
 }
 
-function _closeTab(index) {
+async function _closeTab(index) {
   const tab = tabs[index];
   if (!tab) return;
   if (tab.isDirty) {
-    const ok = confirm(`Discard unsaved changes to "${path.basename(tab.filePath)}"?`);
+    const ok = await studioConfirm(`Discard unsaved changes to "${path.basename(tab.filePath)}"?`, {
+      title: 'Discard unsaved changes',
+      confirmLabel: 'Discard changes',
+      danger: true,
+    });
     if (!ok) return;
   }
   tabs.splice(index, 1);
@@ -6437,6 +7372,7 @@ function _loadTabIntoEditor(tab) {
   if (!tab) return;
   const ext = path.extname(tab.filePath).toLowerCase();
   $('btn-editor-save').disabled = IMAGE_EXTS.has(ext);
+  if (_previewVisible && ext !== '.html' && ext !== '.htm') _hidePreview();
 
   if (IMAGE_EXTS.has(ext)) {
     if (window.CM) window.CM.destroy();
@@ -6468,6 +7404,7 @@ function _loadTabIntoEditor(tab) {
   }
 
   _refreshPreviewIfVisible();
+  _updateEditorToolbar();
 }
 
 function _highlightActiveFile() {
@@ -6580,9 +7517,9 @@ function _runLivePermissionScan() {
   const undeclared = [...detected.difference(declared)];
 
   if (undeclared.length === 0) {
-    _setLivePermStatus('ok', `\u2713 permissions ok`);
+    _setLivePermStatus('ok', 'permissions ok');
   } else {
-    _setLivePermStatus('missing', `\u26A0 ${undeclared.length} undeclared: ${undeclared.slice(0, 3).join(', ')}${undeclared.length > 3 ? '\u2026' : ''}`);
+    _setLivePermStatus('missing', `${undeclared.length} undeclared: ${undeclared.slice(0, 3).join(', ')}${undeclared.length > 3 ? '\u2026' : ''}`);
   }
 }
 
@@ -6600,8 +7537,9 @@ function _setLivePermStatus(type, text) {
   }
   el.style.display = '';
   if (sep) sep.style.display = '';
-  el.textContent = text;
-  el.className = `status-bar-item status-bar-item--clickable status-bar-item--${type}`;
+  el.innerHTML = `${_uiIcon(type === 'ok' ? 'check' : 'alert')}<span>${_escHtml(text)}</span>`;
+  const statusClass = type === 'missing' ? 'warn' : type;
+  el.className = `status-bar-item status-bar-item--clickable status-bar-item--${statusClass}`;
 }
 
 // Patches just one row's size label in the sidebar tree, rather than
@@ -6647,21 +7585,29 @@ function _updateStatusBar() {
 
   if (window.CM) {
     try {
-      const size = Buffer.byteLength(window.CM.getValue(), 'utf8');
+      const content = window.CM.getValue();
+      const size = Buffer.byteLength(content, 'utf8');
       $('sb-size').textContent = _formatSize(size);
+      $('sb-lines').textContent = `${window.CM.view?.state.doc.lines ?? content.split('\n').length} lines`;
     } catch {
       $('sb-size').textContent = '';
     }
 
     if (window.CM.view) {
       const pos = window.CM.view.state.selection.main.head;
+      const selection = window.CM.view.state.selection.main;
       const line = window.CM.view.state.doc.lineAt(pos);
       const col = pos - line.from + 1;
       $('sb-pos').textContent = `Ln ${line.number}, Col ${col}`;
+      const selectionCount = selection.to - selection.from;
+      $('sb-selection').textContent = `${selectionCount.toLocaleString()} selected`;
+      $('sb-selection').style.display = selectionCount ? '' : 'none';
+      $('sb-selection-sep').style.display = selectionCount ? '' : 'none';
     }
   }
 
   _setSyntaxStatus(null, null);
+  _updateEditorToolbar();
 }
 
 function saveOpenFile() {
@@ -6733,12 +7679,16 @@ function initEditorDirtyTracking() { /* handled via _onCmChange */ }
 // durable "keep this open" action, not just protection against the next
 // single-click preview-reuse. Only unpinned (preview) tabs get discarded
 // here; pinned tabs persist.
-function editorCloseGuard() {
+async function editorCloseGuard() {
   const toDiscard = tabs.filter((t) => t.preview);
   const dirty = toDiscard.filter((t) => t.isDirty);
   if (dirty.length) {
     const names = dirty.map((t) => path.basename(t.filePath)).join(', ');
-    const ok = confirm(`Discard unsaved changes to: ${names}?`);
+    const ok = await studioConfirm(`Discard unsaved changes to: ${names}?`, {
+      title: 'Discard unsaved changes',
+      confirmLabel: 'Discard changes',
+      danger: true,
+    });
     if (!ok) return;
   }
   for (let i = tabs.length - 1; i >= 0; i--) {
@@ -6774,17 +7724,15 @@ function _showPreview() {
   _previewVisible = true;
   $('preview-pane').classList.remove('hidden');
   $('editor-body').classList.add('editor-body--split');
-  $('btn-toggle-preview').textContent = '\u2B1B';
-  $('btn-toggle-preview').title = 'Hide Preview';
   _refreshPreviewIfVisible();
+  _updateEditorToolbar();
 }
 
 function _hidePreview() {
   _previewVisible = false;
   $('preview-pane').classList.add('hidden');
   $('editor-body').classList.remove('editor-body--split');
-  const btn = $('btn-toggle-preview');
-  if (btn) { btn.textContent = '\u2B1C'; btn.title = 'Show Preview'; }
+  _updateEditorToolbar();
 }
 
 function _togglePreview() {
@@ -6828,6 +7776,7 @@ function _initSettingsPage() {
     const next = Math.max(10, cur - 1);
     $('lbl-font-size').textContent = next;
     window.CM?.applySettings({ fontSize: next });
+    _updateEditorToolbar();
   });
 
   $('btn-font-inc')?.addEventListener('click', () => {
@@ -6835,6 +7784,7 @@ function _initSettingsPage() {
     const next = Math.min(24, cur + 1);
     $('lbl-font-size').textContent = next;
     window.CM?.applySettings({ fontSize: next });
+    _updateEditorToolbar();
   });
 
   $('sel-tab-size')?.addEventListener('change', (e) => {
@@ -6843,6 +7793,7 @@ function _initSettingsPage() {
 
   $('chk-word-wrap')?.addEventListener('change', (e) => {
     window.CM?.applySettings({ wordWrap: e.target.checked });
+    _updateEditorToolbar();
   });
 
   const sbToggle = $('chk-status-bar');
@@ -6920,6 +7871,21 @@ function _initSettingsPage() {
       _applyAutosaveSettings();
     });
   }
+
+  $('sel-ui-density')?.addEventListener('change', (event) => {
+    state.uiDensity = event.target.value === 'compact' ? 'compact' : 'comfortable';
+    _applyUiDensity();
+    saveStorage();
+  });
+
+  $('btn-appearance-reset')?.addEventListener('click', () => {
+    state.customColors = {};
+    state.lastNonCustomTheme = DEFAULT_THEME;
+    state.uiDensity = 'comfortable';
+    setTheme(DEFAULT_THEME);
+    saveStorage();
+    showToast('Appearance restored to defaults');
+  });
 
   $('btn-settings-back')?.addEventListener('click', hideSettings);
 
@@ -7192,7 +8158,7 @@ function _renderSettingsThemeList(themeList, themeMenu) {
     if (state.theme === t.id) {
       const check = document.createElement('span');
       check.className = 'theme-option-check';
-      check.textContent = '\u2713';
+      check.innerHTML = _uiIcon('check');
       btn.appendChild(check);
     }
     btn.addEventListener('click', () => {
@@ -7227,10 +8193,13 @@ function _safeJoinName(dir, name) {
   return candidate;
 }
 
-function promptNewFile(inDir) {
+async function promptNewFile(inDir) {
   const dir = inDir ?? state.projectDir;
   if (!dir) return;
-  const name = prompt('New file name:', 'untitled.js');
+  const name = await studioPrompt('Choose a name for the new file.', 'untitled.js', {
+    title: 'New file',
+    confirmLabel: 'Create file',
+  });
   if (!name?.trim()) return;
   const fullPath = _safeJoinName(dir, name);
   if (!fullPath) { showToast('Invalid file name'); return; }
@@ -7244,10 +8213,13 @@ function promptNewFile(inDir) {
   }
 }
 
-function promptNewFolder(inDir) {
+async function promptNewFolder(inDir) {
   const dir = inDir ?? state.projectDir;
   if (!dir) return;
-  const name = prompt('New folder name:', 'new-folder');
+  const name = await studioPrompt('Choose a name for the new folder.', 'new-folder', {
+    title: 'New folder',
+    confirmLabel: 'Create folder',
+  });
   if (!name?.trim()) return;
   const fullPath = _safeJoinName(dir, name);
   if (!fullPath) { showToast('Invalid folder name'); return; }
@@ -7300,10 +8272,13 @@ function _getContextTargetDir() {
   }
 }
 
-function renameItem(targetPath) {
+async function renameItem(targetPath) {
   if (!targetPath) return;
   const oldName = path.basename(targetPath);
-  const newName = prompt('Rename to:', oldName)?.trim();
+  const newName = (await studioPrompt('Choose a new name.', oldName, {
+    title: 'Rename item',
+    confirmLabel: 'Rename',
+  }))?.trim();
   if (!newName || newName === oldName) return;
   const parentDir = path.dirname(targetPath);
   // Reuse the create-flow validator so a rename can't escape its parent dir.
@@ -7338,10 +8313,14 @@ function duplicateItem(targetPath) {
   }
 }
 
-function deleteItem(targetPath) {
+async function deleteItem(targetPath) {
   if (!targetPath) return;
   const name = path.basename(targetPath);
-  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  if (!await studioConfirm(`Delete "${name}"? This cannot be undone.`, {
+    title: 'Delete item',
+    confirmLabel: 'Delete',
+    danger: true,
+  })) return;
   try {
     const stat = fs.statSync(targetPath);
     if (stat.isDirectory()) fs.rmSync(targetPath, { recursive: true, force: true });
@@ -7349,7 +8328,7 @@ function deleteItem(targetPath) {
     const deletedIdx = tabs.findIndex((t) => t.filePath === targetPath);
     if (deletedIdx !== -1) {
       tabs[deletedIdx].isDirty = false;  // suppress dirty confirm
-      _closeTab(deletedIdx);
+      await _closeTab(deletedIdx);
     }
     populateFileTree(state.projectDir);
     showToast('Deleted ' + name);
@@ -7419,8 +8398,10 @@ function _setSyntaxStatus(type, text) {
   }
   el.style.display = '';
   if (sep) sep.style.display = '';
-  el.textContent = text;
-  el.className = `status-bar-item status-bar-item--clickable status-bar-item--${type}`;
+  const icon = type === 'ok' ? 'check' : type === 'warn' ? 'alert' : 'close';
+  el.innerHTML = `${_uiIcon(icon)}<span>${_escHtml(text)}</span>`;
+  const statusClass = type === 'warn' ? 'warn' : type;
+  el.className = `status-bar-item status-bar-item--clickable status-bar-item--${statusClass}`;
 }
 
 function _syntaxCurrentContent(filePath) {
@@ -7534,7 +8515,7 @@ function _showSyntaxDiagnostics(fileName, diagnostics) {
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
   const warnings = diagnostics.filter((diagnostic) => diagnostic.severity !== 'error');
   if (!diagnostics.length) {
-    _setSyntaxStatus('ok', '\u2713 No errors');
+    _setSyntaxStatus('ok', 'No errors');
     appendLog('success', `${fileName} -- no syntax errors`);
     return;
   }
@@ -7543,8 +8524,8 @@ function _showSyntaxDiagnostics(fileName, diagnostics) {
   const firstLocation = first.line ? `${first.line}:${first.column || 1}` : '?';
   const status = errors.length ? 'error' : 'warn';
   const label = errors.length
-    ? `\u2717 ${errors.length} error${errors.length === 1 ? '' : 's'} -- Ln ${firstLocation}`
-    : `\u26A0 ${warnings.length} warning${warnings.length === 1 ? '' : 's'} -- Ln ${firstLocation}`;
+    ? `${errors.length} error${errors.length === 1 ? '' : 's'} -- Ln ${firstLocation}`
+    : `${warnings.length} warning${warnings.length === 1 ? '' : 's'} -- Ln ${firstLocation}`;
   _setSyntaxStatus(status, label);
 
   for (const diagnostic of diagnostics) {
@@ -7688,13 +8669,12 @@ async function runBuild() {
     showToast(message);
     return;
   }
-  state.building = true;
-
   const btn = $('btn-build');
   const fill = $('build-btn-fill');
   const label = btn.querySelector('.build-btn-label');
 
-  saveManifest();
+  if (!await saveManifest()) return;
+  state.building = true;
   clearLog();
 
   btn.disabled = false;
@@ -7780,7 +8760,7 @@ async function runBuild() {
   if (result.success) {
     fill.style.width = '100%';
     btn.className = 'build-btn success';
-    label.textContent = '\u2713 Build Complete';
+    label.innerHTML = `${_uiIcon('check')} Build Complete`;
     _lastBuildOutFile = result.outFile || null;
     _updateSignActionAvailability();
     _pushBuildEntry({
@@ -7800,7 +8780,7 @@ async function runBuild() {
   } else {
     fill.style.width = '0%';
     btn.className = 'build-btn error';
-    label.textContent = '\u2717 Build Failed';
+    label.innerHTML = `${_uiIcon('close')} Build Failed`;
     _pushBuildEntry({
       ts: Date.now(),
       success: false,
@@ -7857,7 +8837,6 @@ function _renderBuildHistory() {
   const frag = document.createDocumentFragment();
   history.forEach((e, i) => {
     const ago = _timeAgo(e.ts);
-    const icon = e.success ? '\u2713' : '\u2717';
     const cls = e.success ? 'build-history-item--ok' : 'build-history-item--fail';
 
     const item = document.createElement('div');
@@ -7869,7 +8848,7 @@ function _renderBuildHistory() {
     // build-name / version strings as HTML.
     const iconEl = document.createElement('span');
     iconEl.className = 'bh-icon';
-    iconEl.textContent = icon;
+    iconEl.innerHTML = _uiIcon(e.success ? 'check' : 'close');
 
     const info = document.createElement('div');
     info.className = 'bh-info';
@@ -7885,7 +8864,8 @@ function _renderBuildHistory() {
     rerun.className = 'bh-rerun icon-btn';
     rerun.dataset.index = i;
     rerun.title = 'Re-run build';
-    rerun.textContent = '\u25B6';
+    rerun.setAttribute('aria-label', 'Re-run build');
+    rerun.innerHTML = _uiIcon('play');
     rerun.addEventListener('click', (ev) => {
       ev.stopPropagation();
       runBuild();
@@ -8042,6 +9022,162 @@ function _getBuildOutDir() {
     || (state.projectDir ? path.join(state.projectDir, 'dist') : './dist');
 }
 
+const BUILD_PROFILES_KEY = 'novapack_build_profiles';
+
+function _readBuildProfiles() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BUILD_PROFILES_KEY) || '[]');
+    if (!Array.isArray(parsed)) throw new Error('Stored build profiles are not a list.');
+    return parsed.filter((profile) => profile && typeof profile.name === 'string'
+      && typeof profile.outDir === 'string'
+      && typeof profile.clean === 'boolean'
+      && typeof profile.signing === 'string'
+      && typeof profile.integrity === 'string');
+  } catch (error) {
+    console.error('Could not read build profiles:', error);
+    showToast('Could not read saved build profiles');
+    return [];
+  }
+}
+
+function _renderBuildProfiles(selectedName = $('build-profile-select')?.value || '') {
+  const select = $('build-profile-select');
+  if (!select) return;
+  const profiles = _readBuildProfiles().filter((profile) => profile.projectDir === state.projectDir);
+  select.replaceChildren(new Option('Current settings', ''));
+  for (const profile of profiles) select.add(new Option(profile.name, profile.name));
+  select.value = profiles.some((profile) => profile.name === selectedName) ? selectedName : '';
+  $('btn-build-profile-delete').disabled = !select.value;
+}
+
+async function _saveBuildProfile() {
+  const name = (await studioPrompt('Choose a name for this build profile.', '', {
+    title: 'Save build profile',
+    confirmLabel: 'Save profile',
+    maxLength: 60,
+  }))?.trim();
+  if (!name) return;
+  if (name.length > 60) {
+    showToast('Build profile names must be 60 characters or fewer');
+    return;
+  }
+  const profiles = _readBuildProfiles().filter((profile) =>
+    profile.name !== name || profile.projectDir !== state.projectDir);
+  profiles.push({
+    name,
+    projectDir: state.projectDir,
+    outDir: $('build-outdir').value.trim(),
+    clean: $('build-clean').checked,
+    signing: _selectedSigningMethod,
+    integrity: _selectedIntegrityMethod,
+  });
+  try {
+    localStorage.setItem(BUILD_PROFILES_KEY, JSON.stringify(profiles));
+    _renderBuildProfiles(name);
+    showToast(`Saved build profile “${name}”`);
+  } catch (error) {
+    console.error('Could not save build profile:', error);
+    showToast(`Could not save build profile: ${error.message}`);
+  }
+}
+
+function _applyBuildProfile(name) {
+  const profile = _readBuildProfiles().find((item) => item.name === name && item.projectDir === state.projectDir);
+  if (!profile) return;
+  $('build-outdir').value = profile.outDir;
+  $('build-clean').checked = profile.clean;
+  const signing = $('sign-method-select');
+  const integrity = $('sign-integrity-select');
+  if (signing && [...signing.options].some((option) => option.value === profile.signing)) {
+    if (window.applyBuildSigningMethod) window.applyBuildSigningMethod(profile.signing);
+    else {
+      signing.value = profile.signing;
+      window.setSelectedSigningMethod?.(profile.signing);
+    }
+  }
+  if (integrity && [...integrity.options].some((option) => option.value === profile.integrity)) {
+    integrity.value = profile.integrity;
+    window.setSelectedIntegrityMethod?.(profile.integrity);
+  }
+  _updateBuildSummary();
+  _renderBuildContentsPreview();
+}
+
+function _previewList(title, rows, reasonKey = null, maxRows = 250) {
+  const details = document.createElement('details');
+  details.className = 'build-contents-group';
+  const summary = document.createElement('summary');
+  summary.textContent = `${title} (${rows.length})`;
+  details.appendChild(summary);
+  if (rows.length) {
+    const list = document.createElement('ul');
+    for (const row of rows.slice(0, maxRows)) {
+      const item = document.createElement('li');
+      const filename = typeof row === 'string' ? row : row.path;
+      item.textContent = reasonKey && row[reasonKey] ? `${filename} — ${row[reasonKey]}` : filename;
+      list.appendChild(item);
+    }
+    if (rows.length > maxRows) {
+      const more = document.createElement('li');
+      more.textContent = `…and ${rows.length - maxRows} more`;
+      list.appendChild(more);
+    }
+    details.appendChild(list);
+  }
+  return details;
+}
+
+function _renderBuildContentsPreview(expandFiles = false) {
+  const host = $('build-contents-preview-list');
+  const summary = $('build-contents-summary');
+  if (!host || !summary) return;
+  if (!state.projectDir) {
+    host.textContent = 'Open a project to preview its package contents.';
+    summary.textContent = 'No project loaded';
+    return;
+  }
+  try {
+    const preview = previewProjectFiles(state.projectDir);
+    const manifest = _readManifest(state.projectDir);
+    const entry = manifest?.entry || 'index.html';
+    const entryPath = path.resolve(state.projectDir, entry);
+    const relativeEntry = path.relative(state.projectDir, entryPath);
+    const entryInsideProject = relativeEntry !== '..' && !relativeEntry.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relativeEntry);
+    const entryExists = entryInsideProject && fs.existsSync(entryPath);
+    host.replaceChildren();
+    if (!manifest || manifest._error) {
+      const warning = document.createElement('div');
+      warning.className = 'build-preview-warning';
+      warning.textContent = manifest?._error
+        ? `Manifest could not be read: ${manifest._error}`
+        : 'No manifest.json or novaapp.json was found.';
+      host.appendChild(warning);
+    }
+    if (!entryExists) {
+      const warning = document.createElement('div');
+      warning.className = 'build-preview-warning';
+      warning.textContent = entryInsideProject
+        ? `Entry file “${entry}” is missing. Build will fail until it exists.`
+        : 'The entry file must be inside the project folder.';
+      host.appendChild(warning);
+    }
+    const manifestNote = document.createElement('div');
+    manifestNote.className = 'build-preview-manifest';
+    manifestNote.textContent = 'manifest.json / novaapp.json is packaged as app metadata, not as a regular project file.';
+    const included = _previewList('Included project files', preview.included);
+    const excluded = _previewList('Excluded files and rules', preview.excluded, 'reason');
+    const generated = _previewList('Generated by bundled Emscripten', preview.generated, 'reason');
+    included.open = expandFiles;
+    host.append(manifestNote, included, excluded, generated);
+    summary.textContent = `${preview.included.length} files · ${preview.excluded.length} excluded · ${preview.generated.length} generated`;
+  } catch (error) {
+    console.error('Could not preview package contents:', error);
+    host.textContent = `Could not preview package contents: ${error.message}`;
+    summary.textContent = 'Preview failed';
+  }
+}
+
 function _buildOutputContainsProject(outDir) {
   const relativeProjectPath = path.relative(path.resolve(outDir), path.resolve(state.projectDir));
   return relativeProjectPath === ''
@@ -8183,12 +9319,24 @@ async function _runSelfSign() {
 
 // Workspaces
 const WORKSPACES_KEY = 'novapack_workspaces';
+let _workspaceQuery = '';
 
 function _loadWorkspaces() {
   try {
     const parsed = JSON.parse(localStorage.getItem(WORKSPACES_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) throw new TypeError('Saved workspace data is not a list');
+    return parsed.filter((item) => item && typeof item === 'object').map((item, index) => ({
+      ...item,
+      id: item.id ?? `legacy-${index}-${item.ts ?? 0}`,
+      name: typeof item.name === 'string' && item.name.trim() ? item.name : 'Untitled workspace',
+      projectDir: typeof item.projectDir === 'string' ? item.projectDir : '',
+      activeTab: typeof item.activeTab === 'string' ? item.activeTab : 'editor',
+      activeFile: typeof item.activeFile === 'string' ? item.activeFile : '',
+      openFiles: Array.isArray(item.openFiles) ? item.openFiles.filter((file) => typeof file === 'string') : [],
+      ts: Number.isFinite(item.ts) ? item.ts : 0,
+    }));
+  } catch (err) {
+    console.error('Could not read saved workspaces:', err);
     return [];
   }
 }
@@ -8196,10 +9344,33 @@ function _loadWorkspaces() {
 function _saveWorkspaces(ws) {
   try {
     localStorage.setItem(WORKSPACES_KEY, JSON.stringify(ws));
-  } catch { /* best-effort */ }
+    return true;
+  } catch (err) {
+    console.error('Could not save workspaces:', err);
+    showToast('Could not save workspaces');
+    return false;
+  }
 }
 
 function openWorkspaces() {
+  const projectLabel = $('workspace-current-project');
+  const saveHint = $('workspace-save-hint');
+  const nameInput = $('workspace-name-input');
+  const saveButton = $('btn-workspace-save');
+  const hasProject = !!state.projectDir;
+  const openFileCount = hasProject ? _workspaceFilesForProject(state.projectDir).length : 0;
+  if (projectLabel) projectLabel.textContent = hasProject ? state.projectName || path.basename(state.projectDir) : 'No project open';
+  if (saveHint) saveHint.textContent = hasProject
+    ? `${openFileCount} open file${openFileCount === 1 ? '' : 's'} · editor and current Studio panel`
+    : 'Open a project to save its current setup.';
+  if (nameInput) {
+    nameInput.value = hasProject ? `${state.projectName || path.basename(state.projectDir)} Workspace` : '';
+    nameInput.disabled = !hasProject;
+  }
+  if (saveButton) saveButton.disabled = !hasProject;
+  _workspaceQuery = '';
+  const search = $('workspace-search');
+  if (search) search.value = '';
   _renderWorkspaceList();
   $('modal-workspace')?.classList.remove('hidden');
 }
@@ -8208,105 +9379,310 @@ function closeWorkspaces() {
   $('modal-workspace')?.classList.add('hidden');
 }
 
-function _saveCurrentWorkspace() {
-  if (!state.projectDir) { showToast('No project open', 'warn'); return; }
-  const name = prompt('Workspace name:', state.projectName || 'My Workspace');
-  if (!name) return;
-  const ws = _loadWorkspaces();
-  ws.unshift({
-    id: Date.now(),
-    name: name.trim(),
+function _workspaceFilesForProject(projectDir) {
+  const files = [];
+  for (const tab of tabs) {
+    if (!_workspacePathIsInside(tab.filePath, projectDir) || files.includes(tab.filePath)) continue;
+    files.push(tab.filePath);
+  }
+  return files;
+}
+
+function _workspacePathIsInside(filePath, projectDir) {
+  if (!filePath || !projectDir) return false;
+  const relative = path.relative(path.resolve(projectDir), path.resolve(filePath));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function _workspacePathsEqual(first, second) {
+  if (!first || !second) return false;
+  return path.relative(path.resolve(first), path.resolve(second)) === '' &&
+    path.relative(path.resolve(second), path.resolve(first)) === '';
+}
+
+function _workspaceSnapshot(name, id = Date.now()) {
+  _stashActiveTabContent();
+  const openFiles = _workspaceFilesForProject(state.projectDir);
+  const activeFile = _getActiveTab()?.filePath;
+  return {
+    id,
+    name,
     projectDir: state.projectDir,
-    activeTab: state.activeTab,
-    openFiles: tabs.map((t) => t.filePath),
+    activeTab: state.activeTab || 'editor',
+    activeFile: activeFile && _workspacePathIsInside(activeFile, state.projectDir) ? activeFile : '',
+    openFiles,
     ts: Date.now(),
-  });
+  };
+}
+
+async function _saveCurrentWorkspace(name = null) {
+  if (!state.projectDir) { showToast('No project open', 'warn'); return; }
+  if (typeof name !== 'string') {
+    name = await studioPrompt('Choose a name for this workspace.', `${state.projectName || 'My Project'} Workspace`, {
+      title: 'Save workspace',
+      confirmLabel: 'Save workspace',
+      maxLength: 64,
+    });
+    if (name === null) return;
+  }
+  name = name.trim();
+  if (!name) { showToast('Enter a workspace name', 'warn'); $('workspace-name-input')?.focus(); return; }
+  const ws = _loadWorkspaces();
+  ws.unshift(_workspaceSnapshot(name));
   if (ws.length > 20) ws.length = 20;
-  _saveWorkspaces(ws);
+  if (!_saveWorkspaces(ws)) return;
   _renderWorkspaceList();
   showToast('Workspace saved', 'success');
+}
+
+async function _updateWorkspace(id) {
+  if (!state.projectDir) { showToast('Open a project before updating a workspace', 'warn'); return; }
+  const ws = _loadWorkspaces();
+  const index = ws.findIndex((item) => String(item.id) === String(id));
+  if (index === -1) { showToast('Workspace no longer exists'); _renderWorkspaceList(); return; }
+  if (!_workspacePathsEqual(state.projectDir, ws[index].projectDir) &&
+      !await studioConfirm(`Replace "${ws[index].name}" with the current project workspace?`, {
+        title: 'Replace saved workspace',
+        confirmLabel: 'Replace workspace',
+      })) return;
+  ws[index] = _workspaceSnapshot(ws[index].name, ws[index].id);
+  if (!_saveWorkspaces(ws)) return;
+  _renderWorkspaceList();
+  showToast('Workspace updated', 'success');
+}
+
+async function _renameWorkspace(id) {
+  const ws = _loadWorkspaces();
+  const item = ws.find((entry) => String(entry.id) === String(id));
+  if (!item) { showToast('Workspace no longer exists'); _renderWorkspaceList(); return; }
+  const name = await studioPrompt('Choose a new name for this workspace.', item.name, {
+    title: 'Rename workspace',
+    confirmLabel: 'Rename',
+    maxLength: 64,
+  });
+  if (name === null) return;
+  if (!name.trim()) { showToast('Workspace name cannot be empty', 'warn'); return; }
+  item.name = name.trim();
+  if (!_saveWorkspaces(ws)) return;
+  _renderWorkspaceList();
+}
+
+async function _deleteWorkspace(id) {
+  const ws = _loadWorkspaces();
+  const index = ws.findIndex((item) => String(item.id) === String(id));
+  if (index === -1) { showToast('Workspace no longer exists'); _renderWorkspaceList(); return; }
+  if (!await studioConfirm(`Delete workspace "${ws[index].name}"?`, {
+    title: 'Delete workspace',
+    confirmLabel: 'Delete workspace',
+    danger: true,
+  })) return;
+  ws.splice(index, 1);
+  if (!_saveWorkspaces(ws)) return;
+  _renderWorkspaceList();
+  showToast('Workspace deleted', 'success');
 }
 
 function _renderWorkspaceList() {
   const list = $('workspace-list');
   if (!list) return;
   const ws = _loadWorkspaces();
+  const count = $('workspace-count');
+  if (count) count.textContent = `${ws.length} saved workspace${ws.length === 1 ? '' : 's'}`;
   list.replaceChildren();
 
   if (!ws.length) {
     const empty = document.createElement('div');
     empty.className = 'workspace-empty';
-    empty.textContent = 'No saved workspaces';
+    const icon = document.createElement('span');
+    icon.className = 'workspace-empty-icon';
+    icon.innerHTML = _uiIcon('workspaces', 'ui-icon--empty');
+    const message = document.createElement('span');
+    message.textContent = 'No saved workspaces yet. Save the current project setup to get started.';
+    empty.append(icon, message);
+    list.appendChild(empty);
+    return;
+  }
+
+  const query = _workspaceQuery.trim().toLocaleLowerCase();
+  const visible = ws.map((workspace, index) => ({ workspace, index })).filter(({ workspace }) => {
+    if (!query) return true;
+    return [workspace.name, workspace.projectDir, ...workspace.openFiles]
+      .some((value) => value.toLocaleLowerCase().includes(query));
+  });
+  if (!visible.length) {
+    const empty = document.createElement('div');
+    empty.className = 'workspace-empty';
+    empty.textContent = 'No workspaces match your search.';
     list.appendChild(empty);
     return;
   }
 
   const frag = document.createDocumentFragment();
-  ws.forEach((w, i) => {
+  visible.forEach(({ workspace: w }) => {
     const item = document.createElement('div');
-    item.className = 'workspace-item';
-    item.dataset.index = i;
+    const sameProject = _workspacePathsEqual(state.projectDir, w.projectDir);
+    const available = !!w.projectDir && fs.existsSync(w.projectDir);
+    item.className = `workspace-item${sameProject ? ' workspace-item--current' : ''}`;
 
+    const top = document.createElement('div');
+    top.className = 'ws-card-top';
+    const projectIcon = document.createElement('span');
+    projectIcon.className = 'ws-project-icon';
+    projectIcon.innerHTML = _uiIcon('folder');
+    projectIcon.setAttribute('aria-hidden', 'true');
     const info = document.createElement('div');
     info.className = 'ws-info';
 
-    const nameEl = document.createElement('span');
+    const nameRow = document.createElement('div');
+    nameRow.className = 'ws-name-row';
+    const nameEl = document.createElement('strong');
     nameEl.className = 'ws-name';
     nameEl.textContent = w.name;
+    nameRow.appendChild(nameEl);
+    if (sameProject) {
+      const badge = document.createElement('span');
+      badge.className = 'ws-current-badge';
+      badge.textContent = 'Current';
+      nameRow.appendChild(badge);
+    }
+    if (!available) {
+      const badge = document.createElement('span');
+      badge.className = 'ws-unavailable-badge';
+      badge.textContent = 'Unavailable';
+      nameRow.appendChild(badge);
+    }
 
     const metaEl = document.createElement('span');
     metaEl.className = 'ws-meta';
-    metaEl.textContent = `${w.projectDir} \u00b7 ${_timeAgo(w.ts)}`;
+    const savedTime = w.ts ? `Saved ${_timeAgo(w.ts)}` : 'Saved date unknown';
+    const openedTime = w.lastOpenedAt ? ` · Opened ${_timeAgo(w.lastOpenedAt)}` : '';
+    metaEl.textContent = `${w.projectDir || 'Project path missing'} · ${savedTime}${openedTime}`;
+    metaEl.title = w.projectDir;
 
     const filesEl = document.createElement('span');
     filesEl.className = 'ws-files';
-    const files = (w.openFiles || []).map((f) => path.basename(f)).join(', ');
-    filesEl.textContent = files || 'No open files';
+    const fileNames = w.openFiles.map((file) => path.basename(file));
+    filesEl.textContent = `${fileNames.length} open file${fileNames.length === 1 ? '' : 's'}${fileNames.length ? ` · ${fileNames.join(', ')}` : ''}`;
+    filesEl.title = fileNames.join(', ') || 'No open files';
 
-    info.append(nameEl, metaEl, filesEl);
+    info.append(nameRow, metaEl, filesEl);
+    top.append(projectIcon, info);
 
     const actions = document.createElement('div');
-    actions.className = 'ws-actions';
+    actions.className = 'ws-card-actions';
+    const mainActions = document.createElement('div');
+    mainActions.className = 'ws-card-actions-main';
 
     const loadBtn = document.createElement('button');
     loadBtn.className = 'action-btn action-btn--ghost ws-load';
-    loadBtn.dataset.index = i;
-    loadBtn.textContent = 'Load';
-    loadBtn.addEventListener('click', () => _loadWorkspace(ws[+loadBtn.dataset.index]));
+    loadBtn.type = 'button';
+    loadBtn.textContent = 'Open workspace';
+    loadBtn.disabled = !available;
+    loadBtn.addEventListener('click', () => _loadWorkspace(w));
+    mainActions.appendChild(loadBtn);
+
+    const tools = document.createElement('div');
+    tools.className = 'ws-card-actions-tools';
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'icon-btn';
+    updateBtn.type = 'button';
+    updateBtn.title = 'Update from current project';
+    updateBtn.setAttribute('aria-label', `Update ${w.name} from the current project`);
+    updateBtn.innerHTML = _uiIcon('refresh');
+    updateBtn.disabled = !state.projectDir;
+    updateBtn.addEventListener('click', () => _updateWorkspace(w.id));
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'icon-btn';
+    renameBtn.type = 'button';
+    renameBtn.title = 'Rename';
+    renameBtn.setAttribute('aria-label', `Rename ${w.name}`);
+    renameBtn.innerHTML = _uiIcon('edit');
+    renameBtn.addEventListener('click', () => _renameWorkspace(w.id));
 
     const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'icon-btn ws-delete';
-    deleteBtn.dataset.index = i;
+    deleteBtn.className = 'icon-btn';
+    deleteBtn.type = 'button';
     deleteBtn.title = 'Delete';
-    deleteBtn.textContent = '\u2715';
-    deleteBtn.addEventListener('click', () => {
-      const idx = +deleteBtn.dataset.index;
-      if (Number.isNaN(idx)) return;
-      ws.splice(idx, 1);
-      _saveWorkspaces(ws);
-      _renderWorkspaceList();
-    });
+    deleteBtn.setAttribute('aria-label', `Delete ${w.name}`);
+    deleteBtn.innerHTML = _uiIcon('trash');
+    deleteBtn.addEventListener('click', () => _deleteWorkspace(w.id));
+    tools.append(updateBtn, renameBtn, deleteBtn);
 
-    actions.append(loadBtn, deleteBtn);
-    item.append(info, actions);
+    actions.append(mainActions, tools);
+    item.append(top, actions);
     frag.appendChild(item);
   });
   list.appendChild(frag);
 }
 
-function _loadWorkspace(ws) {
-  if (!ws?.projectDir) return;
-  closeWorkspaces();
-  // Load the project (handles manifest, file tree, tab reset).
-  loadProject(ws.projectDir);
-  // Restore open files. loadProject() is synchronous, so we don't need the
-  // setTimeout-race hack the original used -- just open the files inline.
-  if (ws.openFiles?.length) {
-    for (const fp of ws.openFiles) {
-      try { if (fs.existsSync(fp)) openFileEditor(fp); } catch { /* vanished */ }
-    }
+async function _loadWorkspace(ws) {
+  if (!ws?.projectDir) { showToast('Workspace has no project path'); return; }
+  if (!fs.existsSync(ws.projectDir)) { showToast(`Project folder not found: ${ws.projectDir}`); return; }
+  const dirtyTabs = tabs.filter((tab) => tab.isDirty);
+  if (dirtyTabs.length) {
+    const names = dirtyTabs.map((tab) => path.basename(tab.filePath)).join(', ');
+    if (!await studioConfirm(`Discard unsaved changes in ${names} and open this workspace?`, {
+      title: 'Open workspace',
+      confirmLabel: 'Discard and open',
+      danger: true,
+    })) return;
   }
-  if (ws.activeTab) switchTab(ws.activeTab);
+  _stashActiveTabContent();
+  await loadProject(ws.projectDir);
+  if (!state.projectDir || !_workspacePathsEqual(state.projectDir, ws.projectDir)) return;
+
+  tabs.length = 0;
+  activeTabIndex = -1;
+  if (window.CM) window.CM.destroy();
+  $('file-preview-image')?.classList.add('hidden');
+  _renderTabs();
+
+  const missingFiles = [];
+  const files = [];
+  for (const savedPath of ws.openFiles) {
+    const filePath = path.isAbsolute(savedPath) ? savedPath : path.resolve(ws.projectDir, savedPath);
+    if (!_workspacePathIsInside(filePath, ws.projectDir) || !fs.existsSync(filePath)) {
+      missingFiles.push(savedPath);
+      continue;
+    }
+    files.push(filePath);
+  }
+  for (const filePath of files) {
+    openFileEditor(filePath);
+    if (tabs[activeTabIndex]) tabs[activeTabIndex].preview = false;
+  }
+  _renderTabs();
+
+  const activeFile = ws.activeFile
+    ? (path.isAbsolute(ws.activeFile) ? ws.activeFile : path.resolve(ws.projectDir, ws.activeFile))
+    : '';
+  if (activeFile && files.includes(activeFile)) {
+    const activeIndex = tabs.findIndex((tab) => tab.filePath === activeFile);
+    if (activeIndex !== -1 && activeIndex !== activeTabIndex) _switchToTab(activeIndex);
+  }
+  if (!tabs.length) {
+    activeTabIndex = -1;
+    _renderTabs();
+    _highlightActiveFile();
+  }
+  const savedPanel = ws.activeTab && document.querySelector(`.tab[data-tab="${CSS.escape(ws.activeTab)}"]`)
+    ? ws.activeTab
+    : 'editor';
+  switchTab(savedPanel);
+  const stored = _loadWorkspaces();
+  const saved = stored.find((item) => String(item.id) === String(ws.id));
+  if (saved) {
+    saved.lastOpenedAt = Date.now();
+    _saveWorkspaces(stored);
+  }
+  closeWorkspaces();
+  _renderWorkspaceList();
+  if (missingFiles.length) {
+    showToast(`Workspace loaded; ${missingFiles.length} saved file${missingFiles.length === 1 ? '' : 's'} could not be found`, 'warn');
+    console.warn('Workspace files are missing or outside the project:', missingFiles);
+    return;
+  }
   showToast(`Loaded workspace: ${ws.name}`, 'success');
 }
 
@@ -8317,6 +9693,21 @@ function _loadWorkspace(ws) {
 function _buildCommandRegistry() {
   const hasProject = () => !!state.projectDir;
   const editorOpen = () => tabs.length > 0;
+  const activeTab = () => _getActiveTab();
+  const activeTextEditor = () => {
+    const tab = activeTab();
+    return !!window.CM && !!tab && !IMAGE_EXTS.has(path.extname(tab.filePath).toLowerCase());
+  };
+  const activeHtmlFile = () => {
+    const ext = path.extname(activeTab()?.filePath || '').toLowerCase();
+    return ext === '.html' || ext === '.htm';
+  };
+  const syntaxCheckAvailable = () => {
+    const ext = path.extname(activeTab()?.filePath || '').toLowerCase();
+    return !!_SYNTAX_LOADER_MAP[ext] || ['.json', '.css', '.html', '.htm'].includes(ext);
+  };
+  const editorFontCanGrow = () => !!window.CM && (window.CM.getSettings()?.fontSize ?? 13) < 24;
+  const editorFontCanShrink = () => !!window.CM && (window.CM.getSettings()?.fontSize ?? 13) > 10;
 
   return [
     // File
@@ -8341,11 +9732,35 @@ function _buildCommandRegistry() {
     { id: 'go-permissions', label: 'Go to Permissions tab', category: 'Navigate', action: () => switchTab('permissions'), when: hasProject },
     { id: 'go-editor', label: 'Go to Editor', category: 'Navigate', action: () => switchTab('editor'), when: hasProject },
     { id: 'go-build', label: 'Go to Build tab', category: 'Navigate', action: () => switchTab('build'), when: hasProject },
+    { id: 'go-sign', label: 'Go to Signing tab', category: 'Navigate', action: () => switchTab('sign'), when: hasProject },
+    { id: 'go-git', label: 'Go to Source Control', category: 'Navigate', action: () => switchTab('git'), when: hasProject },
+    { id: 'go-review', label: 'Go to Review Preview', category: 'Navigate', action: () => switchTab('review'), when: hasProject },
     { id: 'show-inspector', label: 'Open Package Inspector', category: 'Navigate', action: showInspector },
+    { id: 'open-settings', label: 'Open Studio Settings', category: 'Navigate', action: showSettings },
 
     // Editor
-    { id: 'toggle-preview', label: 'Toggle Preview', category: 'Editor', action: _togglePreview, when: editorOpen },
-    { id: 'refresh-preview', label: 'Refresh Preview', category: 'Editor', action: _refreshPreviewIfVisible, when: editorOpen },
+    { id: 'find-in-file', label: 'Find in Current File', category: 'Editor', action: () => window.CM?.openFind(), when: activeTextEditor },
+    { id: 'toggle-word-wrap', label: 'Toggle Word Wrap', category: 'Editor', action: () => {
+      const settings = window.CM?.getSettings();
+      if (settings) window.CM.applySettings({ wordWrap: !settings.wordWrap });
+    }, when: activeTextEditor },
+    { id: 'increase-editor-font', label: 'Increase Editor Font Size', category: 'Editor', action: () => {
+      const size = window.CM?.getSettings()?.fontSize;
+      if (size !== undefined) {
+        window.CM.applySettings({ fontSize: Math.min(24, size + 1) });
+        _updateEditorToolbar();
+      }
+    }, when: editorFontCanGrow },
+    { id: 'decrease-editor-font', label: 'Decrease Editor Font Size', category: 'Editor', action: () => {
+      const size = window.CM?.getSettings()?.fontSize;
+      if (size !== undefined) {
+        window.CM.applySettings({ fontSize: Math.max(10, size - 1) });
+        _updateEditorToolbar();
+      }
+    }, when: editorFontCanShrink },
+    { id: 'check-file-syntax', label: 'Check Current File Syntax', category: 'Editor', action: checkSyntax, when: syntaxCheckAvailable },
+    { id: 'toggle-preview', label: 'Toggle HTML Preview', category: 'Editor', action: _togglePreview, when: () => _previewVisible || activeHtmlFile() },
+    { id: 'refresh-preview', label: 'Refresh HTML Preview', category: 'Editor', action: _refreshPreviewIfVisible, when: () => activeHtmlFile() && _previewVisible },
     {
       id: 'diff-vs-saved', label: 'Diff File vs Saved', category: 'Editor', action: openDiffVsSaved, when: editorOpen,
       shortcut: `${MOD_KEY}+Shift+D`
@@ -8355,11 +9770,16 @@ function _buildCommandRegistry() {
       shortcut: `${MOD_KEY}+Alt+S`
     },
 
+    // Project
+    { id: 'permission-audit', label: 'Audit Project Permissions', category: 'Project', action: _runProjectPermissionAudit, when: hasProject },
+    { id: 'collapse-folders', label: 'Collapse All File Tree Folders', category: 'Project', action: _collapseAllFileTreeFolders, when: hasProject },
+
     // Build
     {
       id: 'build', label: 'Build Package', category: 'Build', action: () => { switchTab('build'); runBuild(); }, when: hasProject,
       shortcut: `${MOD_KEY}+B`
     },
+    { id: 'open-build-output', label: 'Open Build Output Folder', category: 'Build', action: _openBuildOutputFolder, when: () => !!_lastBuildOutFile && fs.existsSync(_lastBuildOutFile) },
     { id: 'clear-build-history', label: 'Clear Build History', category: 'Build', action: () => { localStorage.removeItem(BUILD_HISTORY_KEY); _renderBuildHistory(); } },
 
     // Workspace
@@ -8582,7 +10002,10 @@ let _qoFiles = [];
 let _qoActiveIdx = -1;
 
 function openQuickOpen() {
-  if (!state.projectDir) return;
+  if (!state.projectDir) {
+    pickFolder(loadProject);
+    return;
+  }
   _qoFiles = _collectSearchableFiles(state.projectDir)
     .map((f) => ({ full: f, rel: path.relative(state.projectDir, f) }));
 
@@ -8715,6 +10138,8 @@ function showInspector() {
   $('inspector-dropzone').classList.remove('hidden');
   $('inspector-result').classList.add('hidden');
   $('inspector-result').replaceChildren();
+  $('package-comparison')?.classList.add('hidden');
+  $('package-comparison')?.replaceChildren();
   $('project-breadcrumb').textContent = 'Inspector';
 }
 
@@ -8734,7 +10159,7 @@ function _auditRow(cls, icon, perm, label) {
 
   const iconEl = document.createElement('span');
   iconEl.className = 'audit-icon';
-  iconEl.textContent = icon;
+  iconEl.innerHTML = _uiIcon(icon);
 
   const permEl = document.createElement('span');
   permEl.className = 'audit-perm';
@@ -8769,9 +10194,9 @@ function _renderPermissionAudit(declared, detected) {
   const unused = [...declared.difference(detected)];    // declared but not used
 
   const rows = [
-    ...missing.map((p) => _auditRow('missing', '\u2717', p, 'used in code -- not declared')),
-    ...ok.map((p) => _auditRow('ok', '\u2713', p, 'declared & used')),
-    ...unused.map((p) => _auditRow('unused', '\u25B3', p, 'declared -- not detected in code')),
+    ...missing.map((p) => _auditRow('missing', 'close', p, 'used in code -- not declared')),
+    ...ok.map((p) => _auditRow('ok', 'check', p, 'declared & used')),
+    ...unused.map((p) => _auditRow('unused', 'alert', p, 'declared -- not detected in code')),
   ];
 
   const card = document.createElement('div');
@@ -8809,6 +10234,149 @@ function _renderPermissionAudit(declared, detected) {
   return card;
 }
 
+function _runProjectPermissionAudit() {
+  const host = $('project-permission-audit-results');
+  if (!host || !state.projectDir) return;
+  const evidence = new Map();
+  const sourceExtensions = new Set(['.js', '.mjs', '.cjs', '.ts', '.html', '.htm', '.css', '.json']);
+  const apiRules = [
+    [/window\.novaOS\.notifications\./, ['device:notifications']],
+    [/window\.novaOS\.alarms\./, ['system:schedule']],
+    [/window\.novaOS\.clipboard\.readText\b/, ['clipboard:read']],
+    [/window\.novaOS\.clipboard\.writeText\b/, ['clipboard:write']],
+    [/window\.novaOS\.app\.list\b/, ['system:apps']],
+    [/window\.novaOS\.app\.launch\b/, ['system:app-launch']],
+    [/window\.novaOS\.app\.info\b/, ['system:info']],
+    [/window\.novaOS\.settings\.get\b/, ['system:info']],
+    [/window\.novaOS\.settings\.set\b/, ['system:settings']],
+    [/window\.novaOS\.geolocation\./, ['device:geolocation']],
+    [/window\.novaOS\.calendar\.list\b/, ['calendar:read']],
+    [/window\.novaOS\.calendar\.save\b/, ['calendar:write']],
+    [/window\.novaOS\.calendar\.remove\b/, ['calendar:delete']],
+    [/window\.novaOS\.contacts\.list\b/, ['contacts:read']],
+    [/window\.novaOS\.contacts\.save\b/, ['contacts:write']],
+    [/window\.novaOS\.contacts\.remove\b/, ['contacts:delete']],
+    [/window\.novaOS\.data\.(?:backup|restore)\b/, ['data:backup']],
+    [/window\.novaOS\.data\.(?:export|import)\b/, ['data:export']],
+    [/window\.novaOS\.events\.on\b/, ['system:events']],
+    [/window\.novaOS\.badge\./, ['system:badge']],
+    [/window\.novaOS\.secrets\./, ['secrets:store']],
+    [/window\.novaOS\.share\.onInbound\b/, ['system:share-target']],
+  ];
+  try {
+    walkProjectFiles(state.projectDir, (filePath, relativePath) => {
+      if (!sourceExtensions.has(path.extname(relativePath).toLowerCase())) return;
+      const source = fs.readFileSync(filePath, 'utf8');
+      const lines = source.split(/\r?\n/);
+      lines.forEach((line, index) => {
+        for (const match of line.matchAll(/nova:[a-zA-Z0-9:_-]+/g)) {
+          for (const permission of _permissionsForChannel(match[0])) {
+            if (!evidence.has(permission)) evidence.set(permission, []);
+            const refs = evidence.get(permission);
+            if (refs.length < 4) refs.push({ path: relativePath, line: index + 1, action: match[0] });
+          }
+        }
+        for (const [pattern, permissions] of apiRules) {
+          const match = pattern.exec(line);
+          if (!match) continue;
+          for (const permission of permissions) {
+            if (!evidence.has(permission)) evidence.set(permission, []);
+            const refs = evidence.get(permission);
+            if (refs.length < 4) refs.push({ path: relativePath, line: index + 1, action: match[0] });
+          }
+        }
+        const mediaMatch = line.match(/window\.novaOS\.media\.getUserMedia\s*\(([^)]*)\)/);
+        if (mediaMatch) {
+          const mediaOptions = mediaMatch[1];
+          const mediaPermissions = [];
+          if (/\bvideo\s*:\s*(?:true|\{)/.test(mediaOptions)) mediaPermissions.push('device:camera');
+          if (/\baudio\s*:\s*(?:true|\{)/.test(mediaOptions)) mediaPermissions.push('device:microphone');
+          for (const permission of mediaPermissions) {
+            if (!evidence.has(permission)) evidence.set(permission, []);
+            const refs = evidence.get(permission);
+            if (refs.length < 4) refs.push({ path: relativePath, line: index + 1, action: mediaMatch[0] });
+          }
+        }
+      });
+      for (const match of source.matchAll(/(?:window\.)?novaOS\.permissions\.request\s*\(\s*(['"])([a-zA-Z0-9_:.-]+)\1/g)) {
+        const permission = _canonicalPermission(match[2]);
+        if (!PERMISSION_IDS.has(permission)) continue;
+        if (!evidence.has(permission)) evidence.set(permission, []);
+        const refs = evidence.get(permission);
+        if (refs.length < 4) {
+          refs.push({
+            path: relativePath,
+            line: source.slice(0, match.index).split(/\r?\n/).length,
+            action: `permissions.request(${match[2]})`,
+          });
+        }
+      }
+    });
+
+    const manifest = readManifestForm();
+    const declared = new Set([
+      ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+      ...(Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : []),
+    ].map(_canonicalPermission));
+    const detected = new Set(evidence.keys());
+    const missing = [...detected].filter((permission) => !declared.has(permission));
+    const unused = [...declared].filter((permission) => !detected.has(permission));
+    host.replaceChildren();
+
+    const summary = document.createElement('p');
+    summary.className = missing.length ? 'project-audit-summary project-audit-summary--warning' : 'project-audit-summary';
+    summary.textContent = `${detected.size} permission${detected.size === 1 ? '' : 's'} inferred from source · ${missing.length} undeclared · ${unused.length} declared but not detected`;
+    host.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'project-audit-list';
+    for (const permission of [...new Set([...missing, ...[...detected].filter((id) => declared.has(id)), ...unused])].sort()) {
+      const row = document.createElement('div');
+      row.className = 'project-audit-row';
+      const id = document.createElement('code');
+      id.textContent = permission;
+      const status = document.createElement('span');
+      status.textContent = missing.includes(permission) ? 'Detected, not declared'
+        : detected.has(permission) ? 'Declared and detected' : 'Declared, not detected';
+      row.append(id, status);
+      const refs = evidence.get(permission) || [];
+      if (refs.length) {
+        const source = document.createElement('small');
+        source.textContent = refs.map((ref) => `${ref.path}:${ref.line} (${ref.action})`).join(' · ');
+        row.appendChild(source);
+      }
+      list.appendChild(row);
+    }
+    if (!list.childElementCount) {
+      const empty = document.createElement('p');
+      empty.textContent = 'No NovaApp actions were detected in project source.';
+      list.appendChild(empty);
+    }
+    host.appendChild(list);
+
+    const addable = missing.filter((permission) => PERMISSION_IDS.has(permission));
+    if (addable.length) {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'action-btn action-btn--primary';
+      add.textContent = `Add ${addable.length} detected permission${addable.length === 1 ? '' : 's'} as required`;
+      add.addEventListener('click', async () => {
+        for (const permission of addable) {
+          _requiredPermissionIds.add(permission);
+          _optionalPermissionIds.delete(permission);
+        }
+        renderPermissions();
+        _onManifestFormChanged();
+        if (await saveManifest()) _runProjectPermissionAudit();
+      });
+      host.appendChild(add);
+    }
+  } catch (error) {
+    console.error('Project permission audit failed:', error);
+    host.textContent = `Project scan failed: ${error.message}`;
+  }
+}
+
 async function inspectFile(filePath) {
   let info, vResult, actions;
   try {
@@ -8820,7 +10388,7 @@ async function inspectFile(filePath) {
   } catch (e) {
     $('inspector-dropzone').classList.remove('hidden');
     $('inspector-result').classList.add('hidden');
-    alert('Failed to inspect file: ' + e.message);
+    await studioAlert('Failed to inspect file: ' + e.message, { title: 'Package inspection failed' });
     return;
   }
 
@@ -8829,6 +10397,8 @@ async function inspectFile(filePath) {
   dropzone.classList.add('hidden');
   result.classList.remove('hidden');
   result.replaceChildren();
+  $('package-comparison')?.classList.add('hidden');
+  $('package-comparison')?.replaceChildren();
 
   // Header
   const header = document.createElement('div');
@@ -8852,9 +10422,10 @@ async function inspectFile(filePath) {
   sigBadge.className = vResult.valid
     ? 'badge badge--green'
     : info.hasSignature ? 'badge badge--red' : 'badge badge--gray';
-  sigBadge.textContent = vResult.valid
-    ? '\u2713 Trusted signature'
-    : info.hasSignature ? '\u26A0 Untrusted signature' : 'Unsigned';
+  const signatureIcon = vResult.valid ? 'check' : info.hasSignature ? 'alert' : null;
+  sigBadge.innerHTML = `${signatureIcon ? _uiIcon(signatureIcon) : ''}<span>${
+    vResult.valid ? 'Trusted signature' : info.hasSignature ? 'Untrusted signature' : 'Unsigned'
+  }</span>`;
   const formatBadge = document.createElement('span');
   formatBadge.className = 'badge badge--gray';
   formatBadge.textContent = info.format ? `Format ${info.format}` : 'Unknown format';
@@ -8936,8 +10507,116 @@ async function inspectFile(filePath) {
   another.id = 'btn-inspect-another';
   another.textContent = 'Inspect another';
   another.addEventListener('click', showInspector);
-  footer.appendChild(another);
+  const compare = document.createElement('button');
+  compare.className = 'action-btn action-btn--ghost';
+  compare.type = 'button';
+  compare.textContent = 'Compare packages';
+  compare.addEventListener('click', () => $('inspector-compare-files')?.click());
+  footer.append(another, compare);
   result.appendChild(footer);
+}
+
+async function _renderPackageComparison(leftPath, rightPath) {
+  const host = $('package-comparison');
+  if (!host) return;
+  host.classList.remove('hidden');
+  host.replaceChildren();
+  const heading = document.createElement('h2');
+  heading.textContent = 'Package comparison';
+  host.appendChild(heading);
+
+  try {
+    const [leftInfo, rightInfo] = [inspect(leftPath), inspect(rightPath)];
+    const [leftPkg, rightPkg] = [loadPackage(leftPath), loadPackage(rightPath)];
+    const [leftIntegrity, rightIntegrity] = await Promise.all([
+      AppPackage.verifyIntegrity(leftPkg),
+      AppPackage.verifyIntegrity(rightPkg),
+    ]);
+
+    const metadata = document.createElement('div');
+    metadata.className = 'package-comparison-metadata';
+    const rows = [
+      ['Package', `${path.basename(leftPath)}  ↔  ${path.basename(rightPath)}`],
+      ['App ID', `${leftInfo.manifest?.id || 'Unknown'}  ↔  ${rightInfo.manifest?.id || 'Unknown'}`],
+      ['Version', `${leftInfo.manifest?.version || '—'}  ↔  ${rightInfo.manifest?.version || '—'}`],
+      ['Package size', `${_formatSize(leftInfo.size)}  ↔  ${_formatSize(rightInfo.size)}`],
+      ['Signature', `${leftInfo.hasSignature ? 'Present (trust not checked)' : 'Unsigned'}  ↔  ${rightInfo.hasSignature ? 'Present (trust not checked)' : 'Unsigned'}`],
+      ['Integrity', `${leftPkg.integrity ? `${leftPkg.integrity.method}: ${leftIntegrity ? 'valid' : 'invalid'}` : 'Not recorded'}  ↔  ${rightPkg.integrity ? `${rightPkg.integrity.method}: ${rightIntegrity ? 'valid' : 'invalid'}` : 'Not recorded'}`],
+    ];
+    for (const [label, value] of rows) {
+      const row = document.createElement('div');
+      const key = document.createElement('strong');
+      key.textContent = label;
+      const val = document.createElement('span');
+      val.textContent = value;
+      row.append(key, val);
+      metadata.appendChild(row);
+    }
+    host.appendChild(metadata);
+
+    const manifestDiff = document.createElement('section');
+    manifestDiff.className = 'package-comparison-section';
+    const manifestTitle = document.createElement('h3');
+    manifestTitle.textContent = 'Manifest changes';
+    manifestDiff.appendChild(manifestTitle);
+    const manifestKeys = [...new Set([
+      ...Object.keys(leftInfo.manifest || {}),
+      ...Object.keys(rightInfo.manifest || {}),
+    ])].sort();
+    const changedManifest = manifestKeys.filter((key) =>
+      JSON.stringify(leftInfo.manifest?.[key]) !== JSON.stringify(rightInfo.manifest?.[key]));
+    if (changedManifest.length) {
+      for (const key of changedManifest) {
+        const row = document.createElement('p');
+        row.textContent = `${key}: ${JSON.stringify(leftInfo.manifest?.[key] ?? null)} → ${JSON.stringify(rightInfo.manifest?.[key] ?? null)}`;
+        manifestDiff.appendChild(row);
+      }
+    } else {
+      const same = document.createElement('p');
+      same.textContent = 'No manifest differences.';
+      manifestDiff.appendChild(same);
+    }
+    host.appendChild(manifestDiff);
+
+    const leftFiles = leftPkg.files || {};
+    const rightFiles = rightPkg.files || {};
+    const fileNames = [...new Set([...Object.keys(leftFiles), ...Object.keys(rightFiles)])].sort();
+    const fileChanges = fileNames.flatMap((name) => {
+      if (!(name in leftFiles)) return [{ name, status: 'Added' }];
+      if (!(name in rightFiles)) return [{ name, status: 'Removed' }];
+      return leftFiles[name] === rightFiles[name] ? [] : [{ name, status: 'Changed' }];
+    });
+    const filesSection = document.createElement('section');
+    filesSection.className = 'package-comparison-section';
+    const filesTitle = document.createElement('h3');
+    filesTitle.textContent = `File changes (${fileChanges.length})`;
+    filesSection.appendChild(filesTitle);
+    if (fileChanges.length) {
+      const list = document.createElement('ul');
+      for (const change of fileChanges.slice(0, 500)) {
+        const item = document.createElement('li');
+        item.textContent = `${change.status}: ${change.name}`;
+        list.appendChild(item);
+      }
+      if (fileChanges.length > 500) {
+        const more = document.createElement('li');
+        more.textContent = `…and ${fileChanges.length - 500} more`;
+        list.appendChild(more);
+      }
+      filesSection.appendChild(list);
+    } else {
+      const same = document.createElement('p');
+      same.textContent = 'Package file contents are identical.';
+      filesSection.appendChild(same);
+    }
+    host.appendChild(filesSection);
+  } catch (error) {
+    console.error('Package comparison failed:', error);
+    const message = document.createElement('p');
+    message.className = 'package-comparison-error';
+    message.textContent = `Could not compare packages: ${error.message}`;
+    host.appendChild(message);
+  }
 }
 
 // Recent projects
@@ -8970,7 +10649,13 @@ function _buildRecentItem(r) {
 
   const nameEl = document.createElement('div');
   nameEl.className = 'recent-item-name';
-  nameEl.textContent = (r.pinned ? '\u{1F4CC} ' : '') + r.name;
+  if (r.pinned) {
+    const pinIcon = document.createElement('span');
+    pinIcon.className = 'recent-item-pin';
+    pinIcon.innerHTML = _uiIcon('pin');
+    nameEl.appendChild(pinIcon);
+  }
+  nameEl.append(document.createTextNode(r.name));
 
   const pathEl = document.createElement('div');
   pathEl.className = 'recent-item-path';
@@ -9031,7 +10716,11 @@ function showRecentContextMenu(x, y, dir) {
   const entry = state.recentProjects.find((r) => r.dir === dir);
   const menu = $('recent-context-menu');
 
-  $('rctx-pin').textContent = entry?.pinned ? '\u{1F4CC} Unpin' : '\u{1F4CC} Pin to top';
+  const pinAction = $('rctx-pin');
+  pinAction.replaceChildren();
+  const pinIcon = document.createElement('span');
+  pinIcon.innerHTML = _uiIcon('pin');
+  pinAction.append(pinIcon, document.createTextNode(entry?.pinned ? ' Unpin' : ' Pin to top'));
 
   menu.classList.remove('hidden');
   const mw = 220, mh = 170;
@@ -9083,8 +10772,35 @@ function revealRecentInFolder(dir) {
 }
 
 // Tabs
+function _updateSidebarQuickAccess() {
+  const hasProject = !!state.projectDir;
+  const search = $('btn-sidebar-search');
+  if (search) search.disabled = !hasProject;
+
+  document.querySelectorAll('[data-sidebar-tab]').forEach((button) => {
+    const active = hasProject && button.dataset.sidebarTab === state.activeTab;
+    button.disabled = !hasProject;
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  const gitCount = $('sidebar-git-count');
+  if (gitCount) {
+    const count = state.gitStatus?.size || 0;
+    gitCount.textContent = String(count);
+    gitCount.classList.toggle('hidden', count === 0);
+    gitCount.setAttribute('aria-label', `${count} changed file${count === 1 ? '' : 's'}`);
+  }
+}
+
 function switchTab(name) {
+  if (name !== 'review' && document.fullscreenElement === $('panel-review')) {
+    document.exitFullscreen().catch((error) => {
+      console.error('Could not exit Preview fullscreen:', error);
+      showToast('Could not exit fullscreen: ' + error.message);
+    });
+  }
   state.activeTab = name;
+  _updateSidebarQuickAccess();
   document.querySelectorAll('.tab').forEach((t) => {
     t.classList.toggle('tab--active', t.dataset.tab === name);
   });
@@ -9144,6 +10860,7 @@ function renderReviewPreview() {
     win.dataset.manifestSize = manifestSize;
     delete win.dataset.userWidth;
     delete win.dataset.userHeight;
+    win.dataset.previewPreset = 'manifest';
   }
   const previewWidth = parseInt(win.dataset.userWidth, 10) || width;
   const previewHeight = parseInt(win.dataset.userHeight, 10) || height;
@@ -9152,6 +10869,12 @@ function renderReviewPreview() {
   win.style.width = `${previewWidth}px`;
   win.style.height = `${previewHeight}px`;
   win.style.transform = `scale(${scale})`;
+  $('review-viewport-size').textContent = `${previewWidth} × ${previewHeight}`;
+  document.querySelectorAll('[data-review-preset]').forEach((button) => {
+    const active = button.dataset.reviewPreset === (win.dataset.previewPreset || 'manifest');
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   if (win.dataset.positionInitialized !== '1') {
     win.style.left = `${Math.max(0, (bounds.width - previewWidth * scale) / 2)}px`;
     win.style.top = `${Math.max(0, (bounds.height - previewHeight * scale) / 2)}px`;
@@ -9161,20 +10884,290 @@ function renderReviewPreview() {
   win.classList.toggle('review-window--frameless', $('mf-frame')?.checked === false);
   win.classList.toggle('review-window--transparent', !!$('mf-transparent')?.checked);
   win.classList.toggle('review-window--no-resize', $('mf-resizable')?.checked === false);
+  const simulateApis = !!$('chk-review-simulate-apis')?.checked;
+  $('review-simulation-note').textContent = simulateApis
+    ? 'Studio API simulation is enabled; prompts and responses are synthetic, not NBOSP behavior.'
+    : 'Preview does not emulate NBOSP. API simulation is off.';
+  $('review-simulation-log')?.classList.toggle('hidden', !simulateApis);
   setupReviewWindowInteractions();
 
   if (!state.projectDir) {
+    $('review-entry-path').textContent = 'No project';
     frame.srcdoc = '<body style="margin:0;padding:24px;font:13px system-ui;color:#8b949e;background:#0d1117;">No project open</body>';
     return;
   }
 
+  const entry = $('mf-entry')?.value.trim() || 'index.html';
+  $('review-entry-path').textContent = entry;
   try {
-    const html = fs.readFileSync(path.join(state.projectDir, 'index.html'), 'utf8');
-    const base = `<base href="${pathToFileURL(state.projectDir + path.sep).href}">`;
-    frame.srcdoc = html.replace(/<head[^>]*>/i, (head) => `${head}${base}`);
+    const entryPath = path.resolve(state.projectDir, entry);
+    const relativeEntry = path.relative(state.projectDir, entryPath);
+    if (relativeEntry.startsWith('..' + path.sep) || relativeEntry === '..' || path.isAbsolute(relativeEntry)) {
+      throw new Error('The entry file must be inside the project folder.');
+    }
+    const html = fs.readFileSync(entryPath, 'utf8');
+    const base = `<base href="${pathToFileURL(path.dirname(entryPath) + path.sep).href}">`;
+    const simulationScript = simulateApis ? `<script>${_reviewSimulationBootstrap()}<\/script>` : '';
+    const headContent = `${base}${simulationScript}`;
+    if (/<head\b[^>]*>/i.test(html)) {
+      frame.srcdoc = html.replace(/<head\b[^>]*>/i, (head) => `${head}${headContent}`);
+    } else if (/<html\b[^>]*>/i.test(html)) {
+      frame.srcdoc = html.replace(/<html\b[^>]*>/i, (tag) => `${tag}<head>${headContent}</head>`);
+    } else {
+      frame.srcdoc = `<head>${headContent}</head>${html}`;
+    }
   } catch (error) {
     frame.srcdoc = `<body style="margin:0;padding:24px;font:13px system-ui;color:#8b949e;background:#0d1117;">Could not load project preview: ${_escHtml(error.message)}</body>`;
   }
+}
+
+function _setReviewPreset(preset) {
+  const win = $('review-window');
+  if (!win) return;
+  const sizes = {
+    manifest: [parseInt($('mf-width')?.value, 10) || 800, parseInt($('mf-height')?.value, 10) || 560],
+    tablet: [768, 1024],
+    phone: [390, 844],
+    landscape: [1024, 768],
+  };
+  const size = sizes[preset];
+  if (!size) return;
+  win.dataset.manifestSize = `${parseInt($('mf-width')?.value, 10) || 800}x${parseInt($('mf-height')?.value, 10) || 560}`;
+  win.dataset.previewPreset = preset;
+  win.dataset.userWidth = String(size[0]);
+  win.dataset.userHeight = String(size[1]);
+  $('review-custom-width').value = String(size[0]);
+  $('review-custom-height').value = String(size[1]);
+  renderReviewPreview();
+  _centerReviewWindow();
+}
+
+const REVIEW_SIZES_KEY = 'novapack_review_sizes';
+
+function _readReviewSizes() {
+  try {
+    const sizes = JSON.parse(localStorage.getItem(REVIEW_SIZES_KEY) || '[]');
+    if (!Array.isArray(sizes)) throw new Error('Saved preview sizes are not a list.');
+    return sizes.filter((size) => size && typeof size.name === 'string'
+      && size.name.trim().length > 0 && size.name.length <= 40
+      && Number.isInteger(size.width) && size.width >= 200 && size.width <= 4000
+      && Number.isInteger(size.height) && size.height >= 150 && size.height <= 3000).slice(0, 8);
+  } catch (error) {
+    console.error('Could not read saved preview sizes:', error);
+    showToast('Could not read saved preview sizes');
+    return [];
+  }
+}
+
+function _renderReviewSizes() {
+  const host = $('review-saved-sizes');
+  if (!host) return;
+  host.replaceChildren();
+  for (const size of _readReviewSizes()) {
+    const group = document.createElement('span');
+    group.className = 'review-saved-size';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'review-tool-btn';
+    button.textContent = size.name;
+    button.title = `${size.width} × ${size.height}`;
+    button.addEventListener('click', () => _applyReviewSize(size.width, size.height));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'review-size-remove';
+    remove.setAttribute('aria-label', `Remove saved preview size ${size.name}`);
+    remove.innerHTML = _uiIcon('close');
+    remove.addEventListener('click', () => {
+      const remaining = _readReviewSizes().filter((saved) => saved.name !== size.name);
+      try {
+        localStorage.setItem(REVIEW_SIZES_KEY, JSON.stringify(remaining));
+        _renderReviewSizes();
+      } catch (error) {
+        console.error('Could not remove saved preview size:', error);
+        showToast(`Could not remove saved preview size: ${error.message}`);
+      }
+    });
+    group.append(button, remove);
+    host.appendChild(group);
+  }
+}
+
+function _applyReviewSize(width, height) {
+  const win = $('review-window');
+  if (!win) return;
+  win.dataset.manifestSize = `${parseInt($('mf-width')?.value, 10) || 800}x${parseInt($('mf-height')?.value, 10) || 560}`;
+  win.dataset.previewPreset = 'custom';
+  win.dataset.userWidth = String(width);
+  win.dataset.userHeight = String(height);
+  $('review-custom-width').value = String(width);
+  $('review-custom-height').value = String(height);
+  renderReviewPreview();
+  _centerReviewWindow();
+}
+
+async function _saveReviewSize() {
+  const name = (await studioPrompt('Choose a name for this preview size.', '', {
+    title: 'Save preview size',
+    confirmLabel: 'Save size',
+    maxLength: 40,
+  }))?.trim();
+  if (!name) return;
+  if (name.length > 40) {
+    showToast('Preview size names must be 40 characters or fewer');
+    return;
+  }
+  const width = Number($('review-custom-width').value);
+  const height = Number($('review-custom-height').value);
+  if (!Number.isInteger(width) || width < 200 || width > 4000
+    || !Number.isInteger(height) || height < 150 || height > 3000) {
+    showToast('Preview dimensions must be width 200–4000 and height 150–3000');
+    return;
+  }
+  const sizes = _readReviewSizes().filter((size) => size.name.toLowerCase() !== name.toLowerCase());
+  if (sizes.length >= 8) {
+    showToast('You can save up to 8 preview sizes. Remove one before saving another.');
+    return;
+  }
+  sizes.push({ name, width, height });
+  try {
+    localStorage.setItem(REVIEW_SIZES_KEY, JSON.stringify(sizes));
+    _renderReviewSizes();
+  } catch (error) {
+    console.error('Could not save preview size:', error);
+    showToast(`Could not save preview size: ${error.message}`);
+  }
+}
+
+function _reviewSimulationBootstrap() {
+  return `(() => {
+    let requestId = 0;
+    const pending = new Map();
+    const report = (action, approved) => {
+      parent.postMessage({ __novapackSimulation: true, action, approved }, '*');
+    };
+    window.addEventListener('message', (event) => {
+      if (event.source !== parent || event.data?.__novapackSimulationResponse !== true) return;
+      const resolve = pending.get(event.data.requestId);
+      if (!resolve) return;
+      pending.delete(event.data.requestId);
+      resolve(event.data.approved === true);
+    });
+    const request = async (action, args) => {
+      const id = 'simulation-' + (++requestId);
+      const approved = await new Promise((resolve) => {
+        pending.set(id, resolve);
+        parent.postMessage({ __novapackSimulation: true, requestId: id, action }, '*');
+      });
+      report(action, approved);
+      if (!approved) throw new Error('Simulated request denied: ' + action);
+      return { simulated: true, action, args };
+    };
+    const makeProxy = (root, segments = []) => new Proxy(function () {}, {
+      get(_target, key) {
+        if (key === 'then' || key === 'toJSON') return undefined;
+        return makeProxy(root, [...segments, String(key)]);
+      },
+      apply(_target, _this, args) {
+        return request([root, ...segments].join('.'), args);
+      }
+    });
+    window.nova = new Proxy({ ipc: request }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (key === 'then' || key === 'toJSON') return undefined;
+        return makeProxy('nova', [String(key)]);
+      }
+    });
+    window.novaOS = makeProxy('novaOS');
+  })();`;
+}
+
+function _centerReviewWindow() {
+  const win = $('review-window');
+  const stage = $('review-stage');
+  if (!win || !stage) return;
+  const bounds = stage.getBoundingClientRect();
+  const match = /scale\(([^)]+)\)/.exec(win.style.transform);
+  const scale = match ? Number(match[1]) || 1 : 1;
+  win.style.left = `${Math.max(0, (bounds.width - win.offsetWidth * scale) / 2)}px`;
+  win.style.top = `${Math.max(0, (bounds.height - win.offsetHeight * scale) / 2)}px`;
+  win.dataset.positionInitialized = '1';
+}
+
+function _initReviewPreviewControls() {
+  document.querySelectorAll('[data-review-preset]').forEach((button) => {
+    button.addEventListener('click', () => _setReviewPreset(button.dataset.reviewPreset));
+  });
+  $('btn-review-center')?.addEventListener('click', _centerReviewWindow);
+  $('btn-review-refresh')?.addEventListener('click', renderReviewPreview);
+  $('btn-review-custom-size')?.addEventListener('click', () => {
+    const width = Number($('review-custom-width').value);
+    const height = Number($('review-custom-height').value);
+    if (!Number.isInteger(width) || width < 200 || width > 4000
+      || !Number.isInteger(height) || height < 150 || height > 3000) {
+      showToast('Preview dimensions must be width 200–4000 and height 150–3000');
+      return;
+    }
+    _applyReviewSize(width, height);
+  });
+  $('btn-review-save-size')?.addEventListener('click', _saveReviewSize);
+  $('chk-review-simulate-apis')?.addEventListener('change', () => {
+    const log = $('review-simulation-log');
+    if (log) log.replaceChildren();
+    renderReviewPreview();
+  });
+  _renderReviewSizes();
+  window.addEventListener('message', async (event) => {
+    const frame = $('review-body-frame');
+    const data = event.data;
+    if (event.source !== frame?.contentWindow || data?.__novapackSimulation !== true) return;
+    if (typeof data.requestId === 'string') {
+      const approved = await studioConfirm(
+        `Allow the preview to simulate “${String(data.action || 'Unknown action')}”? This is a mock response only; no NovaByte OS API is called.`,
+        { title: 'Review simulated API request', confirmLabel: 'Allow simulation', cancelLabel: 'Deny' },
+      );
+      if (frame.contentWindow) {
+        frame.contentWindow.postMessage({
+          __novapackSimulationResponse: true,
+          requestId: data.requestId,
+          approved,
+        }, '*');
+      }
+      return;
+    }
+    const log = $('review-simulation-log');
+    if (!log) return;
+    const row = document.createElement('div');
+    row.textContent = `${data.approved ? 'SIMULATED ALLOW' : 'SIMULATED DENY'} · ${String(data.action || 'Unknown action')}`;
+    log.prepend(row);
+    while (log.childElementCount > 12) log.lastElementChild.remove();
+  });
+  $('btn-review-fullscreen')?.addEventListener('click', async () => {
+    const panel = $('panel-review');
+    if (!panel) return;
+    try {
+      if (document.fullscreenElement === panel) await document.exitFullscreen();
+      else if (panel.requestFullscreen) await panel.requestFullscreen();
+      else showToast('Fullscreen is not supported in this environment');
+    } catch (error) {
+      console.error('Could not toggle Preview fullscreen:', error);
+      showToast('Could not toggle fullscreen: ' + error.message);
+    }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    const panel = $('panel-review');
+    const button = $('btn-review-fullscreen');
+    if (!panel || !button) return;
+    const active = document.fullscreenElement === panel;
+    button.setAttribute('aria-pressed', String(active));
+    button.title = active ? 'Exit fullscreen (Esc)' : 'Expand preview to fullscreen';
+    const label = button.querySelector('span');
+    if (label) label.textContent = active ? 'Exit fullscreen' : 'Fullscreen';
+    if (active || state.activeTab === 'review') {
+      renderReviewPreview();
+      _centerReviewWindow();
+    }
+  });
 }
 
 function setupReviewWindowInteractions() {
@@ -9239,6 +11232,9 @@ function setupReviewWindowInteractions() {
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', end);
         document.removeEventListener('pointercancel', end);
+        win.dataset.previewPreset = 'custom';
+        $('review-custom-width').value = win.dataset.userWidth || '';
+        $('review-custom-height').value = win.dataset.userHeight || '';
         renderReviewPreview();
       };
       document.addEventListener('pointermove', move);
@@ -9258,60 +11254,345 @@ function setupReviewWindowInteractions() {
 // without needing to touch the persisted app state shape.
 let _npPlaceholderValues = {};
 let _npSelectedFile = null; // filename currently shown in the preview pane
+let _npActiveTemplateCategory = 'all';
+const USER_TEMPLATES_KEY = 'novapack_user_templates';
+const USER_TEMPLATE_FORMAT = 'novapack-studio-user-template';
+const USER_TEMPLATE_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="16" fill="#15263d"/><path d="M17 20h30v24H17zM17 27h30M25 20v24M39 20v24" fill="none" stroke="#58a6ff" stroke-width="3" stroke-linejoin="round"/></svg>')}`;
 
-function openNewProjectModal() {
-  // Populate template grid
+function _readUserTemplates() {
+  try {
+    const entries = JSON.parse(localStorage.getItem(USER_TEMPLATES_KEY) || '[]');
+    if (!Array.isArray(entries)) throw new Error('Stored user templates are not a list.');
+    return entries.filter((entry) => entry && typeof entry.id === 'string'
+      && typeof entry.name === 'string' && typeof entry.description === 'string'
+      && entry.manifest && typeof entry.manifest === 'object'
+      && entry.files && typeof entry.files === 'object' && !Array.isArray(entry.files));
+  } catch (error) {
+    console.error('Could not read user templates:', error);
+    showToast('Could not read saved user templates');
+    return [];
+  }
+}
+
+function _npTemplateEntries() {
+  return [...Object.entries(TEMPLATES), ..._readUserTemplates().map((entry) => [entry.id, {
+    name: entry.name,
+    description: entry.description,
+    icon: USER_TEMPLATE_ICON,
+    permissions: entry.manifest.permissions || [],
+    optionalPermissions: entry.manifest.optionalPermissions || [],
+    permissionReasons: entry.manifest.permissionReasons || {},
+    userTemplate: entry,
+    files: Object.fromEntries(Object.entries(entry.files).map(([filename, encoded]) =>
+      [filename, () => Buffer.from(encoded, 'base64').toString('utf8')]))
+  }])];
+}
+
+function _npGetTemplate(id) {
+  return _npTemplateEntries().find(([key]) => key === id)?.[1] || null;
+}
+
+function _userTemplateExport(entry) {
+  return JSON.stringify({
+    format: USER_TEMPLATE_FORMAT,
+    version: 1,
+    template: {
+      name: entry.name,
+      description: entry.description,
+      icon: entry.icon || 'box',
+      manifest: entry.manifest,
+      files: entry.files,
+    },
+  }, null, 2);
+}
+
+function _validateUserTemplate(bundle) {
+  const template = bundle?.template;
+  if (bundle?.format !== USER_TEMPLATE_FORMAT || bundle.version !== 1
+    || !template || typeof template.name !== 'string'
+    || typeof template.description !== 'string' || typeof template.files !== 'object'
+    || !template.files || Array.isArray(template.files)
+    || !template.manifest || typeof template.manifest !== 'object' || Array.isArray(template.manifest)) {
+    throw new Error('Invalid NovaByte Studio starter template file.');
+  }
+  const name = template.name.trim();
+  if (!name || name.length > 80 || template.description.length > 240) {
+    throw new Error('Starter name must be 1–80 characters and description at most 240 characters.');
+  }
+  if (Buffer.byteLength(JSON.stringify(template.manifest), 'utf8') > 256 * 1024) {
+    throw new Error('Starter manifest exceeds the 256 KB limit.');
+  }
+  const files = {};
+  let totalBytes = 0;
+  const names = Object.keys(template.files);
+  if (names.length > 1000) throw new Error('Starter contains too many files.');
+  for (const filename of names) {
+    const normalized = path.normalize(filename);
+    if (typeof filename !== 'string' || path.isAbsolute(filename)
+      || normalized === '..' || normalized.startsWith(`..${path.sep}`)
+      || normalized.split(path.sep).some((part) => !part || part.startsWith('.')
+        || part.toLowerCase() === 'node_modules')
+      || ['manifest.json', 'novaapp.json'].includes(path.basename(normalized))) {
+      throw new Error(`Unsafe starter filename: ${filename}`);
+    }
+    const encoded = template.files[filename];
+    if (typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      throw new Error(`Invalid file data for ${filename}`);
+    }
+    totalBytes += Buffer.from(encoded, 'base64').length;
+    if (totalBytes > 2 * 1024 * 1024) throw new Error('Starter files exceed the 2 MB import limit.');
+    files[normalized.split(path.sep).join('/')] = encoded;
+  }
+  if (!names.length) throw new Error('Starter must include at least one project file.');
+  return {
+    id: `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    description: template.description,
+    icon: typeof template.icon === 'string' ? template.icon.slice(0, 100) : 'box',
+    manifest: template.manifest,
+    files,
+  };
+}
+
+async function _saveOpenProjectAsTemplate() {
+  if (!state.projectDir) {
+    showToast('Open a project before saving it as a starter');
+    return;
+  }
+  const name = (await studioPrompt('Choose a name for this starter template.', '', {
+    title: 'Save project as starter',
+    confirmLabel: 'Save starter',
+    maxLength: 80,
+  }))?.trim();
+  if (!name) return;
+  if (name.length > 80) {
+    showToast('Starter name must be at most 80 characters');
+    return;
+  }
+  const projectRoot = path.resolve(state.projectDir);
+  const unsaved = tabs.filter((tab) => {
+    if (!tab.isDirty || IMAGE_EXTS.has(path.extname(tab.filePath).toLowerCase())) return false;
+    const relative = path.relative(projectRoot, path.resolve(tab.filePath));
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  });
+  if (unsaved.length) {
+    showToast(`Save or resolve open edits before creating a starter: ${unsaved.map((tab) => path.basename(tab.filePath)).join(', ')}`);
+    return;
+  }
+  try {
+    const formManifest = readManifestForm();
+    if (!formManifest.id || !formManifest.name) {
+      showToast('App ID and name are required before saving a starter');
+      return;
+    }
+    if (!await saveManifest()) return;
+    const manifest = _readManifest(state.projectDir);
+    if (!manifest || manifest._error || JSON.stringify(manifest) !== JSON.stringify(formManifest)) {
+      showToast('Could not save the current manifest; starter was not created');
+      return;
+    }
+    const description = manifest.description || `Starter based on ${manifest.name || path.basename(state.projectDir)}`;
+    if (description.length > 240) {
+      showToast('Starter description must be at most 240 characters');
+      return;
+    }
+    const files = {};
+    let totalBytes = 0;
+    walkProjectFiles(state.projectDir, (full, rel) => {
+      const buffer = fs.readFileSync(full);
+      totalBytes += buffer.length;
+      if (totalBytes > 2 * 1024 * 1024) throw new Error('Project files exceed the 2 MB starter limit.');
+      files[rel] = buffer.toString('base64');
+    });
+    const entry = _validateUserTemplate({
+      format: USER_TEMPLATE_FORMAT,
+      version: 1,
+      template: {
+        name,
+        description,
+        icon: manifest.icon || 'box',
+        manifest,
+        files,
+      },
+    });
+    const templates = _readUserTemplates().filter((item) => item.name.toLowerCase() !== entry.name.toLowerCase());
+    templates.push(entry);
+    localStorage.setItem(USER_TEMPLATES_KEY, JSON.stringify(templates));
+    state.selectedTemplate = entry.id;
+    _npRenderTemplateCategories();
+    _npRenderTemplateGallery();
+    _renderNewProjectPreview();
+    showToast(`Saved “${entry.name}” as a starter. Project files are stored locally in Studio settings.`);
+  } catch (error) {
+    console.error('Could not save project as a starter template:', error);
+    showToast(`Could not save starter: ${error.message}`);
+  }
+}
+
+function _importUserTemplate(filePath) {
+  try {
+    if (fs.statSync(filePath).size > 4 * 1024 * 1024) {
+      throw new Error('Starter template file exceeds the 4 MB import limit.');
+    }
+    const imported = _validateUserTemplate(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+    const templates = _readUserTemplates().filter((entry) => entry.name.toLowerCase() !== imported.name.toLowerCase());
+    templates.push(imported);
+    localStorage.setItem(USER_TEMPLATES_KEY, JSON.stringify(templates));
+    state.selectedTemplate = imported.id;
+    _npRenderTemplateCategories();
+    _npRenderTemplateGallery();
+    _renderNewProjectPreview();
+    showToast(`Imported starter “${imported.name}”`);
+  } catch (error) {
+    console.error('Could not import starter template:', error);
+    showToast(`Could not import starter: ${error.message}`);
+  }
+}
+
+function _exportSelectedUserTemplate() {
+  const entry = _readUserTemplates().find((item) => item.id === state.selectedTemplate);
+  if (!entry) {
+    showToast('Select one of your saved or imported starters first');
+    return;
+  }
+  pickFolder((dir) => {
+    const filePath = path.join(dir, `${entry.name.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'starter'}.novapack-template.json`);
+    try {
+      fs.writeFileSync(filePath, _userTemplateExport(entry), { flag: 'wx' });
+      showToast(`Starter exported to ${filePath}`);
+    } catch (error) {
+      console.error('Could not export starter template:', error);
+      showToast(`Could not export starter: ${error.message}`);
+    }
+  });
+}
+
+const _npApiTemplateKeys = new Set([
+  'notifications-api', 'alarms-api', 'clipboard-api', 'dialogs-api',
+  'app-integration-api', 'settings-window-api', 'device-apis',
+  'calendar-contacts-api', 'data-backup-api', 'events-lifecycle-api',
+  'secrets-api', 'share-target-api',
+]);
+const _npTemplateCategories = [
+  { id: 'all', label: 'All starters' },
+  { id: 'api', label: 'NovaApp APIs' },
+  { id: 'apps', label: 'App foundations' },
+  { id: 'web', label: 'Web & content' },
+  { id: 'native', label: 'Games & native' },
+];
+
+function _npGetTemplateCategory(key) {
+  if (key.startsWith('user:')) return 'apps';
+  if (_npApiTemplateKeys.has(key)) return 'api';
+  if (key === 'native-cpp' || key === 'game') return 'native';
+  if (['webapp', 'browser', 'dashboard', 'markdown-viewer', 'chat'].includes(key)) return 'web';
+  return 'apps';
+}
+
+function _npRenderTemplateCategories() {
+  const nav = $('np-categories');
+  nav.replaceChildren();
+  const entries = _npTemplateEntries();
+  for (const category of _npTemplateCategories) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'np-category' + (_npActiveTemplateCategory === category.id ? ' active' : '');
+    button.setAttribute('aria-pressed', String(_npActiveTemplateCategory === category.id));
+    const label = document.createElement('span');
+    label.textContent = category.label;
+    const count = document.createElement('span');
+    count.className = 'np-category-count';
+    count.textContent = String(category.id === 'all'
+      ? entries.length
+      : entries.filter(([key]) => _npGetTemplateCategory(key) === category.id).length);
+    button.append(label, count);
+    button.addEventListener('click', () => {
+      _npActiveTemplateCategory = category.id;
+      _npRenderTemplateCategories();
+      _npRenderTemplateGallery();
+    });
+    nav.appendChild(button);
+  }
+}
+
+function _npRenderTemplateGallery() {
   const grid = $('template-grid');
+  const query = $('np-template-search').value.trim().toLowerCase();
+  const category = _npTemplateCategories.find((item) => item.id === _npActiveTemplateCategory);
+  $('np-category-title').textContent = category?.label || 'All starters';
   grid.replaceChildren();
-  for (const [key, tpl] of Object.entries(TEMPLATES)) {
-    const card = document.createElement('div');
+
+  const entries = _npTemplateEntries()
+    .filter(([key, tpl]) => _npActiveTemplateCategory === 'all'
+      || _npGetTemplateCategory(key) === _npActiveTemplateCategory)
+    .filter(([, tpl]) => !query
+      || tpl.name.toLowerCase().includes(query)
+      || tpl.description.toLowerCase().includes(query))
+    .sort(([, a], [, b]) => a.name.localeCompare(b.name));
+
+  if (entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'np-gallery-empty';
+    empty.textContent = 'No starters match your search.';
+    grid.appendChild(empty);
+    return;
+  }
+
+  for (const [key, tpl] of entries) {
+    const card = document.createElement('button');
+    card.type = 'button';
     card.className = 'template-card' + (state.selectedTemplate === key ? ' selected' : '');
     card.dataset.key = key;
+    card.setAttribute('aria-pressed', String(state.selectedTemplate === key));
 
-    const icon = document.createElement('div');
-    icon.className = 'template-card-icon';
-    // icon is usually an emoji from our own TEMPLATES table, but some
-    // templates (e.g. native-cpp) use a data: URI for a real logo instead --
-    // textContent alone would just print the URI string, so render an <img>
-    // for those and fall back to plain text for emoji.
-    if (typeof tpl.icon === 'string' && tpl.icon.startsWith('data:image')) {
-      const img = document.createElement('img');
-      img.src = tpl.icon;
-      img.alt = '';
-      icon.replaceChildren(img);
-    } else {
-      icon.textContent = tpl.icon;
-    }
+    const art = document.createElement('span');
+    art.className = 'template-card-art';
+    const icon = document.createElement('img');
+    icon.src = tpl.icon;
+    icon.alt = '';
+    art.appendChild(icon);
 
-    const name = document.createElement('div');
+    const details = document.createElement('span');
+    details.className = 'template-card-details';
+    const name = document.createElement('span');
     name.className = 'template-card-name';
     name.textContent = tpl.name;
-
-    const desc = document.createElement('div');
+    const desc = document.createElement('span');
     desc.className = 'template-card-desc';
     desc.textContent = tpl.description;
+    const type = document.createElement('span');
+    type.className = 'template-card-type';
+    type.textContent = key.startsWith('user:') ? 'MY STARTER'
+      : _npApiTemplateKeys.has(key) ? 'NOVAAPP API' : 'STARTER';
+    details.append(name, desc, type);
+    card.append(art, details);
 
-    card.append(icon, name, desc);
     card.addEventListener('click', () => {
-      grid.querySelectorAll('.template-card').forEach((c) => c.classList.remove('selected'));
-      card.classList.add('selected');
       state.selectedTemplate = key;
-      _npSelectedFile = null; // reset file selection -- new template, new file list
-      _npPlaceholderValues = {}; // reset to that template's defaults, not the old template's leftovers
+      _npSelectedFile = null;
+      _npPlaceholderValues = {};
+      _npRenderTemplateGallery();
       _renderNewProjectPreview();
     });
     grid.appendChild(card);
   }
+}
 
+function openNewProjectModal() {
   $('new-app-name').value = '';
   $('new-app-id').value = '';
   $('new-app-dir').value = '';
+  $('np-template-search').value = '';
+  _npActiveTemplateCategory = 'all';
   _npPlaceholderValues = {};
   _npSelectedFile = null;
 
   $('modal-new-project').classList.remove('hidden');
+  $('np-template-search').oninput = _npRenderTemplateGallery;
+  _npRenderTemplateCategories();
+  _npRenderTemplateGallery();
   _renderNewProjectPreview();
-  setTimeout(() => $('new-app-name').focus(), 50);
+  setTimeout(() => $('np-template-search').focus(), 50);
 }
 
 // Builds the manifest-like object passed into each template's file
@@ -9324,13 +11605,13 @@ function _npBuildManifestForPreview() {
   return { name, id, version: '1.0.0', description: '', author: '', ..._npPlaceholderValues };
 }
 
-// Re-renders the right-hand preview pane: header (icon/name/description),
-// file list, placeholder fields under the form, and the currently
+// Re-renders the project preview: header (icon/name/description), file list,
+// project and placeholder fields, and the currently
 // selected file's generated content. Called on template change, form
 // input, and placeholder-field input -- cheap enough (string templates,
 // no disk I/O) to just re-run in full each time rather than diffing.
 function _renderNewProjectPreview() {
-  const tpl = TEMPLATES[state.selectedTemplate];
+  const tpl = _npGetTemplate(state.selectedTemplate);
   if (!tpl) return;
   const m = _npBuildManifestForPreview();
 
@@ -9347,7 +11628,7 @@ function _renderNewProjectPreview() {
   $('np-preview-desc').textContent = tpl.description;
 
   // Placeholder fields (e.g. Web App Wrapper's URL) -- rendered as normal
-  // labeled inputs in the left form, not just inline in the preview, so
+  // labeled inputs in the project details panel, not just inline in the preview, so
   // they're discoverable even before someone clicks into the preview pane.
   const fieldsWrap = $('np-placeholder-fields');
   fieldsWrap.replaceChildren();
@@ -9412,6 +11693,14 @@ function _renderNewProjectPreview() {
 // what create() would write -- not a separate guess at it.
 function _npGenerateFileContent(tpl, filename, m) {
   if (filename === 'manifest.json') {
+    if (tpl.userTemplate) {
+      return JSON.stringify({
+        ...tpl.userTemplate.manifest,
+        id: m.id || 'com.example.myapp',
+        name: m.name || tpl.userTemplate.manifest.name,
+        version: m.version || tpl.userTemplate.manifest.version || '1.0.0',
+      }, null, 2);
+    }
     const manifestObj = {
       id: m.id || 'com.example.myapp',
       name: m.name || 'My App',
@@ -9419,18 +11708,19 @@ function _npGenerateFileContent(tpl, filename, m) {
       description: m.description || '',
       author: m.author || '',
       entry: 'index.html',
-      icon: 'box',
-      permissions: [],
+      icon: tpl.icon || 'box',
+      permissions: [...(tpl.permissions || [])],
+      ...(tpl.optionalPermissions?.length ? { optionalPermissions: [...tpl.optionalPermissions] } : {}),
+      permissionReasons: { ...(tpl.permissionReasons || {}) },
     };
     if (state.selectedTemplate === 'webapp') {
       manifestObj.url = m.url || 'https://example.com';
-      manifestObj.permissions = ['sandbox:nested-webview'];
       manifestObj.allowNestedWebview = true;
     }
     if (state.selectedTemplate === 'browser') {
-      manifestObj.permissions = ['net:external', 'sandbox:nested-webview'];
       manifestObj.allowNestedWebview = true;
     }
+    if (tpl.shareTarget) manifestObj.shareTarget = { ...tpl.shareTarget };
     return JSON.stringify(manifestObj, null, 2);
   }
   const fn = tpl.files[filename];
@@ -9454,7 +11744,7 @@ function _npRenderFileContent(content, filename) {
   const host = $('np-file-view-content');
   host.replaceChildren();
 
-  const tpl = TEMPLATES[state.selectedTemplate];
+  const tpl = _npGetTemplate(state.selectedTemplate);
   const fields = tpl?.placeholderFields || [];
 
   // Only index.html/app.js are realistic homes for a placeholder value
@@ -9570,40 +11860,81 @@ function _initNewProjectIdSync() {
   idInput.addEventListener('input', () => _renderNewProjectPreview());
 }
 
-function createProject() {
+async function createProject() {
   const name = $('new-app-name').value.trim();
   const id = $('new-app-id').value.trim();
   const dir = $('new-app-dir').value.trim();
 
   if (!name || !id || !dir) {
-    alert('Please fill in all fields.');
+    await studioAlert('Please fill in the app name, ID, and project folder.', { title: 'Project details required' });
     return;
   }
 
   let result;
   try {
-    result = create({
-      targetDir: dir,
-      template: state.selectedTemplate,
-      // Spread collected placeholder values (e.g. url for Web App
-      // Wrapper) into the manifest passed to create() -- previously this
-      // was always {id, name, version}, so webapp projects silently got
-      // manifest.url hardcoded to 'https://example.com' regardless of
-      // what the New Project form showed, because nothing collected it.
-      manifest: { id, name, version: '1.0.0', ..._npPlaceholderValues },
-    });
+    const userTemplate = _readUserTemplates().find((entry) => entry.id === state.selectedTemplate);
+    if (userTemplate) {
+      result = _createProjectFromUserTemplate(dir, userTemplate, { id, name, ..._npPlaceholderValues });
+    } else {
+      result = create({
+        targetDir: dir,
+        template: state.selectedTemplate,
+        manifest: { id, name, version: '1.0.0', ..._npPlaceholderValues },
+      });
+    }
   } catch (err) {
-    alert('Could not create project: ' + err.message);
+    await studioAlert('Could not create project: ' + err.message, { title: 'Project creation failed' });
     return;
   }
 
   if (!result.success) {
-    alert('Could not create project: ' + result.error);
+    await studioAlert('Could not create project: ' + result.error, { title: 'Project creation failed' });
     return;
   }
 
   closeModal('modal-new-project');
-  loadProject(dir);
+  await loadProject(dir);
+}
+
+function _createProjectFromUserTemplate(targetDir, template, overrides) {
+  const root = path.resolve(targetDir);
+  if (fs.existsSync(root) && (!fs.statSync(root).isDirectory() || fs.readdirSync(root).length)) {
+    return { success: false, error: 'Choose a new or empty project folder for this starter.' };
+  }
+  const created = [];
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    const manifest = {
+      ...template.manifest,
+      ...overrides,
+      version: '1.0.0',
+    };
+    const manifestPath = path.join(root, 'manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { flag: 'wx' });
+    created.push(manifestPath);
+    for (const [filename, encoded] of Object.entries(template.files)) {
+      const normalized = path.normalize(filename);
+      const relativePath = path.relative(root, path.resolve(root, normalized));
+      if (path.isAbsolute(filename) || relativePath === '..' || relativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativePath) || normalized.split(path.sep).some((part) =>
+          !part || part.startsWith('.') || part.toLowerCase() === 'node_modules')
+        || ['manifest.json', 'novaapp.json'].includes(path.basename(normalized))) {
+        throw new Error(`Unsafe starter path: ${filename}`);
+      }
+      const filePath = path.join(root, normalized);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, Buffer.from(encoded, 'base64'), { flag: 'wx' });
+      created.push(filePath);
+    }
+    return { success: true, files: created.map((filename) => path.relative(root, filename)) };
+  } catch (error) {
+    for (const file of created) {
+      try { fs.rmSync(file, { force: true }); } catch (cleanupError) {
+        console.error(`Could not remove partial starter file ${file}:`, cleanupError);
+      }
+    }
+    return { success: false, error: error.message };
+  }
 }
 
 // Keep the native input attached until NW.js has completed its picker event;
@@ -9780,6 +12111,156 @@ function pickFile(accept, callback) {
   _openNativePicker(input, callback, 'file');
 }
 
+// Studio-native replacements for Chromium's blocking alert/confirm/prompt.
+const _studioDialogQueue = [];
+let _studioDialogActive = null;
+let _studioDialogDismissHandler = null;
+
+function _showNextStudioDialog() {
+  if (_studioDialogActive || !_studioDialogQueue.length) return;
+  const overlay = $('studio-dialog-overlay');
+  if (!overlay) {
+    const request = _studioDialogQueue.shift();
+    console.error('Studio dialog markup is unavailable');
+    request.resolve(request.type === 'prompt' ? null : false);
+    _showNextStudioDialog();
+    return;
+  }
+
+  const request = _studioDialogQueue.shift();
+  const title = $('studio-dialog-title');
+  const message = $('studio-dialog-message');
+  const input = $('studio-dialog-input');
+  const cancel = $('studio-dialog-cancel');
+  const confirmButton = $('studio-dialog-confirm');
+  const activeElement = document.activeElement;
+  _studioDialogActive = { ...request, activeElement };
+
+  overlay.querySelector('.studio-dialog').setAttribute(
+    'role',
+    request.type === 'alert' ? 'alertdialog' : 'dialog',
+  );
+  title.textContent = request.title;
+  message.textContent = request.message;
+  input.value = request.defaultValue;
+  input.placeholder = request.placeholder;
+  input.maxLength = request.maxLength;
+  input.classList.toggle('hidden', request.type !== 'prompt');
+  cancel.textContent = request.cancelLabel;
+  cancel.classList.toggle('hidden', request.type === 'alert');
+  confirmButton.textContent = request.confirmLabel;
+  confirmButton.classList.toggle('is-danger', request.danger);
+  overlay.classList.remove('hidden');
+  requestAnimationFrame(() => (request.type === 'prompt' ? input : confirmButton).focus());
+}
+
+function _finishStudioDialog(value) {
+  const active = _studioDialogActive;
+  if (!active) return;
+  _studioDialogActive = null;
+  $('studio-dialog-overlay')?.classList.add('hidden');
+  active.resolve(value);
+  if (active.activeElement?.isConnected) active.activeElement.focus();
+  queueMicrotask(_showNextStudioDialog);
+}
+
+function _queueStudioDialog({
+  type, title, message, defaultValue = '', placeholder = '', maxLength = 1000,
+  confirmLabel = 'Continue', cancelLabel = 'Cancel', danger = false,
+}) {
+  return new Promise((resolve) => {
+    _studioDialogQueue.push({
+      type,
+      title,
+      message: String(message ?? ''),
+      defaultValue: String(defaultValue ?? ''),
+      placeholder,
+      maxLength,
+      confirmLabel,
+      cancelLabel,
+      danger,
+      resolve,
+    });
+    _showNextStudioDialog();
+  });
+}
+
+function studioAlert(message, options = {}) {
+  return _queueStudioDialog({
+    type: 'alert',
+    title: options.title || 'Notice',
+    message,
+    confirmLabel: options.confirmLabel || 'Got it',
+  });
+}
+
+function studioConfirm(message, options = {}) {
+  return _queueStudioDialog({
+    type: 'confirm',
+    title: options.title || 'Confirm action',
+    message,
+    confirmLabel: options.confirmLabel || 'Continue',
+    cancelLabel: options.cancelLabel || 'Cancel',
+    danger: options.danger === true,
+  });
+}
+
+function studioPrompt(message, defaultValue = '', options = {}) {
+  return _queueStudioDialog({
+    type: 'prompt',
+    title: options.title || 'Enter a value',
+    message,
+    defaultValue,
+    placeholder: options.placeholder || '',
+    maxLength: options.maxLength || 1000,
+    confirmLabel: options.confirmLabel || 'Save',
+    cancelLabel: options.cancelLabel || 'Cancel',
+  });
+}
+
+function _initStudioDialogs() {
+  const overlay = $('studio-dialog-overlay');
+  if (!overlay) throw new Error('Studio dialog markup is missing');
+  $('studio-dialog-cancel').addEventListener('click', () => {
+    _finishStudioDialog(_studioDialogActive?.type === 'prompt' ? null : false);
+  });
+  $('studio-dialog-confirm').addEventListener('click', () => {
+    _finishStudioDialog(_studioDialogActive?.type === 'prompt'
+      ? $('studio-dialog-input').value
+      : true);
+  });
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      _finishStudioDialog(_studioDialogActive?.type === 'prompt' ? null : false);
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!_studioDialogActive) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _finishStudioDialog(_studioDialogActive.type === 'prompt' ? null : false);
+    } else if (event.key === 'Tab') {
+      const overlay = $('studio-dialog-overlay');
+      const focusable = [...overlay.querySelectorAll('button:not(.hidden), input:not(.hidden)')]
+        .filter((element) => !element.disabled);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    } else if (event.key === 'Enter' && _studioDialogActive.type === 'prompt'
+      && document.activeElement === $('studio-dialog-input')) {
+      event.preventDefault();
+      $('studio-dialog-confirm').click();
+    }
+  }, true);
+}
+
 // Modal helpers
 function closeModal(id) {
   $(id).classList.add('hidden');
@@ -9842,14 +12323,14 @@ function initInspectorDrop() {
     zone.classList.add('drag-over');
   });
   zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop', (e) => {
+  zone.addEventListener('drop', async (e) => {
     e.preventDefault();
     zone.classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
     if (file && file.name.endsWith('.novaapp')) {
       inspectFile(file.path);
     } else {
-      alert('Please drop a .novaapp file.');
+      await studioAlert('Please drop a .novaapp file.', { title: 'Unsupported package' });
     }
   });
 }
@@ -9990,10 +12471,16 @@ function initSidebarCollapse() {
 const SEARCH_MAX_FILES = 2000;              // hard stop so a huge tree can't hang the UI
 const SEARCH_MAX_FILE_BYTES = 1024 * 1024;  // skip anything over 1MB as "probably not source"
 const SEARCH_MAX_RESULTS = 500;             // cap total matches rendered
+const SEARCH_DEFAULT_OPTIONS = Object.freeze({
+  caseSensitive: false,
+  wholeWord: false,
+  regex: false,
+});
 
 let _searchDebounce = null;
 let _searchResults = [];   // [{ filePath, relPath, line, col, lineText }]
 let _searchActiveIdx = -1;
+let _searchOptions = { ...SEARCH_DEFAULT_OPTIONS };
 
 // Wires up listeners on the static #modal-global-search markup. Called once
 // from init(), same pattern as the rest of the modal wiring below.
@@ -10001,9 +12488,36 @@ function _initGlobalSearch() {
   const input = $('gs-input');
   if (!input) return; // markup not present -- fail quiet, same as other $()? calls
 
-  input.addEventListener('input', () => {
+  const queueSearch = () => {
     if (_searchDebounce) clearTimeout(_searchDebounce);
     _searchDebounce = setTimeout(() => _runGlobalSearch(input.value), 150);
+  };
+  input.addEventListener('input', () => {
+    queueSearch();
+  });
+  $('gs-include')?.addEventListener('input', queueSearch);
+  $('gs-exclude')?.addEventListener('input', queueSearch);
+  document.querySelectorAll('[data-search-option]').forEach((button) => {
+    const option = button.dataset.searchOption;
+    if (!Object.hasOwn(_searchOptions, option)) return;
+    button.addEventListener('click', () => {
+      _searchOptions[option] = !_searchOptions[option];
+      button.setAttribute('aria-pressed', String(_searchOptions[option]));
+      button.classList.toggle('gs-toggle--active', _searchOptions[option]);
+      queueSearch();
+    });
+  });
+  $('gs-copy-results')?.addEventListener('click', async () => {
+    if (!_searchResults.length) return;
+    const text = _searchResults.map((result) =>
+      `${result.relPath}:${result.line}:${result.lineText.trim()}`
+    ).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`Copied ${_searchResults.length} search result${_searchResults.length === 1 ? '' : 's'}`);
+    } catch (err) {
+      showToast(`Could not copy search results: ${err.message}`);
+    }
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); _moveSearchSelection(1); }
@@ -10026,8 +12540,12 @@ function openGlobalSearch() {
   overlay.classList.remove('hidden');
   const input = $('gs-input');
   input.value = '';
+  $('gs-include').value = '';
+  $('gs-exclude').value = '';
   $('gs-results').replaceChildren();
   $('gs-meta').textContent = 'Type to search across all project files';
+  $('gs-meta').classList.remove('gs-meta--error');
+  $('gs-copy-results').disabled = true;
   _searchResults = [];
   _searchActiveIdx = -1;
   input.focus();
@@ -10070,21 +12588,84 @@ function _collectSearchableFiles(rootDir) {
   return out;
 }
 
+function _parseSearchPatterns(input) {
+  return input.split(/[\n,;]+/).map((part) => part.trim().replace(/\\/g, '/')).filter(Boolean);
+}
+
+function _globToRegExp(glob) {
+  let pattern = '^';
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === '*') {
+      if (glob[i + 1] === '*') {
+        i++;
+        if (glob[i + 1] === '/') {
+          i++;
+          pattern += '(?:.*/)?';
+        } else {
+          pattern += '.*';
+        }
+      } else {
+        pattern += '[^/]*';
+      }
+    } else if (char === '?') {
+      pattern += '[^/]';
+    } else {
+      pattern += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+    }
+  }
+  return new RegExp(pattern + '$', 'i');
+}
+
+function _matchesSearchPath(relPath, patterns) {
+  if (!patterns.length) return true;
+  const normalizedPath = relPath.replace(/\\/g, '/');
+  return patterns.some((pattern) => {
+    const matcher = _globToRegExp(pattern);
+    return matcher.test(normalizedPath) || (!pattern.includes('/') && matcher.test(path.posix.basename(normalizedPath)));
+  });
+}
+
 function _runGlobalSearch(query) {
   const resultsEl = $('gs-results');
   const metaEl = $('gs-meta');
   query = query.trim();
+  metaEl.classList.remove('gs-meta--error');
 
   if (!query) {
     resultsEl.replaceChildren();
     metaEl.textContent = 'Type to search across all project files';
     _searchResults = [];
     _searchActiveIdx = -1;
+    $('gs-copy-results').disabled = true;
     return;
   }
 
-  const needle = query.toLowerCase();
-  const files = _collectSearchableFiles(state.projectDir);
+  let matcher;
+  try {
+    const source = _searchOptions.regex
+      ? query
+      : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wordPattern = _searchOptions.wholeWord ? `\\b(?:${source})\\b` : source;
+    matcher = new RegExp(wordPattern, _searchOptions.caseSensitive ? '' : 'i');
+  } catch (err) {
+    resultsEl.replaceChildren();
+    _searchResults = [];
+    _searchActiveIdx = -1;
+    $('gs-copy-results').disabled = true;
+    metaEl.classList.add('gs-meta--error');
+    metaEl.textContent = `Invalid regular expression: ${err.message}`;
+    return;
+  }
+
+  const includePatterns = _parseSearchPatterns($('gs-include').value);
+  const excludePatterns = _parseSearchPatterns($('gs-exclude').value);
+  const candidates = _collectSearchableFiles(state.projectDir);
+  const files = candidates.filter((filePath) => {
+    const relPath = path.relative(state.projectDir, filePath).replace(/\\/g, '/');
+    return (!includePatterns.length || _matchesSearchPath(relPath, includePatterns)) &&
+      (!excludePatterns.length || !_matchesSearchPath(relPath, excludePatterns));
+  });
   const results = [];
 
   // Labeled break -- drop the loop as soon as we hit the cap so we don't
@@ -10097,14 +12678,17 @@ function _runGlobalSearch(query) {
 
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      const idx = lines[i].toLowerCase().indexOf(needle);
-      if (idx !== -1) {
+      matcher.lastIndex = 0;
+      const match = matcher.exec(lines[i]);
+      if (match) {
         results.push({
           filePath,
           relPath: path.relative(state.projectDir, filePath),
           line: i + 1,
-          col: idx + 1,
+          col: match.index + 1,
           lineText: lines[i],
+          matchStart: match.index,
+          matchLength: match[0].length,
         });
         if (results.length >= SEARCH_MAX_RESULTS) break searchLoop;
       }
@@ -10113,17 +12697,21 @@ function _runGlobalSearch(query) {
 
   _searchResults = results;
   _searchActiveIdx = results.length ? 0 : -1;
+  $('gs-copy-results').disabled = results.length === 0;
 
   const capped = results.length >= SEARCH_MAX_RESULTS
     ? ` (showing first ${SEARCH_MAX_RESULTS})` : '';
+  const filterSummary = includePatterns.length || excludePatterns.length
+    ? ` · ${files.length} of ${candidates.length} files after filters`
+    : ` · ${files.length} files searched`;
   metaEl.textContent = results.length
-    ? `${results.length} match${results.length === 1 ? '' : 'es'}${capped} in ${files.length} file(s) searched`
-    : `No matches in ${files.length} file(s) searched`;
+    ? `${results.length} matching line${results.length === 1 ? '' : 's'}${capped}${filterSummary}`
+    : `No matches${filterSummary}`;
 
-  _renderSearchResults(query);
+  _renderSearchResults();
 }
 
-function _renderSearchResults(query) {
+function _renderSearchResults() {
   const resultsEl = $('gs-results');
   resultsEl.replaceChildren();
   if (!_searchResults.length) return;
@@ -10137,7 +12725,6 @@ function _renderSearchResults(query) {
     byFile.get(r.filePath).push(r);
   });
 
-  const needleLower = query.toLowerCase();
   const frag = document.createDocumentFragment();
 
   for (const [filePath, matches] of byFile) {
@@ -10159,8 +12746,8 @@ function _renderSearchResults(query) {
       row.dataset.idx = String(r._idx);
 
       const text = r.lineText;
-      const lowerText = text.toLowerCase();
-      const matchAt = lowerText.indexOf(needleLower);
+      const matchAt = r.matchStart;
+      const matchLength = r.matchLength;
 
       const lineNum = document.createElement('span');
       lineNum.className = 'gs-line-num';
@@ -10169,15 +12756,15 @@ function _renderSearchResults(query) {
       const lineText = document.createElement('span');
       lineText.className = 'gs-line-text';
 
-      if (matchAt !== -1) {
+      if (matchAt >= 0) {
         // Highlight the match by stitching together text nodes + a <mark>.
         // Building the line from DOM nodes (instead of innerHTML) means
         // arbitrary line content can never break out into HTML.
         const before = document.createTextNode(text.slice(0, matchAt));
         const mark = document.createElement('mark');
         mark.className = 'gs-highlight';
-        mark.textContent = text.slice(matchAt, matchAt + query.length);
-        const after = document.createTextNode(text.slice(matchAt + query.length));
+        mark.textContent = text.slice(matchAt, matchAt + matchLength);
+        const after = document.createTextNode(text.slice(matchAt + matchLength));
         lineText.append(before, mark, after);
       } else {
         lineText.textContent = text.trim();
@@ -10200,7 +12787,7 @@ function _moveSearchSelection(delta) {
   // Re-render only if there's an active query -- otherwise the result list is
   // empty and there's nothing to highlight.
   const q = $('gs-input')?.value;
-  if (q) _renderSearchResults(q);
+  if (q) _renderSearchResults();
   const active = $('gs-results').querySelector('.gs-result--active');
   active?.scrollIntoView({ block: 'nearest' });
 }
@@ -10440,6 +13027,7 @@ function init() {
   _safeInit('NBPro.init', () => window.NBPro && window.NBPro.init());
   _safeInit('_initPermissionsSearch', _initPermissionsSearch);
   _safeInit('initHelp', initHelp);
+  _safeInit('_initStudioDialogs', _initStudioDialogs);
   _safeInit('_initCloseGuard', _initCloseGuard);
   _safeInit('initInspectorDrop', initInspectorDrop);
   _safeInit('renderRecent', renderRecent);
@@ -10488,9 +13076,18 @@ function init() {
   _safeInit('sidebar buttons', () => {
     $('btn-new-project')?.addEventListener('click', openNewProjectModal);
     $('btn-open-project')?.addEventListener('click', () => pickFolder(loadProject));
+    $('btn-sidebar-command')?.addEventListener('click', openCommandPalette);
+    $('btn-sidebar-search')?.addEventListener('click', openGlobalSearch);
+    $('btn-sidebar-workspaces')?.addEventListener('click', openWorkspaces);
+    $('btn-sidebar-source-control')?.addEventListener('click', () => switchTab('git'));
+    $('btn-sidebar-build')?.addEventListener('click', () => switchTab('build'));
     $('btn-inspect')?.addEventListener('click', showInspector);
     $('btn-editor-settings')?.addEventListener('click', showSettings);
     $('btn-about')?.addEventListener('click', openAboutModal);
+    $('sidebar-sc-command').textContent = `${MOD_KEY}+Shift+P`;
+    $('sidebar-sc-search').textContent = `${MOD_KEY}+Shift+F`;
+    $('sidebar-sc-workspaces').textContent = `${MOD_KEY}+Shift+W`;
+    _updateSidebarQuickAccess();
   });
 
   // Tabs
@@ -10498,6 +13095,7 @@ function init() {
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => switchTab(tab.dataset.tab));
     });
+    _initReviewPreviewControls();
     window.addEventListener('resize', () => {
       if (state.activeTab === 'review') renderReviewPreview();
     });
@@ -10510,10 +13108,10 @@ function init() {
     $('design-window-popup-save')?.addEventListener('click', saveManifest);
     $('btn-manifest-permissions')?.addEventListener('click', () => switchTab('permissions'));
     $('btn-manifest-design')?.addEventListener('click', () => switchTab('design'));
-    $('btn-view-json')?.addEventListener('click', () => {
+    $('btn-view-json')?.addEventListener('click', async () => {
       const windowError = _windowSettingsError();
       if (windowError) {
-        alert(windowError);
+        await studioAlert(windowError, { title: 'Check window dimensions' });
         return;
       }
       const manifest = readManifestForm();
@@ -10524,6 +13122,30 @@ function init() {
 
   // File tree -- toolbar buttons
   _safeInit('file tree toolbar', () => {
+    $('file-tree-filter')?.addEventListener('input', (event) => {
+      const query = event.target.value;
+      $('btn-clear-file-filter')?.classList.toggle('hidden', !query.trim());
+      if (_fileTreeFilterTimer) clearTimeout(_fileTreeFilterTimer);
+      _fileTreeFilterTimer = setTimeout(() => {
+        _fileTreeFilterTimer = null;
+        if (query === $('file-tree-filter')?.value) _filterProjectFiles(query);
+      }, 120);
+    });
+    $('file-tree-filter')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && event.target.value) {
+        event.preventDefault();
+        event.target.value = '';
+        _filterProjectFiles('');
+      }
+    });
+    $('btn-clear-file-filter')?.addEventListener('click', () => {
+      const input = $('file-tree-filter');
+      if (!input) return;
+      input.value = '';
+      _filterProjectFiles('');
+      input.focus();
+    });
+    $('btn-collapse-all-folders')?.addEventListener('click', _collapseAllFileTreeFolders);
     $('btn-refresh-files')?.addEventListener('click', () => {
       if (state.projectDir) populateFileTree(state.projectDir);
     });
@@ -10549,7 +13171,16 @@ function init() {
 
   // Workspace modal
   _safeInit('workspace modal', () => {
-    $('btn-workspace-save')?.addEventListener('click', _saveCurrentWorkspace);
+    $('btn-workspace-save')?.addEventListener('click', () => _saveCurrentWorkspace($('workspace-name-input')?.value));
+    $('workspace-name-input')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !$('btn-workspace-save')?.disabled) {
+        _saveCurrentWorkspace($('workspace-name-input').value);
+      }
+    });
+    $('workspace-search')?.addEventListener('input', (event) => {
+      _workspaceQuery = event.target.value;
+      _renderWorkspaceList();
+    });
     $('[data-close="modal-workspace"]')?.addEventListener('click', closeWorkspaces);
   });
 
@@ -10571,13 +13202,40 @@ function init() {
   _safeInit('editor', () => {
     initEditorDirtyTracking();
     _initSettingsPage();
+    $('btn-editor-empty-open')?.addEventListener('click', openQuickOpen);
+    $('btn-editor-find')?.addEventListener('click', () => window.CM?.openFind());
+    $('btn-editor-wrap')?.addEventListener('click', () => {
+      const current = window.CM?.getSettings();
+      if (!current) return;
+      const wordWrap = !current.wordWrap;
+      window.CM.applySettings({ wordWrap });
+      if ($('chk-word-wrap')) $('chk-word-wrap').checked = wordWrap;
+      _updateEditorToolbar();
+    });
+    $('btn-editor-preview')?.addEventListener('click', _togglePreview);
+    $('btn-editor-font-dec')?.addEventListener('click', () => {
+      const current = window.CM?.getSettings();
+      if (!current) return;
+      const fontSize = Math.max(10, current.fontSize - 1);
+      window.CM.applySettings({ fontSize });
+      if ($('lbl-font-size')) $('lbl-font-size').textContent = fontSize;
+      _updateEditorToolbar();
+    });
+    $('btn-editor-font-inc')?.addEventListener('click', () => {
+      const current = window.CM?.getSettings();
+      if (!current) return;
+      const fontSize = Math.min(24, current.fontSize + 1);
+      window.CM.applySettings({ fontSize });
+      if ($('lbl-font-size')) $('lbl-font-size').textContent = fontSize;
+      _updateEditorToolbar();
+    });
     $('btn-editor-save')?.addEventListener('click', saveOpenFile);
     $('btn-editor-save-all')?.addEventListener('click', saveAllOpenFiles);
-    $('btn-toggle-preview')?.addEventListener('click', _togglePreview);
     $('btn-refresh-preview')?.addEventListener('click', _refreshPreviewIfVisible);
     $('btn-diff-vs-saved')?.addEventListener('click', openDiffVsSaved);
     $('btn-diff-prev')?.addEventListener('click', () => window.CMDiff?.goToPreviousChunk());
     $('btn-diff-next')?.addEventListener('click', () => window.CMDiff?.goToNextChunk());
+    _updateEditorToolbar();
   });
 
   // Context menu actions
@@ -10632,11 +13290,36 @@ function init() {
     $('btn-copy-build-path')?.addEventListener('click', _copyBuildOutputPath);
     $('btn-open-build-folder')?.addEventListener('click', _openBuildOutputFolder);
     $('btn-clear-build-log')?.addEventListener('click', clearLog);
+    $('btn-preview-build-contents')?.addEventListener('click', () => _renderBuildContentsPreview(true));
+    $('btn-build-profile-save')?.addEventListener('click', _saveBuildProfile);
+    $('build-profile-select')?.addEventListener('change', (event) => {
+      if (event.target.value) _applyBuildProfile(event.target.value);
+      else $('btn-build-profile-delete').disabled = true;
+    });
+    $('btn-build-profile-delete')?.addEventListener('click', () => {
+      const select = $('build-profile-select');
+      if (!select.value) return;
+      const profiles = _readBuildProfiles().filter((profile) =>
+        profile.name !== select.value || profile.projectDir !== state.projectDir);
+      try {
+        localStorage.setItem(BUILD_PROFILES_KEY, JSON.stringify(profiles));
+        _renderBuildProfiles();
+      } catch (error) {
+        console.error('Could not delete build profile:', error);
+        showToast(`Could not delete build profile: ${error.message}`);
+      }
+    });
     $('btn-pick-outdir')?.addEventListener('click', () => {
-      pickFolder((dir) => { $('build-outdir').value = dir; });
+      pickFolder((dir) => {
+        $('build-outdir').value = dir;
+        _updateBuildSummary();
+        _renderBuildContentsPreview();
+      });
     });
     $('build-outdir')?.addEventListener('input', _updateBuildSummary);
+    $('build-clean')?.addEventListener('change', _updateBuildSummary);
     _updateBuildSummary();
+    _renderBuildProfiles();
   });
 
   // Sign
@@ -10644,6 +13327,14 @@ function init() {
     $('btn-sign-generate-key')?.addEventListener('click', () => _generateDevKeypair());
     $('btn-sign-selfsign')?.addEventListener('click', _runSelfSign);
     $('btn-sign-go-build')?.addEventListener('click', () => switchTab('build'));
+    $('btn-sign-submit-review')?.addEventListener('click', () => {
+      try {
+        nw.Shell.openExternal('https://novabyteteam.github.io/novabyte-os/');
+      } catch (err) {
+        console.error('Could not open NovaByte OS verification page:', err);
+        showToast('Could not open the NovaByte OS website');
+      }
+    });
     $('sign-dev-privkey')?.addEventListener('input', _updateSignActionAvailability);
     $('sign-dev-custom-key')?.addEventListener('input', _updateSignActionAvailability);
 
@@ -10661,11 +13352,12 @@ function init() {
     const privkeyField = $('sign-dev-privkey');
     const privkeyRevealBtn = $('btn-privkey-reveal');
     privkeyRevealBtn?.addEventListener('click', () => {
-      const revealed = privkeyRevealBtn.getAttribute('aria-pressed') === 'true';
-      privkeyField?.classList.toggle('key-field--masked', revealed);
-      privkeyRevealBtn.setAttribute('aria-pressed', String(!revealed));
-      privkeyRevealBtn.textContent = revealed ? '\u{1F441}' : '\u{1F648}';
-      privkeyRevealBtn.title = revealed ? 'Show private key' : 'Hide private key';
+      const willReveal = privkeyRevealBtn.getAttribute('aria-pressed') !== 'true';
+      privkeyField?.classList.toggle('key-field--masked', !willReveal);
+      privkeyRevealBtn.setAttribute('aria-pressed', String(willReveal));
+      privkeyRevealBtn.innerHTML = _uiIcon(willReveal ? 'eye-off' : 'eye');
+      privkeyRevealBtn.title = willReveal ? 'Hide private key' : 'Show private key';
+      privkeyRevealBtn.setAttribute('aria-label', privkeyRevealBtn.title);
     });
 
     const _wireCopyButton = (btnId, fieldId) => {
@@ -10677,9 +13369,9 @@ function init() {
         if (!value) return;
         try {
           await navigator.clipboard.writeText(value);
-          const original = btn.textContent;
-          btn.textContent = '\u2713';
-          setTimeout(() => { btn.textContent = original; }, 1200);
+          const original = btn.innerHTML;
+          btn.innerHTML = _uiIcon('check');
+          setTimeout(() => { btn.innerHTML = original; }, 1200);
         } catch (err) {
           showToast('Copy failed: ' + err.message);
         }
@@ -10694,6 +13386,20 @@ function init() {
     $('btn-pick-novaapp')?.addEventListener('click', () => {
       pickFile('.novaapp', inspectFile);
     });
+    $('btn-compare-novaapps')?.addEventListener('click', () => $('inspector-compare-files')?.click());
+    $('inspector-compare-files')?.addEventListener('change', async (event) => {
+      const files = [...(event.target.files || [])];
+      event.target.value = '';
+      if (files.length !== 2 || !files[0].path || !files[1].path) {
+        showToast('Choose exactly two local .novaapp packages to compare');
+        return;
+      }
+      await _renderPackageComparison(files[0].path, files[1].path);
+    });
+  });
+
+  _safeInit('project permission audit', () => {
+    $('btn-project-permission-audit')?.addEventListener('click', _runProjectPermissionAudit);
   });
 
   // Manifest icon upload
@@ -10725,11 +13431,20 @@ function init() {
       });
     });
     $('btn-create-project')?.addEventListener('click', createProject);
+    $('btn-save-user-template')?.addEventListener('click', _saveOpenProjectAsTemplate);
+    $('btn-export-user-template')?.addEventListener('click', _exportSelectedUserTemplate);
+    $('btn-import-user-template')?.addEventListener('click', () => $('user-template-import-file')?.click());
+    $('user-template-import-file')?.addEventListener('change', (event) => {
+      const filePath = event.target.files?.[0]?.path;
+      event.target.value = '';
+      if (filePath) _importUserTemplate(filePath);
+    });
   });
 
   // Check for updates on launch (silent -- only shows badge if newer version found)
   _safeInit('checkForUpdates', () => checkForUpdates());
 
+  _safeInit('custom select controls', _initCustomSelects);
   _safeInit('_initEditorPermissionHover', _initEditorPermissionHover);
 }
 
@@ -10762,6 +13477,10 @@ if (typeof module !== 'undefined' && module.exports) {
     _gitBadge,
     _timeAgo,
     _buildOutputContainsProject,
+    _permissionsForChannel,
+    _validateUserTemplate,
+    _createProjectFromUserTemplate,
+    _reviewSimulationBootstrap,
     // State + state mutators -- testable with localStorage mocked.
     state,
     tabs,

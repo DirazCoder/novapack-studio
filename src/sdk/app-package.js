@@ -919,6 +919,28 @@ const AppPackage = (() => {
         }
       });
     }
+    if (manifest.permissionReasons !== undefined) {
+      const reasons = manifest.permissionReasons;
+      if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons)) {
+        errors.push('permissionReasons must be an object');
+      } else {
+        const declaredPermissions = new Set([
+          ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+          ...(Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : []),
+        ]);
+        for (const [permission, reason] of Object.entries(reasons)) {
+          if (typeof reason !== 'string' || !reason.trim() || reason.trim().length > 500) {
+            errors.push(`permissionReasons.${permission} must be a non-empty string of at most 500 characters`);
+          }
+          if (knownPermissions.size > 0 && !knownPermissions.has(permission) && !LEGACY_PERMISSION_ALIASES[permission]) {
+            warnings.push(`Unknown permissionReasons key: ${permission}`);
+          }
+          if (!declaredPermissions.has(permission)) {
+            warnings.push(`permissionReasons.${permission} is unused because the permission is not declared`);
+          }
+        }
+      }
+    }
     const requestsRoot = Array.isArray(manifest.permissions) && manifest.permissions.includes('system:root');
     const rootEntry = manifest.unrestrictedEntry;
     if (rootEntry !== undefined && (typeof rootEntry !== 'string'

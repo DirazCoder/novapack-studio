@@ -22,6 +22,7 @@
         var raw = localStorage.getItem('novapack_studio_data');
         var data = raw ? JSON.parse(raw) : null;
         var theme = data && data.theme;
+        if (theme === 'midnight-blue') theme = 'legacy-green';
         if (!theme) {
           theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'nb-dark' : 'nb-light';
         }
@@ -44,24 +45,238 @@
 
 <body>
 
+  <svg class="ui-icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="ui-icon-help" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9a2.5 2.5 0 1 1 4.3 1.8c-1.1 1-1.9 1.4-1.9 3" />
+      <path d="M12 17.3h.01" />
+    </symbol>
+    <symbol id="ui-icon-palette" viewBox="0 0 24 24">
+      <path d="M12 3.5a8.5 8.5 0 1 0 0 17h1.1a2.4 2.4 0 0 0 1.7-4.1 1.7 1.7 0 0 1 1.2-2.9H18a3 3 0 0 0 3-3c0-3.9-4-7-9-7Z" />
+      <circle cx="7.5" cy="11" r="1" />
+      <circle cx="10" cy="7.5" r="1" />
+      <circle cx="15" cy="8" r="1" />
+    </symbol>
+    <symbol id="ui-icon-close" viewBox="0 0 24 24">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </symbol>
+    <symbol id="ui-icon-open" viewBox="0 0 24 24">
+      <path d="M14 5h5v5M19 5l-9 9" />
+      <path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </symbol>
+    <symbol id="ui-icon-file-plus" viewBox="0 0 24 24">
+      <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7" />
+      <path d="M13 3v5h5M13 3l5 5v2M8 13h5" />
+      <path d="M18 14v7M14.5 17.5h7" />
+    </symbol>
+    <symbol id="ui-icon-folder-plus" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v3" />
+      <path d="M3 8v10a2 2 0 0 0 2 2h7" />
+      <path d="M17.5 14v7M14 17.5h7" />
+    </symbol>
+    <symbol id="ui-icon-search" viewBox="0 0 24 24">
+      <circle cx="10.8" cy="10.8" r="6.8" />
+      <path d="m16 16 4.5 4.5" />
+    </symbol>
+    <symbol id="ui-icon-grid" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+    </symbol>
+    <symbol id="ui-icon-refresh" viewBox="0 0 24 24">
+      <path d="M20.5 8A9 9 0 0 0 5 5.5L3 8" />
+      <path d="M3 4v4h4" />
+      <path d="M3.5 16A9 9 0 0 0 19 18.5L21 16" />
+      <path d="M21 20v-4h-4" />
+    </symbol>
+    <symbol id="ui-icon-diff" viewBox="0 0 24 24">
+      <path d="M7 3v18M17 3v18M3.5 8H11M13 16h7.5" />
+      <path d="m8.5 5 2.5 3-2.5 3M15.5 13l-2.5 3 2.5 3" />
+    </symbol>
+    <symbol id="ui-icon-check" viewBox="0 0 24 24">
+      <path d="m5 12.5 4.5 4.5L19 7" />
+      <circle cx="12" cy="12" r="9" />
+    </symbol>
+    <symbol id="ui-icon-file" viewBox="0 0 24 24">
+      <path d="M6 3.5h8l5 5V20a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V5a1.5 1.5 0 0 1 1-1.5Z" />
+      <path d="M14 4v5h5M8.5 13h7M8.5 16.5h7" />
+    </symbol>
+    <symbol id="ui-icon-trash" viewBox="0 0 24 24">
+      <path d="M4.5 7h15M9 7V4.5h6V7m3.5 0-.8 13H6.3L5.5 7M10 10.5v6M14 10.5v6" />
+    </symbol>
+    <symbol id="ui-icon-eye" viewBox="0 0 24 24">
+      <path d="M2.8 12s3.2-6 9.2-6 9.2 6 9.2 6-3.2 6-9.2 6-9.2-6-9.2-6Z" />
+      <circle cx="12" cy="12" r="2.6" />
+    </symbol>
+    <symbol id="ui-icon-eye-off" viewBox="0 0 24 24">
+      <path d="m3 3 18 18M10.6 6.2A10.7 10.7 0 0 1 12 6c6 0 9.2 6 9.2 6a15 15 0 0 1-3.1 3.8M6.2 6.7C3.9 8.3 2.8 12 2.8 12s3.2 6 9.2 6c1 0 2-.2 2.8-.5" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </symbol>
+    <symbol id="ui-icon-copy" viewBox="0 0 24 24">
+      <rect x="8" y="8" width="12" height="13" rx="2" />
+      <path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2" />
+    </symbol>
+    <symbol id="ui-icon-external" viewBox="0 0 24 24">
+      <path d="M14 5h5v5M19 5l-9 9" />
+      <path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </symbol>
+    <symbol id="ui-icon-branch" viewBox="0 0 24 24">
+      <circle cx="7" cy="5" r="2" />
+      <circle cx="17" cy="7" r="2" />
+      <circle cx="7" cy="19" r="2" />
+      <path d="M7 7v10M9 17c0-6 8-4 8-8" />
+    </symbol>
+    <symbol id="ui-icon-package" viewBox="0 0 24 24">
+      <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
+      <path d="m4.5 7.8 7.5 4.3 7.5-4.3M12 12v8.5M8 5.2l8 4.5" />
+    </symbol>
+    <symbol id="ui-icon-pin" viewBox="0 0 24 24">
+      <path d="m15 4 5 5-3 1-3 4-1 4-2-2-4 4-.8-.8 4-4-2-2 4-1 4-3 1-3Z" />
+    </symbol>
+    <symbol id="ui-icon-edit" viewBox="0 0 24 24">
+      <path d="m14 5 5 5M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
+    </symbol>
+    <symbol id="ui-icon-folder-open" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2" />
+      <path d="m3 11 1.5 8a2 2 0 0 0 2 1.6h11a2 2 0 0 0 1.9-1.5L21 12H5a2 2 0 0 0-2 2" />
+    </symbol>
+    <symbol id="ui-icon-folder" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    </symbol>
+    <symbol id="ui-icon-audio" viewBox="0 0 24 24">
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </symbol>
+    <symbol id="ui-icon-chevron" viewBox="0 0 24 24">
+      <path d="m7 10 5 5 5-5" />
+    </symbol>
+    <symbol id="ui-icon-chevron-left" viewBox="0 0 24 24">
+      <path d="m14 5-7 7 7 7" />
+    </symbol>
+    <symbol id="ui-icon-chevron-right" viewBox="0 0 24 24">
+      <path d="m10 5 7 7-7 7" />
+    </symbol>
+    <symbol id="ui-icon-upload" viewBox="0 0 24 24">
+      <path d="M12 15V3m-4 4 4-4 4 4M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
+    </symbol>
+    <symbol id="ui-icon-plus" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14" />
+    </symbol>
+    <symbol id="ui-icon-minus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+    </symbol>
+    <symbol id="ui-icon-arrow-up" viewBox="0 0 24 24">
+      <path d="M12 19V5m-6 6 6-6 6 6" />
+    </symbol>
+    <symbol id="ui-icon-arrow-down" viewBox="0 0 24 24">
+      <path d="M12 5v14m6-6-6 6-6-6" />
+    </symbol>
+    <symbol id="ui-icon-arrow-left" viewBox="0 0 24 24">
+      <path d="M20 12H4m7-7-7 7 7 7" />
+    </symbol>
+    <symbol id="ui-icon-arrow-right" viewBox="0 0 24 24">
+      <path d="M4 12h16m-7-7 7 7-7 7" />
+    </symbol>
+    <symbol id="ui-icon-swap" viewBox="0 0 24 24">
+      <path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4 4-4-4 4-4" />
+    </symbol>
+    <symbol id="ui-icon-image" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <circle cx="8.5" cy="9" r="1.5" />
+      <path d="m4 17 5-5 3.5 3.5 2.5-2.5 5 5" />
+    </symbol>
+    <symbol id="ui-icon-rectangle" viewBox="0 0 24 24">
+      <rect x="4" y="5" width="16" height="14" rx="2.5" />
+    </symbol>
+    <symbol id="ui-icon-text" viewBox="0 0 24 24">
+      <path d="M4 6h16M12 6v13m-4 0h8M8 10l4-4 4 4" />
+    </symbol>
+    <symbol id="ui-icon-input" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="M8 9v6m-2-3h4" />
+    </symbol>
+    <symbol id="ui-icon-flex" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="7" height="14" rx="2" />
+      <rect x="14" y="5" width="7" height="14" rx="2" />
+      <path d="M10 12h4m-2-2 2 2-2 2" />
+    </symbol>
+    <symbol id="ui-icon-modal" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M3 9h18m-13-3h.01M7 6h.01" />
+    </symbol>
+    <symbol id="ui-icon-undo" viewBox="0 0 24 24">
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4.5 9H14a6 6 0 0 1 0 12h-2" />
+    </symbol>
+    <symbol id="ui-icon-redo" viewBox="0 0 24 24">
+      <path d="m15 4 5 5-5 5" />
+      <path d="M19.5 9H10a6 6 0 0 0 0 12h2" />
+    </symbol>
+    <symbol id="ui-icon-save" viewBox="0 0 24 24">
+      <path d="M4 3.5h13l3.5 3.5v13a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1Z" />
+      <path d="M8 3.5v6h8v-6M8 21v-7h8v7" />
+    </symbol>
+    <symbol id="ui-icon-snapshot" viewBox="0 0 24 24">
+      <path d="M4 5.5h16v15H4zM8 3v5m8-5v5M4 10h16" />
+      <path d="m8 15 2.5 2.5L16 12" />
+    </symbol>
+    <symbol id="ui-icon-window" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M3 9h18m-13-3h.01M7 6h.01" />
+    </symbol>
+    <symbol id="ui-icon-alert" viewBox="0 0 24 24">
+      <path d="m12 3 10 18H2L12 3Z" />
+      <path d="M12 9v5m0 3h.01" />
+    </symbol>
+    <symbol id="ui-icon-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </symbol>
+    <symbol id="ui-icon-merge" viewBox="0 0 24 24">
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="12" r="2" />
+      <path d="M6 7v10m2-10c0 3 8 2 8 5m0 0-3-2m3 2-3 2" />
+    </symbol>
+    <symbol id="ui-icon-play" viewBox="0 0 24 24">
+      <path d="M7 4.8a1 1 0 0 1 1.5-.86l11 7.2a1 1 0 0 1 0 1.72l-11 7.2A1 1 0 0 1 7 19.2V4.8Z" />
+    </symbol>
+    <symbol id="ui-icon-workspaces" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="8" height="7" rx="2" />
+      <rect x="13" y="4" width="8" height="7" rx="2" />
+      <rect x="3" y="13" width="8" height="7" rx="2" />
+      <rect x="13" y="13" width="8" height="7" rx="2" />
+    </symbol>
+  </svg>
+
   <!-- ── Titlebar ──────────────────────────────────────────────── -->
   <div class="titlebar" id="titlebar">
     <div class="titlebar-left">
-      <svg class="titlebar-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" stroke="#22c55e" stroke-width="1.5" fill="none" />
-        <polygon points="12,6 18,9 18,15 12,18 6,15 6,9" stroke="#22c55e" stroke-width="0.75" fill="none"
+      <svg class="titlebar-logo app-brand-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" stroke="currentColor" stroke-width="1.5" fill="none" />
+        <polygon points="12,6 18,9 18,15 12,18 6,15 6,9" stroke="currentColor" stroke-width="0.75" fill="none"
           opacity="0.5" />
-        <text x="12" y="14.5" fill="#22c55e" font-size="6" font-weight="700" text-anchor="middle"
+        <text x="12" y="14.5" fill="currentColor" font-size="6" font-weight="700" text-anchor="middle"
           font-family="system-ui">NB</text>
       </svg>
       <span class="titlebar-name">NovaByte Studio</span>
     </div>
     <div class="titlebar-center" id="project-breadcrumb"></div>
     <div class="titlebar-right">
-      <button class="tb-btn update-badge hidden" id="btn-update-badge" title="Update available">⬆ Update</button>
-      <button class="tb-btn" id="btn-minimize" title="Minimize">─</button>
-      <button class="tb-btn" id="btn-maximize" title="Maximize">□</button>
-      <button class="tb-btn tb-btn--close" id="btn-close" title="Close">✕</button>
+      <button class="tb-btn update-badge hidden" id="btn-update-badge" title="Update available">
+        <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-upload" /></svg> Update
+      </button>
+      <button class="tb-btn" id="btn-minimize" title="Minimize" aria-label="Minimize">
+        <span class="tb-icon tb-icon--minimize" aria-hidden="true"></span>
+      </button>
+      <button class="tb-btn" id="btn-maximize" title="Maximize" aria-label="Maximize">
+        <span class="tb-icon tb-icon--maximize" aria-hidden="true"></span>
+      </button>
+      <button class="tb-btn tb-btn--close" id="btn-close" title="Close" aria-label="Close">
+        <span class="tb-icon tb-icon--close" aria-hidden="true"></span>
+      </button>
     </div>
   </div>
 
@@ -71,19 +286,71 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-header-title">NovaByte</span>
+        <div class="sidebar-brand">
+          <span class="sidebar-brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polygon points="16,2 28,9 28,23 16,30 4,23 4,9" />
+              <polygon points="16,6 24.5,11 24.5,21 16,26 7.5,21 7.5,11" opacity="0.42" />
+              <text x="16" y="16" fill="currentColor" stroke="none" font-size="10" font-weight="800" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" letter-spacing="-0.6">NB</text>
+            </svg>
+          </span>
+          <span class="sidebar-brand-copy">
+            <span class="sidebar-header-title">NovaByte</span>
+            <span class="sidebar-brand-subtitle">STUDIO</span>
+          </span>
+        </div>
         <div class="sidebar-header-actions">
-          <button class="icon-btn icon-btn--ghost" id="btn-help" title="Help">?</button>
-          <button class="icon-btn icon-btn--ghost" id="btn-collapse-sidebar" title="Collapse sidebar">✕</button>
+          <button class="icon-btn icon-btn--ghost" id="btn-help" title="Help" aria-label="Help">
+            <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-help" /></svg>
+          </button>
+          <button class="icon-btn icon-btn--ghost" id="btn-collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar">
+            <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg>
+          </button>
         </div>
       </div>
       <div class="sidebar-section">
         <div class="sidebar-label">Projects</div>
         <button class="sidebar-btn sidebar-btn--primary" id="btn-new-project">
-          <span class="sidebar-btn-icon">+</span> New Project
+          <svg class="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><use href="#ui-icon-plus" /></svg>
+          New Project
         </button>
         <button class="sidebar-btn" id="btn-open-project">
-          <span class="sidebar-btn-icon">↗</span> Open Folder
+          <svg class="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <use href="#ui-icon-folder-open" />
+          </svg>
+          Open Folder
+        </button>
+      </div>
+
+      <div class="sidebar-section sidebar-section--quick">
+        <div class="sidebar-label">Quick Access</div>
+        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-command" title="Command Palette (Ctrl/Cmd+Shift+P)">
+          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg>
+          <span class="sidebar-quick-label">Command Palette</span>
+          <kbd id="sidebar-sc-command">Ctrl+Shift+P</kbd>
+        </button>
+        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-search" title="Search Project (Ctrl/Cmd+Shift+F)">
+          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+          <span class="sidebar-quick-label">Search Project</span>
+          <kbd id="sidebar-sc-search">Ctrl+Shift+F</kbd>
+        </button>
+        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-workspaces" title="Manage Workspaces (Ctrl/Cmd+Shift+W)">
+          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-workspaces" /></svg>
+          <span class="sidebar-quick-label">Workspaces</span>
+          <kbd id="sidebar-sc-workspaces">Ctrl+Shift+W</kbd>
+        </button>
+        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-source-control"
+          data-sidebar-tab="git" title="Open Source Control">
+          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-branch" /></svg>
+          <span class="sidebar-quick-label">Source Control</span>
+          <span class="sidebar-quick-badge hidden" id="sidebar-git-count" aria-label="Changed files">0</span>
+        </button>
+        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-build"
+          data-sidebar-tab="build" title="Open Build">
+          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-package" /></svg>
+          <span class="sidebar-quick-label">Build</span>
         </button>
       </div>
 
@@ -102,18 +369,42 @@
       <div class="sidebar-section sidebar-section--tools">
         <div class="sidebar-label">Tools</div>
         <button class="sidebar-btn" id="btn-inspect">
-          <span class="sidebar-btn-icon">🔍</span> Inspect .novaapp
+          <svg class="sidebar-btn-icon sidebar-btn-icon--inspect" viewBox="0 0 24 24" fill="none"
+            xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M6.5 3.75h7l4 4v5.1a5.7 5.7 0 0 0-5.3 7.4H6.5a2 2 0 0 1-2-2v-12.5a2 2 0 0 1 2-2Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+            <path d="M13 4v4h4M8 11h5M8 14h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+              stroke-linejoin="round" />
+            <circle cx="17.1" cy="16.8" r="3.1" stroke="currentColor" stroke-width="1.5" />
+            <path d="m19.4 19.1 1.8 1.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          Inspect .novaapp
         </button>
         <button class="sidebar-btn" id="btn-editor-settings">
-          <span class="sidebar-btn-icon">⚙</span> Settings
+          <svg class="sidebar-btn-icon sidebar-btn-icon--settings" viewBox="0 0 24 24" fill="none"
+            xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z"
+              stroke="currentColor" stroke-width="1.7" />
+            <path d="m19.4 15 .05.04a1.8 1.8 0 0 1-2.55 2.55l-.04-.05a1.8 1.8 0 0 0-3.06 1.27v.14a1.8 1.8 0 0 1-3.6 0v-.07a1.8 1.8 0 0 0-3.06-1.27l-.05.04a1.8 1.8 0 0 1-2.55-2.55l.05-.04a1.8 1.8 0 0 0-1.27-3.06h-.14a1.8 1.8 0 0 1 0-3.6h.07a1.8 1.8 0 0 0 1.27-3.06l-.04-.05a1.8 1.8 0 0 1 2.55-2.55l.04.05a1.8 1.8 0 0 0 3.06-1.27v-.14a1.8 1.8 0 0 1 3.6 0v.07a1.8 1.8 0 0 0 3.06 1.27l.05-.04a1.8 1.8 0 0 1 2.55 2.55l-.05.04a1.8 1.8 0 0 0 1.27 3.06h.14a1.8 1.8 0 0 1 0 3.6h-.07A1.8 1.8 0 0 0 19.4 15Z"
+              stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" />
+          </svg>
+          Settings
         </button>
         <button class="sidebar-btn" id="btn-about">
-          <span class="sidebar-btn-icon">ℹ</span> About
+          <svg class="sidebar-btn-icon sidebar-btn-icon--about" viewBox="0 0 24 24" fill="none"
+            xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.75" stroke="currentColor" stroke-width="1.5" />
+            <path d="M12 10.8v5.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+            <circle cx="12" cy="7.8" r="1" fill="currentColor" />
+          </svg>
+          About
         </button>
       </div>
     </aside>
 
-    <button class="panel-reopen-tab hidden" id="btn-reopen-sidebar" title="Show sidebar">▶</button>
+    <button class="panel-reopen-tab hidden" id="btn-reopen-sidebar" title="Show sidebar" aria-label="Show sidebar">
+      <svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg>
+    </button>
 
     <!-- Main area -->
     <main class="main" id="main">
@@ -121,11 +412,11 @@
       <!-- Welcome screen -->
       <div class="welcome" id="screen-welcome">
         <div class="welcome-logo">
-          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
-            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+          <svg class="app-brand-logo" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="2" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none"
               opacity="0.4" />
-            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+            <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle"
               font-family="system-ui">NB</text>
           </svg>
         </div>
@@ -155,54 +446,122 @@
           <div class="file-tree-header">
             <span id="file-tree-path" class="file-tree-path"></span>
             <div class="file-tree-actions">
-              <button class="icon-btn" id="btn-new-file" title="New File">+📄</button>
-              <button class="icon-btn" id="btn-new-folder" title="New Folder">+📁</button>
-              <button class="icon-btn" id="btn-global-search" title="Search in project (Ctrl/Cmd+Shift+F)">🔍</button>
-              <button class="icon-btn" id="btn-workspaces" title="Workspaces (Ctrl/Cmd+Shift+W)">⊞</button>
-              <button class="icon-btn" id="btn-refresh-files" title="Refresh">↺</button>
+              <button class="icon-btn" id="btn-new-file" title="New File" aria-label="New File"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-file-plus" /></svg></button>
+              <button class="icon-btn" id="btn-new-folder" title="New Folder" aria-label="New Folder"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-folder-plus" /></svg></button>
+              <button class="icon-btn" id="btn-global-search" title="Search in project (Ctrl/Cmd+Shift+F)" aria-label="Search in project"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg></button>
+              <button class="icon-btn" id="btn-workspaces" title="Workspaces (Ctrl/Cmd+Shift+W)" aria-label="Workspaces"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg></button>
+              <button class="icon-btn" id="btn-refresh-files" title="Refresh" aria-label="Refresh"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-refresh" /></svg></button>
             </div>
           </div>
+          <div class="explorer-tools">
+            <label class="explorer-filter">
+              <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+              <input id="file-tree-filter" type="search" placeholder="Filter files…" autocomplete="off"
+                aria-label="Filter project files">
+              <button class="explorer-filter-clear hidden" id="btn-clear-file-filter" type="button"
+                title="Clear file filter" aria-label="Clear file filter">
+                <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg>
+              </button>
+            </label>
+            <button class="icon-btn explorer-collapse-all" id="btn-collapse-all-folders" type="button"
+              title="Collapse all folders" aria-label="Collapse all folders">
+              <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-left" /></svg>
+            </button>
+          </div>
+          <section class="open-editors hidden" id="open-editors-section" aria-label="Open editors">
+            <div class="open-editors-heading">
+              <span>Open Editors</span>
+              <span class="open-editors-count" id="open-editors-count">0</span>
+            </div>
+            <div class="open-editors-list" id="open-editors-list"></div>
+          </section>
           <div class="file-tree" id="file-tree"></div>
-          <button class="rail-collapse-btn" id="btn-collapse-rail" title="Collapse file tree">‹</button>
+          <button class="rail-collapse-btn" id="btn-collapse-rail" title="Collapse file tree" aria-label="Collapse file tree"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-left" /></svg></button>
         </div>
         <div class="rail-resize-handle" id="rail-resize-handle"></div>
         <button class="panel-reopen-tab panel-reopen-tab--rail hidden" id="btn-reopen-rail"
-          title="Show file tree">▶</button>
+          title="Show file tree" aria-label="Show file tree"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg></button>
 
         <!-- Right: top-nav + content area -->
         <div class="project-main" id="project-main">
 
           <!-- Top nav -->
           <div class="tabs" id="tabs">
-            <button class="tab tab--active" data-tab="editor">Editor</button>
-            <button class="tab" data-tab="manifest">Manifest</button>
-            <button class="tab" data-tab="design">Design</button>
-            <button class="tab" data-tab="permissions">Permissions</button>
-            <button class="tab" data-tab="build">Build</button>
-            <button class="tab" data-tab="sign">Sign</button>
-            <button class="tab" data-tab="git">Git</button>
-            <button class="tab" data-tab="review">Review</button>
+            <button class="tab tab--active" data-tab="editor"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-text" /></svg><span>Editor</span></button>
+            <button class="tab" data-tab="manifest"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-file" /></svg><span>Manifest</span></button>
+            <button class="tab" data-tab="design"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg><span>Design</span></button>
+            <button class="tab" data-tab="permissions"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-check" /></svg><span>Permissions</span></button>
+            <button class="tab" data-tab="build"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-package" /></svg><span>Build</span></button>
+            <button class="tab" data-tab="sign"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-upload" /></svg><span>Sign</span></button>
+            <button class="tab" data-tab="git"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-branch" /></svg><span>Git</span></button>
+            <button class="tab" data-tab="review"><svg class="ui-icon tab-icon" aria-hidden="true"><use href="#ui-icon-eye" /></svg><span>Review</span></button>
           </div>
 
           <!-- Editor view (permanent, shown by default) -->
           <div class="tab-panel tab-panel--editor" id="panel-editor">
-            <div class="editor-tabbar" id="editor-tabbar">
-              <div class="editor-tabs" id="editor-tabs"></div>
-              <div class="editor-tabbar-actions">
-                <button class="icon-btn" id="btn-diff-vs-saved" title="Diff vs Saved (Ctrl/Cmd+Shift+D)">🔀</button>
-                <button class="icon-btn" id="btn-check-syntax" title="Check JavaScript, JSON, CSS, or HTML syntax">✓</button>
-                <button class="icon-btn" id="btn-toggle-preview" title="Toggle HTML Preview">⬜</button>
+            <div class="editor-toolbar" id="editor-toolbar">
+              <div class="editor-file-context">
+                <span class="editor-context-kicker">OPEN FILE</span>
+                <nav class="editor-breadcrumbs" id="editor-breadcrumbs" aria-label="Current file path">
+                  <span class="editor-context-empty">Choose a file to start editing</span>
+                </nav>
+              </div>
+              <div class="editor-toolbar-actions">
+                <button class="editor-tool-btn" id="btn-editor-find" type="button"
+                  title="Find in file (Ctrl/Cmd+F)" aria-label="Find in file">
+                  <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+                  <span>Find</span>
+                </button>
+                <button class="editor-tool-btn" id="btn-editor-wrap" type="button"
+                  title="Toggle word wrap" aria-label="Toggle word wrap" aria-pressed="false">
+                  <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-text" /></svg>
+                  <span>Wrap</span>
+                </button>
+                <button class="editor-tool-btn" id="btn-editor-preview" type="button"
+                  title="Preview HTML beside the editor" aria-label="Toggle HTML preview" aria-pressed="false">
+                  <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-eye" /></svg>
+                  <span>Preview</span>
+                </button>
+                <span class="editor-toolbar-divider" aria-hidden="true"></span>
+                <div class="editor-zoom-control" role="group" aria-label="Editor text size">
+                  <button class="editor-zoom-btn" id="btn-editor-font-dec" type="button"
+                    title="Decrease editor text size" aria-label="Decrease editor text size">
+                    <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg>
+                  </button>
+                  <span id="editor-font-size" aria-live="polite">13px</span>
+                  <button class="editor-zoom-btn" id="btn-editor-font-inc" type="button"
+                    title="Increase editor text size" aria-label="Increase editor text size">
+                    <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-plus" /></svg>
+                  </button>
+                </div>
+                <span class="editor-toolbar-divider" aria-hidden="true"></span>
+                <button class="icon-btn" id="btn-diff-vs-saved" title="Diff vs Saved (Ctrl/Cmd+Shift+D)" aria-label="Diff vs Saved"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-diff" /></svg></button>
+                <button class="icon-btn" id="btn-check-syntax" title="Check JavaScript, JSON, CSS, or HTML syntax" aria-label="Check syntax"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-check" /></svg></button>
                 <button class="action-btn action-btn--ghost" id="btn-editor-save-all"
                   title="Save All (Ctrl/Cmd+Alt+S)">Save All</button>
                 <button class="action-btn action-btn--primary" id="btn-editor-save">Save</button>
               </div>
             </div>
+            <div class="editor-tabbar" id="editor-tabbar">
+              <div class="editor-tabs" id="editor-tabs"></div>
+            </div>
             <div class="editor-body" id="editor-body">
               <div class="editor-pane" id="editor-pane">
                 <div class="editor-empty-state" id="editor-empty-state">
-                  <div class="editor-empty-icon">📄</div>
-                  <div class="editor-empty-text">Open a file from the tree</div>
-                  <div class="editor-empty-hint"><kbd id="sc-quick-open">Ctrl+P</kbd> Quick open</div>
+                  <div class="editor-empty-icon"><svg class="ui-icon ui-icon--empty" aria-hidden="true"><use href="#ui-icon-text" /></svg></div>
+                  <span class="editor-empty-eyebrow">CODE WORKSPACE</span>
+                  <h2 class="editor-empty-text">Your next idea starts here.</h2>
+                  <p class="editor-empty-copy">Choose a file from the project tree, or jump straight to one.</p>
+                  <button class="editor-empty-action" id="btn-editor-empty-open" type="button">
+                    <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+                    <span>Quick Open</span>
+                    <kbd id="sc-quick-open">Ctrl+P</kbd>
+                  </button>
+                  <div class="editor-empty-features" aria-label="Editor features">
+                    <span>Smart completion</span>
+                    <span>Find &amp; replace</span>
+                    <span>Live HTML preview</span>
+                  </div>
                 </div>
                 <div id="cm-editor-host" class="hidden"></div>
                 <div class="file-preview-image hidden" id="file-preview-image">
@@ -213,7 +572,7 @@
               <div class="preview-pane hidden" id="preview-pane">
                 <div class="preview-pane-header">
                   <span class="preview-pane-label">Preview</span>
-                  <button class="icon-btn" id="btn-refresh-preview" title="Refresh">↺</button>
+                  <button class="icon-btn" id="btn-refresh-preview" title="Refresh" aria-label="Refresh preview"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-refresh" /></svg></button>
                 </div>
                 <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
               </div>
@@ -223,6 +582,10 @@
                 <span class="status-bar-item" id="sb-lang"></span>
                 <span class="status-bar-sep"></span>
                 <span class="status-bar-item" id="sb-pos">Ln 1, Col 1</span>
+                <span class="status-bar-sep"></span>
+                <span class="status-bar-item" id="sb-lines">0 lines</span>
+                <span class="status-bar-sep" id="sb-selection-sep" style="display:none"></span>
+                <span class="status-bar-item" id="sb-selection" style="display:none"></span>
                 <span class="status-bar-sep"></span>
                 <span class="status-bar-item" id="sb-size"></span>
                 <span class="status-bar-sep" id="sb-syntax-sep" style="display:none"></span>
@@ -353,12 +716,12 @@
                     <button class="manifest-next-action" id="btn-manifest-permissions" type="button">
                       <span class="manifest-next-number">02</span>
                       <span><strong>Review permissions</strong><small>Choose what your app can access.</small></span>
-                      <span class="manifest-next-arrow">›</span>
+                      <span class="manifest-next-arrow" aria-hidden="true"><svg class="ui-icon ui-icon--small"><use href="#ui-icon-chevron-right" /></svg></span>
                     </button>
                     <button class="manifest-next-action" id="btn-manifest-design" type="button">
                       <span class="manifest-next-number">03</span>
                       <span><strong>Configure window</strong><small>Set size and startup behavior in Design.</small></span>
-                      <span class="manifest-next-arrow">›</span>
+                      <span class="manifest-next-arrow" aria-hidden="true"><svg class="ui-icon ui-icon--small"><use href="#ui-icon-chevron-right" /></svg></span>
                     </button>
                   </section>
                 </aside>
@@ -378,7 +741,7 @@
                  and app.js already query keeps working unchanged. -->
             <div class="design-fullscreen" id="design-fullscreen">
               <div class="design-fullscreen-drag-strip"></div>
-              <button class="design-fs-close" id="design-fs-close" title="Close design mode (Esc)">&times;</button>
+              <button class="design-fs-close" id="design-fs-close" title="Close design mode (Esc)" aria-label="Close design mode"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
               <!-- Positioned via JS (synced to the frame's on-screen corner every
                    time pan/zoom/resize changes it) rather than living inside
                    .design-stage-pan -- the floating palette/attrs columns sit
@@ -390,21 +753,21 @@
               <div class="design-frame-resize-handle" id="design-frame-resize-handle" title="Drag to resize canvas"></div>
 
               <div class="design-fs-actions">
-                <button class="nbpro-chip" id="nbpro-btn-undo" title="Undo (Ctrl+Z)">&#8630; Undo</button>
-                <button class="nbpro-chip" id="nbpro-btn-redo" title="Redo (Ctrl+Shift+Z)">&#8631; Redo</button>
-                <button class="nbpro-chip" id="nbpro-btn-save" title="Save design changes">&#128190; Save</button>
-                <button class="nbpro-chip" id="nbpro-btn-snapshot" title="Capture AST baseline before editing">&#9791; Snapshot</button>
-                <button class="nbpro-chip" id="nbpro-btn-ast-diff" title="Show side-by-side AST diff vs baseline">&#8801; AST Diff</button>
+                <button class="nbpro-chip" id="nbpro-btn-undo" title="Undo (Ctrl+Z)"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-undo" /></svg> Undo</button>
+                <button class="nbpro-chip" id="nbpro-btn-redo" title="Redo (Ctrl+Shift+Z)"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-redo" /></svg> Redo</button>
+                <button class="nbpro-chip" id="nbpro-btn-save" title="Save design changes"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-save" /></svg> Save</button>
+                <button class="nbpro-chip" id="nbpro-btn-snapshot" title="Capture AST baseline before editing"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-snapshot" /></svg> Snapshot</button>
+                <button class="nbpro-chip" id="nbpro-btn-ast-diff" title="Show side-by-side AST diff vs baseline"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-diff" /></svg> AST Diff</button>
                 <div class="design-fs-zoom-actions">
-                  <button class="nbpro-chip" id="design-zoom-out" title="Zoom out">&#8722;</button>
+                  <button class="nbpro-chip" id="design-zoom-out" title="Zoom out" aria-label="Zoom out"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg></button>
                   <button class="nbpro-chip nbpro-chip--ghost" id="design-zoom-reset" title="Reset zoom to 100% and re-center">
                     <span id="design-zoom-pct">100%</span>
                   </button>
-                  <button class="nbpro-chip" id="design-zoom-in" title="Zoom in">&#43;</button>
+                  <button class="nbpro-chip" id="design-zoom-in" title="Zoom in" aria-label="Zoom in"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-plus" /></svg></button>
                 </div>
                 <div class="design-fs-window-actions">
-                  <button class="nbpro-chip" id="design-dpi-trigger" title="Window size / DPI presets">&#8862; Window</button>
-                  <button class="nbpro-chip" id="design-window-trigger" title="App window dimensions &amp; behavior">&#9635; App Window</button>
+                  <button class="nbpro-chip" id="design-dpi-trigger" title="Window size / DPI presets"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-window" /></svg> Window</button>
+                  <button class="nbpro-chip" id="design-window-trigger" title="App window dimensions &amp; behavior"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg> App Window</button>
                 </div>
               </div>
 
@@ -414,7 +777,7 @@
                    / #nbpro-layout-bar ids design-pro.js already renders into,
                    just relocated. -->
               <div class="design-dpi-popup hidden" id="design-dpi-popup">
-                <button class="nbpro-popup-close" id="design-dpi-popup-close" title="Close">&times;</button>
+                <button class="nbpro-popup-close" id="design-dpi-popup-close" title="Close" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
                 <div class="nbpro-bar-row" id="nbpro-dpi-bar"></div>
                 <div class="nbpro-bar-row" id="nbpro-layout-bar"></div>
               </div>
@@ -423,39 +786,39 @@
                 <div class="design-palette design-palette--floating" id="design-palette">
                   <div class="design-panel-collapse-row">
                     <div class="design-palette-title">Palette</div>
-                    <button class="design-panel-collapse-btn" id="design-palette-collapse" title="Collapse palette">&#8249;</button>
+                    <button class="design-panel-collapse-btn" id="design-palette-collapse" title="Collapse palette" aria-label="Collapse palette"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-left" /></svg></button>
                   </div>
                   <div class="design-palette-hint">Drag onto the canvas to place, or click to insert into the selected element</div>
                   <button class="design-palette-item" data-el-type="div" draggable="true">
-                    <span class="design-palette-icon">▭</span> Div
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-rectangle" /></svg></span> Div
                   </button>
                   <button class="design-palette-item" data-el-type="text" draggable="true">
-                    <span class="design-palette-icon">T</span> Text
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-text" /></svg></span> Text
                   </button>
                   <button class="design-palette-item" data-el-type="button" draggable="true">
-                    <span class="design-palette-icon">▢</span> Button
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg></span> Button
                   </button>
                   <button class="design-palette-item" data-el-type="image" draggable="true">
-                    <span class="design-palette-icon">🖼</span> Image
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-image" /></svg></span> Image
                   </button>
                   <button class="design-palette-item" data-el-type="input" draggable="true">
-                    <span class="design-palette-icon">✎</span> Input
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-input" /></svg></span> Input
                   </button>
                   <div class="design-palette-divider"></div>
                   <button class="design-palette-item" data-el-type="flex" draggable="true">
-                    <span class="design-palette-icon">⇔</span> Flex container
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-flex" /></svg></span> Flex container
                   </button>
                   <button class="design-palette-item" data-el-type="grid" draggable="true">
-                    <span class="design-palette-icon">⊞</span> Grid container
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg></span> Grid container
                   </button>
                   <button class="design-palette-item" data-el-type="modal" draggable="true">
-                    <span class="design-palette-icon">▣</span> Modal
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg></span> Modal
                   </button>
                   <button class="design-palette-item" data-el-type="table" draggable="true">
-                    <span class="design-palette-icon">▤</span> Data table
+                    <span class="design-palette-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg></span> Data table
                   </button>
                 </div>
-                <button class="design-panel-reopen design-panel-reopen--left hidden" id="design-palette-reopen" title="Show palette">&#8250;</button>
+                <button class="design-panel-reopen design-panel-reopen--left hidden" id="design-palette-reopen" title="Show palette" aria-label="Show palette"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-right" /></svg></button>
 
                 <div class="design-canvas-wrap">
                   <div class="design-stage design-stage--grid" id="design-stage">
@@ -472,7 +835,7 @@
                 <div class="design-attrs-col design-attrs-col--floating" id="design-attrs-col">
                   <div class="design-panel-collapse-row design-panel-collapse-row--attrs">
                     <div class="design-palette-title">Inspector</div>
-                    <button class="design-panel-collapse-btn" id="design-attrs-collapse" title="Collapse attrs">&#8250;</button>
+                    <button class="design-panel-collapse-btn" id="design-attrs-collapse" title="Collapse attrs" aria-label="Collapse attributes"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-right" /></svg></button>
                   </div>
                   <div class="nbpro-ins-tabs" id="nbpro-inspector-tabs"></div>
                   <div class="nbpro-ins-body" id="nbpro-inspector-body" style="display:none;"></div>
@@ -664,13 +1027,13 @@
                 </div>
                 </div>
               </div>
-              <button class="design-panel-reopen design-panel-reopen--right hidden" id="design-attrs-reopen" title="Show attrs">&#8249;</button>
+              <button class="design-panel-reopen design-panel-reopen--right hidden" id="design-attrs-reopen" title="Show attrs" aria-label="Show attributes"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-left" /></svg></button>
             </div>
 
             <div class="design-ctx-menu hidden" id="design-ctx-menu">
               <div class="design-ctx-submenu-wrap">
                 <button class="design-ctx-item design-ctx-item--parent" id="ctx-add-child">
-                  Add child <span class="design-ctx-arrow">›</span>
+                  Add child <span class="design-ctx-arrow" aria-hidden="true"><svg class="ui-icon ui-icon--small"><use href="#ui-icon-chevron-right" /></svg></span>
                 </button>
                 <div class="design-ctx-submenu" id="design-ctx-submenu">
                   <button class="design-ctx-item" data-el-type="div">Div</button>
@@ -698,7 +1061,7 @@
                  Contents unchanged, so mf-width/mf-height/etc keep the same
                  ids the manifest sync code already reads. -->
             <div class="design-window-popup hidden" id="design-window-popup">
-              <button class="nbpro-popup-close" id="design-window-popup-close" title="Close">&times;</button>
+              <button class="nbpro-popup-close" id="design-window-popup-close" title="Close" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
               <div class="manifest-section manifest-section--window">
                 <div class="manifest-section-title">Window</div>
 
@@ -749,27 +1112,27 @@
                 <div class="window-toggle-grid">
                   <label class="window-toggle" id="mf-toggle-resizable" for="mf-resizable">
                     <input type="checkbox" id="mf-resizable" checked>
-                    <span class="window-toggle-icon">⤢</span>
+                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-up" /></svg></span>
                     <span class="window-toggle-label">Resizable</span>
                   </label>
                   <label class="window-toggle" id="mf-toggle-frame" for="mf-frame">
                     <input type="checkbox" id="mf-frame" checked>
-                    <span class="window-toggle-icon">▭</span>
+                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-rectangle" /></svg></span>
                     <span class="window-toggle-label">Title bar</span>
                   </label>
                   <label class="window-toggle" id="mf-toggle-always-on-top" for="mf-always-on-top">
                     <input type="checkbox" id="mf-always-on-top">
-                    <span class="window-toggle-icon">⬆</span>
+                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-upload" /></svg></span>
                     <span class="window-toggle-label">Always on top</span>
                   </label>
                   <label class="window-toggle" id="mf-toggle-start-minimized" for="mf-start-minimized">
                     <input type="checkbox" id="mf-start-minimized">
-                    <span class="window-toggle-icon">—</span>
+                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg></span>
                     <span class="window-toggle-label">Start minimized</span>
                   </label>
                   <label class="window-toggle" id="mf-toggle-transparent" for="mf-transparent">
                     <input type="checkbox" id="mf-transparent">
-                    <span class="window-toggle-icon">◫</span>
+                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg></span>
                     <span class="window-toggle-label">Transparent</span>
                   </label>
                 </div>
@@ -788,34 +1151,112 @@
           <!-- Tab: Permissions -->
           <div class="tab-panel hidden" id="panel-permissions">
             <div class="permissions-tab-wrap">
-              <div class="permissions-tab-header">
-                <span class="permissions-tab-title">App Permissions</span>
-                <span class="permissions-tab-hint">Select what your app is allowed to access. These are written to
-                  manifest.json.</span>
-              </div>
-
-              <div class="permissions-toolbar">
-                <div class="permissions-search-row">
-                  <span class="permissions-search-icon">⌕</span>
-                  <input class="permissions-search-input" id="permissions-search" placeholder="Search permissions…"
-                    autocomplete="off" spellcheck="false">
+              <header class="permissions-page-header">
+                <div>
+                  <div class="permissions-eyebrow">APP CONFIGURATION</div>
+                  <h1 class="permissions-tab-title">Access &amp; permissions</h1>
+                  <p class="permissions-tab-hint">Grant only what your app needs. People can review and change grants in NovaByte OS settings.</p>
                 </div>
-                <div class="permissions-summary" id="permissions-summary">0 selected</div>
+                <div class="permissions-header-status" id="permissions-header-status">No project loaded</div>
+              </header>
+
+              <div class="permissions-overview" aria-live="polite">
+                <div class="permissions-overview-card">
+                  <span class="permissions-overview-label">DECLARED</span>
+                  <strong id="permissions-total-count">0</strong>
+                  <span>permissions selected</span>
+                </div>
+                <div class="permissions-overview-card permissions-overview-card--risk">
+                  <span class="permissions-overview-label">HIGH ATTENTION</span>
+                  <strong id="permissions-risk-count">0</strong>
+                  <span>high or critical grants</span>
+                </div>
+                <div class="permissions-overview-card permissions-overview-card--catalog">
+                  <span class="permissions-overview-label">CATALOG</span>
+                  <strong id="permissions-catalog-count">0</strong>
+                  <span>available permissions</span>
+                </div>
               </div>
 
-              <div class="permissions-grid" id="permissions-grid"></div>
+              <section class="permissions-manager" aria-label="Permission selection">
+                <div class="permissions-mode-row">
+                  <div class="permissions-mode-copy">
+                    <h2>Permission requests</h2>
+                    <p id="permissions-mode-description">Required permissions are declared in the manifest; OS grant behavior depends on risk and user settings.</p>
+                  </div>
+                  <div class="permissions-mode-switch" role="group" aria-label="Permission request type">
+                    <button class="permissions-mode-tab is-active" id="permissions-mode-required" type="button"
+                      aria-pressed="true">Required <span id="permissions-required-count">0</span></button>
+                    <button class="permissions-mode-tab" id="permissions-mode-optional" type="button"
+                      aria-pressed="false">Optional <span id="permissions-optional-count">0</span></button>
+                  </div>
+                </div>
 
-              <div class="manifest-actions">
-                <button class="action-btn action-btn--primary" id="btn-save-manifest-perms">Save manifest.json</button>
+                <div class="permissions-toolbar">
+                  <label class="permissions-search-row">
+                    <span class="permissions-search-icon" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg></span>
+                    <input class="permissions-search-input" id="permissions-search" placeholder="Search by name, ID, or use…"
+                      autocomplete="off" spellcheck="false">
+                  </label>
+                  <select class="permissions-filter" id="permissions-category-filter" aria-label="Filter by category">
+                    <option value="all">All categories</option>
+                  </select>
+                  <select class="permissions-filter" id="permissions-risk-filter" aria-label="Filter by risk">
+                    <option value="all">All risk levels</option>
+                    <option value="low">Low risk</option>
+                    <option value="medium">Medium risk</option>
+                    <option value="high">High risk</option>
+                    <option value="critical">Critical risk</option>
+                  </select>
+                </div>
+
+                <div class="permissions-selection-toolbar">
+                  <span class="permissions-summary" id="permissions-summary">0 selected</span>
+                  <div>
+                    <button class="permissions-text-action" id="permissions-select-low" type="button">Select visible low-risk</button>
+                    <button class="permissions-text-action" id="permissions-clear" type="button">Clear selection</button>
+                  </div>
+                </div>
+                <section class="permissions-reasons" aria-labelledby="permissions-reasons-title">
+                  <div class="permissions-reasons-header">
+                    <div>
+                      <h3 id="permissions-reasons-title">Permission reasons</h3>
+                      <p>Explain why your app needs each grant. NovaByte OS shows this text in permission prompts. Each reason can be up to 500 characters.</p>
+                    </div>
+                    <span class="permissions-reasons-count" id="permissions-reasons-count">0 reasons</span>
+                  </div>
+                  <div class="permissions-reasons-grid" id="permissions-reasons-grid"></div>
+                </section>
+                <div class="permissions-grid" id="permissions-grid"></div>
+              </section>
+
+              <section class="project-permission-audit" aria-labelledby="project-permission-audit-title">
+                <div class="project-permission-audit-header">
+                  <div>
+                    <h2 id="project-permission-audit-title">Source permission audit</h2>
+                    <p>Scans project text files for known NovaOS API methods and IPC actions. Path-dependent file/network access may not be inferable; results are static hints, not proof of runtime behavior.</p>
+                  </div>
+                  <button class="action-btn action-btn--ghost" id="btn-project-permission-audit" type="button">Scan project</button>
+                </div>
+                <div class="project-permission-audit-results" id="project-permission-audit-results" aria-live="polite">
+                  Run a scan to compare detected actions with the manifest.
+                </div>
+              </section>
+
+              <div class="permissions-save-bar">
+                <span id="permissions-save-hint">Changes are saved to manifest.json.</span>
+                <button class="action-btn action-btn--primary" id="btn-save-manifest-perms" type="button">Save permissions</button>
               </div>
             </div>
           </div>
 
-          <div class="perm-tooltip hidden" id="perm-tooltip">
+          <div class="perm-tooltip hidden" id="perm-tooltip" role="tooltip">
             <div class="perm-tooltip-header">
               <span class="perm-tooltip-dot" id="perm-tooltip-dot"></span>
               <span class="perm-tooltip-id" id="perm-tooltip-id"></span>
+              <span class="perm-tooltip-risk" id="perm-tooltip-risk"></span>
             </div>
+            <div class="perm-tooltip-label">What this permission allows</div>
             <div class="perm-tooltip-body" id="perm-tooltip-body"></div>
           </div>
 
@@ -840,36 +1281,61 @@
                       <p>Choose where your package is written.</p>
                     </div>
                   </div>
-                  <div class="build-config-row">
-                    <label class="field-label" for="build-outdir">Output directory</label>
-                    <div class="path-input-row">
-                      <input class="field-input" id="build-outdir" placeholder="./dist" spellcheck="false">
-                      <button class="icon-btn" id="btn-pick-outdir" title="Browse">…</button>
+                  <div class="build-profile-settings">
+                    <div class="build-profile-row">
+                      <label class="field-label" for="build-profile-select">Build profile</label>
+                      <select class="field-input field-input--sm" id="build-profile-select">
+                        <option value="">Current settings</option>
+                      </select>
+                      <button class="action-btn action-btn--ghost" id="btn-build-profile-save" type="button">Save as…</button>
+                      <button class="icon-btn" id="btn-build-profile-delete" type="button" title="Delete selected build profile" aria-label="Delete selected build profile"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-trash" /></svg></button>
+                    </div>
+                    <p class="build-profile-hint">Profiles save build options, never private signing keys. A selected signing method still needs its key configured in Sign.</p>
+                  </div>
+                  <div class="build-settings-grid">
+                    <div class="build-config-row">
+                      <label class="field-label" for="build-outdir">Output directory</label>
+                      <div class="path-input-row">
+                        <input class="field-input" id="build-outdir" placeholder="./dist" spellcheck="false">
+                        <button class="icon-btn" id="btn-pick-outdir" title="Browse">…</button>
+                      </div>
+                    </div>
+                    <label class="build-clean-option" for="build-clean">
+                      <input type="checkbox" id="build-clean" checked>
+                      <span class="build-clean-copy">
+                        <strong>Clean output directory before building</strong>
+                        <small class="build-clean-warning">Deletes everything inside this folder first.</small>
+                      </span>
+                    </label>
+                    <div class="build-summary-card" id="build-summary-card">
+                      <div class="build-summary-title">Package preview</div>
+                      <div class="build-summary-row">
+                        <span class="build-summary-label">Signing</span>
+                        <span class="build-summary-value" id="build-summary-signing">—</span>
+                      </div>
+                      <div class="build-summary-row">
+                        <span class="build-summary-label">Integrity</span>
+                        <span class="build-summary-value" id="build-summary-integrity">—</span>
+                      </div>
+                      <div class="build-summary-row">
+                        <span class="build-summary-label">Output</span>
+                        <span class="build-summary-value build-summary-value--path" id="build-summary-outpath">—</span>
+                      </div>
                     </div>
                   </div>
-                  <label class="build-clean-option" for="build-clean">
-                    <input type="checkbox" id="build-clean" checked>
-                    <span class="build-clean-copy">
-                      <strong>Clean output directory before building</strong>
-                      <small class="build-clean-warning">Deletes everything inside this folder first.</small>
-                    </span>
-                  </label>
 
-                  <div class="build-summary-card" id="build-summary-card">
-                    <div class="build-summary-title">Package preview</div>
-                    <div class="build-summary-row">
-                      <span class="build-summary-label">Signing</span>
-                      <span class="build-summary-value" id="build-summary-signing">—</span>
+                  <section class="build-contents-preview">
+                    <div class="build-contents-preview-header">
+                      <div>
+                        <strong>Package contents</strong>
+                        <span id="build-contents-summary">Not scanned</span>
+                      </div>
+                      <button class="action-btn action-btn--ghost" id="btn-preview-build-contents" type="button">Preview files</button>
                     </div>
-                    <div class="build-summary-row">
-                      <span class="build-summary-label">Integrity</span>
-                      <span class="build-summary-value" id="build-summary-integrity">—</span>
+                    <div class="build-contents-preview-list" id="build-contents-preview-list" aria-live="polite">
+                      Preview uses the same file and .studioignore rules as Build.
                     </div>
-                    <div class="build-summary-row">
-                      <span class="build-summary-label">Output</span>
-                      <span class="build-summary-value build-summary-value--path" id="build-summary-outpath">—</span>
-                    </div>
-                  </div>
+                  </section>
 
                   <button class="build-btn" id="btn-build">
                     <span class="build-btn-label">Build Package</span>
@@ -901,7 +1367,7 @@
                   <div class="build-history" id="build-history">
                     <div class="build-history-header">
                       <span class="build-history-title">Recent builds</span>
-                      <button class="icon-btn" id="btn-clear-history" title="Clear history">🗑</button>
+                      <button class="icon-btn" id="btn-clear-history" title="Clear history" aria-label="Clear history"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-trash" /></svg></button>
                     </div>
                     <div class="build-history-list" id="build-history-list">
                       <div class="build-history-empty">No builds yet</div>
@@ -943,10 +1409,10 @@
               <div class="sign-workspace">
                 <section class="sign-localdev-card">
                   <button class="legacy-disclosure sign-localdev-toggle" id="btn-localdev-toggle" type="button" aria-expanded="false" aria-controls="localdev-config">
-                    <span class="legacy-disclosure-arrow">▸</span>
+                    <span class="legacy-disclosure-arrow"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg></span>
                     <span class="sign-toggle-copy">
                       <strong>Local development signing</strong>
-                      <small>Generate a keypair and self-sign a build for testing.</small>
+                      <small>Test signature and integrity handling on a package you built in Studio.</small>
                     </span>
                     <span class="sign-toggle-badge">LOCAL ONLY</span>
                   </button>
@@ -957,9 +1423,10 @@
 
                   <div class="sign-section legacy-config hidden" id="localdev-config">
                     <div class="sign-section-hint">
-                      Self-sign with a key generated on this machine, for local testing only.
-                      Self-signed builds are <strong>not</strong> trusted by NBOSP — they will always
-                      show the "Unverified" dialog on install, since nobody but you vouches for them.
+                      Local signing is for testing your own package’s signature and integrity handling.
+                      This tool can only sign the <strong>last package built in Studio</strong>; external
+                      <code>.novaapp</code> files cannot be signed here. A self-signature does not establish
+                      publisher trust, so NBOSP will still show the package as unverified.
                     </div>
                     <div class="sign-config-grid">
                       <div class="sign-config-row">
@@ -998,9 +1465,9 @@
                           placeholder="Paste a private key JWK, or click Generate" rows="3" spellcheck="false"></textarea>
                         <div class="key-field-actions">
                           <button class="icon-btn icon-btn--ghost" id="btn-privkey-reveal" type="button"
-                            title="Show private key" aria-pressed="false">👁</button>
+                            title="Show private key" aria-label="Show private key" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-eye" /></svg></button>
                           <button class="icon-btn icon-btn--ghost" id="btn-privkey-copy" type="button"
-                            title="Copy private key">⧉</button>
+                            title="Copy private key" aria-label="Copy private key"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg></button>
                         </div>
                       </div>
                     </div>
@@ -1016,7 +1483,7 @@
                           spellcheck="false"></textarea>
                         <div class="key-field-actions">
                           <button class="icon-btn icon-btn--ghost" id="btn-pubkey-copy" type="button"
-                            title="Copy public key">⧉</button>
+                            title="Copy public key" aria-label="Copy public key"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg></button>
                         </div>
                       </div>
                     </div>
@@ -1024,8 +1491,30 @@
                 </section>
 
                 <aside class="sign-side-stack">
+                  <section class="sign-verification-card">
+                    <div class="sign-verification-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-upload" /></svg></div>
+                    <div class="sign-verification-copy">
+                      <div class="sign-verification-eyebrow">NOVABYTE STORE</div>
+                      <div class="sign-trust-title">Get your app reviewed and listed</div>
+                      <p>On the <strong>NovaByte Store website</strong>, sign in, choose <strong>Publish apps</strong>, and complete the submission form with your unsigned <code>.novaapp</code>; self-signing isn’t needed. Submissions go through automated checks and human review. If approved, NovaByte preserves your existing tamper-protection method or adds protection if it’s missing, then signs the app with Ed25519. Any other signature is replaced before the app is listed.</p>
+                      <p class="sign-verification-help">The rules are on the Store website: open <strong>Publish apps</strong> and expand <strong>Store requirements</strong> in the form.</p>
+                      <button class="sign-verification-link" id="btn-sign-submit-review" type="button">
+                        <svg class="sign-store-mark" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                          <defs>
+                            <linearGradient id="sign-store-mark-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                              <stop offset="0%" stop-color="#70d9f7"/>
+                              <stop offset="100%" stop-color="#a78bfa"/>
+                            </linearGradient>
+                          </defs>
+                          <polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="none" stroke="url(#sign-store-mark-gradient)" stroke-width="2"/>
+                          <text x="20" y="25" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="url(#sign-store-mark-gradient)">NB</text>
+                        </svg>
+                        <span>Open NovaByte Store</span><span class="sign-store-external" aria-hidden="true"><svg class="ui-icon ui-icon--small"><use href="#ui-icon-external" /></svg></span>
+                      </button>
+                    </div>
+                  </section>
                   <section class="sign-trust-card">
-                    <div class="sign-trust-icon">!</div>
+                    <div class="sign-trust-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-alert" /></svg></div>
                     <div>
                       <div class="sign-trust-title">Development keys are not publisher trust</div>
                       <p>Self-signing proves a package matches your key. It does not make NovaByte OS trust the publisher.</p>
@@ -1035,7 +1524,7 @@
                     <div class="sign-workflow-label">BUILD WORKFLOW</div>
                     <p>Choose methods here, then create or update your package from the Build tab.</p>
                     <button class="sign-build-link" id="btn-sign-go-build" type="button">
-                      <span>Go to Build</span><span aria-hidden="true">→</span>
+                      <span>Go to Build</span><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-arrow-right" /></svg>
                     </button>
                   </section>
                 </aside>
@@ -1046,13 +1535,57 @@
           <div class="tab-panel hidden" id="panel-git">
             <div class="git-workspace" id="git-workspace">
 
+              <header class="git-page-header">
+                <div class="git-page-heading">
+                  <div class="git-page-eyebrow">SOURCE CONTROL</div>
+                  <h1>Git</h1>
+                  <p>Review changes, write commits, and manage your branches.</p>
+                </div>
+                <div class="git-repository-card">
+                  <span class="git-repository-mark" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-branch" /></svg></span>
+                  <span class="git-repository-copy">
+                    <strong id="git-repo-name">No repository</strong>
+                    <span id="git-repo-path">Open a project inside a Git repository</span>
+                  </span>
+                  <span class="git-repository-state" id="git-repo-state">Not connected</span>
+                </div>
+              </header>
+
+              <section class="git-no-repository hidden" id="git-no-repository">
+                <div class="git-no-repository-icon" aria-hidden="true"><svg class="ui-icon ui-icon--empty"><use href="#ui-icon-branch" /></svg></div>
+                <h2>This project isn’t a Git repository</h2>
+                <p>Open a project folder that already contains a Git repository to view and manage its changes here.</p>
+                <button class="git-action-btn git-action-btn--primary" id="btn-git-open-project" type="button">Open another project</button>
+              </section>
+
+              <div class="git-overview" aria-live="polite">
+                <div class="git-overview-card">
+                  <span class="git-overview-icon git-overview-icon--changes" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-edit" /></svg></span>
+                  <span class="git-overview-label">WORKING TREE</span>
+                  <strong id="git-overview-changes">0</strong>
+                  <span>uncommitted files</span>
+                </div>
+                <div class="git-overview-card">
+                  <span class="git-overview-icon git-overview-icon--staged" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-plus" /></svg></span>
+                  <span class="git-overview-label">STAGED</span>
+                  <strong id="git-overview-staged">0</strong>
+                  <span>ready to commit</span>
+                </div>
+                <div class="git-overview-card">
+                  <span class="git-overview-icon git-overview-icon--branch" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-branch" /></svg></span>
+                  <span class="git-overview-label">CURRENT BRANCH</span>
+                  <strong id="git-overview-branch">—</strong>
+                  <span id="git-overview-sync">No upstream status</span>
+                </div>
+              </div>
+
               <!-- Toolbar: current branch, ahead/behind, fetch/pull/push -->
               <div class="git-toolbar">
                 <div class="git-branch-chip" id="git-branch-chip" title="Switch branch">
-                  <span class="git-branch-chip-icon">⑂</span>
+                  <span class="git-branch-chip-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-branch" /></svg></span>
                   <span class="git-branch-chip-name" id="git-branch-chip-name">—</span>
                   <span class="git-ahead-behind" id="git-ahead-behind"></span>
-                  <span class="git-branch-chip-caret">▾</span>
+                  <span class="git-branch-chip-caret"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg></span>
                 </div>
 
                 <div class="git-branch-dropdown hidden" id="git-branch-dropdown">
@@ -1062,7 +1595,7 @@
                   </div>
                   <div class="git-branch-dropdown-list" id="git-branch-dropdown-list"></div>
                   <div class="git-branch-dropdown-footer">
-                    <button class="link-btn" id="btn-git-new-branch">+ New branch</button>
+                    <button class="link-btn" id="btn-git-new-branch"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-plus" /></svg> New branch</button>
                   </div>
                 </div>
 
@@ -1071,26 +1604,29 @@
                     spellcheck="false">
                   <button class="git-action-btn git-action-btn--primary" id="btn-git-create-branch">Create &amp;
                     Checkout</button>
-                  <button class="icon-btn" id="btn-git-cancel-branch" title="Cancel">✕</button>
+                  <button class="icon-btn" id="btn-git-cancel-branch" title="Cancel" aria-label="Cancel"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
                 </div>
 
                 <div class="git-toolbar-spacer"></div>
 
-                <button class="git-icon-action" id="btn-git-fetch" title="Fetch from remote">
-                  <span class="git-icon-action-icon">↺</span>
+                <button class="git-icon-action" id="btn-git-fetch" title="Fetch from remote" aria-label="Fetch from remote">
+                  <span class="git-icon-action-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-refresh" /></svg></span>
+                  <span class="git-action-label">Fetch</span>
                 </button>
-                <button class="git-icon-action" id="btn-git-pull" title="Pull">
-                  <span class="git-icon-action-icon">↓</span>
+                <button class="git-icon-action" id="btn-git-pull" title="Pull" aria-label="Pull">
+                  <span class="git-icon-action-icon"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-arrow-down" /></svg></span>
+                  <span class="git-action-label">Pull</span>
                   <span class="git-icon-action-count" id="git-pull-count"></span>
                 </button>
-                <button class="git-icon-action" id="btn-git-push" title="Push">
-                  <span class="git-icon-action-icon">↑</span>
+                <button class="git-icon-action" id="btn-git-push" title="Push" aria-label="Push">
+                  <span class="git-icon-action-icon"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-arrow-up" /></svg></span>
+                  <span class="git-action-label">Push</span>
                   <span class="git-icon-action-count" id="git-push-count"></span>
                 </button>
               </div>
 
               <!-- Sub-nav -->
-              <nav class="git-subnav" id="git-subnav">
+              <nav class="git-subnav" id="git-subnav" aria-label="Git views">
                 <button class="git-subnav-btn git-subnav-btn--active" data-git-section="changes">
                   Changes <span class="git-subnav-badge hidden" id="git-changes-count"></span>
                 </button>
@@ -1166,7 +1702,7 @@
                 </div>
                 <div class="git-stash-list" id="git-stash-list">
                   <div class="git-empty-state">
-                    <div class="git-empty-state-icon">📦</div>
+                    <div class="git-empty-state-icon"><svg class="ui-icon ui-icon--empty" aria-hidden="true"><use href="#ui-icon-package" /></svg></div>
                     <div class="git-empty-state-text">No stashes</div>
                   </div>
                 </div>
@@ -1177,7 +1713,7 @@
                 <div class="git-branches-toolbar">
                   <input class="field-input" id="git-branches-search" placeholder="Search branches…"
                     autocomplete="off" spellcheck="false">
-                  <button class="git-action-btn" id="btn-git-branches-new">+ New branch</button>
+                  <button class="git-action-btn" id="btn-git-branches-new"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-plus" /></svg> New branch</button>
                 </div>
                 <div class="git-branches-list" id="git-branches-list"></div>
               </div>
@@ -1191,8 +1727,31 @@
 
           <div class="tab-panel hidden" id="panel-review">
             <div class="review-header">
-              <div class="review-header-title">Preview</div>
-              <div class="review-header-sub">A preview of your app in a desktop window.</div>
+              <div class="review-heading">
+                <div class="review-header-title">App preview</div>
+                <div class="review-header-sub">Check your app at different window sizes. Drag the title bar to reposition it.</div>
+              </div>
+              <div class="review-toolbar">
+                <div class="review-viewport-group" role="group" aria-label="Preview viewport">
+                  <button class="review-viewport-btn is-active" type="button" data-review-preset="manifest" aria-pressed="true">Manifest</button>
+                  <button class="review-viewport-btn" type="button" data-review-preset="tablet" aria-pressed="false">Tablet</button>
+                  <button class="review-viewport-btn" type="button" data-review-preset="phone" aria-pressed="false">Phone</button>
+                  <button class="review-viewport-btn" type="button" data-review-preset="landscape" aria-pressed="false">Landscape</button>
+                </div>
+                <div class="review-custom-size">
+                  <input class="field-input field-input--sm" id="review-custom-width" type="number" min="200" max="4000" value="800" aria-label="Custom preview width">
+                  <span>×</span>
+                  <input class="field-input field-input--sm" id="review-custom-height" type="number" min="150" max="3000" value="560" aria-label="Custom preview height">
+                  <button class="review-tool-btn" id="btn-review-custom-size" type="button">Apply</button>
+                  <button class="review-tool-btn" id="btn-review-save-size" type="button">Save size</button>
+                </div>
+                <div class="review-saved-sizes" id="review-saved-sizes" role="group" aria-label="Saved preview sizes"></div>
+                <span class="review-viewport-size" id="review-viewport-size">800 × 560</span>
+                <button class="review-tool-btn" id="btn-review-center" type="button" title="Center preview window">Center</button>
+                <button class="review-tool-btn review-tool-btn--primary" id="btn-review-refresh" type="button" title="Reload app preview"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-refresh" /></svg><span>Refresh</span></button>
+                <label class="review-sim-toggle"><input type="checkbox" id="chk-review-simulate-apis"> Simulate NovaOS APIs</label>
+                <button class="review-tool-btn" id="btn-review-fullscreen" type="button" title="Expand preview to fullscreen" aria-pressed="false">⛶ <span>Fullscreen</span></button>
+              </div>
             </div>
             <div class="review-stage" id="review-stage">
               <div class="review-window" id="review-window">
@@ -1211,7 +1770,11 @@
                 <div class="review-resize-handle" id="review-resize-handle" title="Drag to resize"></div>
               </div>
             </div>
-            <div class="review-caption">This preview does not emulate the NBOSP runtime or permission system.</div>
+            <div class="review-caption">
+              <span>Entry: <code id="review-entry-path">index.html</code></span>
+              <span id="review-simulation-note">Preview does not emulate NBOSP. API simulation is off.</span>
+            </div>
+            <div class="review-simulation-log hidden" id="review-simulation-log" aria-live="polite"></div>
           </div>
 
         </div>
@@ -1233,33 +1796,41 @@
           </div>
         </div>
         <div class="inspector-dropzone" id="inspector-dropzone">
-          <div class="inspector-dropzone-mark" aria-hidden="true">↓</div>
+          <div class="inspector-dropzone-mark" aria-hidden="true"><svg class="ui-icon ui-icon--empty"><use href="#ui-icon-upload" /></svg></div>
           <div class="inspector-dropzone-label">Drop your package to inspect it</div>
           <div class="inspector-dropzone-sub">Choose a <code>.novaapp</code> file from this device</div>
           <button class="action-btn action-btn--primary" id="btn-pick-novaapp">Browse packages</button>
+          <button class="action-btn action-btn--ghost" id="btn-compare-novaapps" type="button">Compare two packages</button>
+          <input id="inspector-compare-files" type="file" accept=".novaapp" multiple hidden>
           <div class="inspector-dropzone-footnote">Nothing is installed or executed during inspection.</div>
         </div>
         <div class="inspector-result hidden" id="inspector-result"></div>
+        <div class="package-comparison hidden" id="package-comparison" aria-live="polite"></div>
       </div>
 
       <!-- Settings screen -->
       <div class="settings-screen hidden" id="screen-settings">
         <div class="settings-header">
-          <button class="icon-btn" id="btn-settings-back" title="Back">←</button>
-          <h2 class="settings-title">Settings</h2>
+          <button class="icon-btn" id="btn-settings-back" title="Back" aria-label="Back"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-left" /></svg></button>
+          <div class="settings-heading">
+            <h2 class="settings-title">Settings</h2>
+            <span class="settings-subtitle">Make NovaByte Studio feel like yours.</span>
+          </div>
         </div>
         <div class="settings-search-row">
-          <input class="gs-input" id="settings-search" placeholder="Search settings..." autocomplete="off">
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+          <input class="gs-input" id="settings-search" placeholder="Find a setting…" autocomplete="off">
+          <span class="settings-search-hint">QUICK FILTER</span>
         </div>
         <div class="settings-body" id="settings-body">
           <div class="settings-section" data-section="editor">
-            <div class="settings-section-title">Editor</div>
+            <div class="settings-section-title"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-edit" /></svg><span>Editor</span></div>
             <div class="settings-row">
               <label class="settings-label">Font size</label>
               <div class="settings-control">
-                <button class="icon-btn" id="btn-font-dec">−</button>
+                <button class="icon-btn" id="btn-font-dec" title="Decrease font size" aria-label="Decrease font size"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg></button>
                 <span id="lbl-font-size">13</span>px
-                <button class="icon-btn" id="btn-font-inc">+</button>
+                <button class="icon-btn" id="btn-font-inc" title="Increase font size" aria-label="Increase font size"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-plus" /></svg></button>
               </div>
             </div>
             <div class="settings-row">
@@ -1282,7 +1853,7 @@
             </div>
           </div>
           <div class="settings-section" data-section="autosave">
-            <div class="settings-section-title">Autosave</div>
+            <div class="settings-section-title"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-clock" /></svg><span>Autosave</span></div>
             <div class="settings-row">
               <label class="settings-label">Autosave mode</label>
               <div class="settings-control">
@@ -1311,15 +1882,26 @@
             </div>
           </div>
           <div class="settings-section" data-section="appearance">
-            <div class="settings-section-title">Appearance</div>
+            <div class="settings-section-title"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg><span>Appearance</span></div>
             <div class="settings-row">
               <label class="settings-label">Theme</label>
               <div class="theme-picker" id="theme-picker-settings">
-                <button class="icon-btn" id="btn-theme-picker-settings" title="Select theme">🎨</button>
+                <button class="icon-btn" id="btn-theme-picker-settings" title="Select theme" aria-label="Select theme"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg></button>
                 <div class="theme-picker-menu hidden" id="theme-picker-menu-settings">
                   <div class="theme-picker-list" id="theme-picker-list-settings"></div>
                 </div>
               </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="sel-ui-density">Interface density</label>
+              <select class="field-input field-input--sm" id="sel-ui-density">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Appearance defaults</label>
+              <button class="action-btn action-btn--ghost" id="btn-appearance-reset">Reset appearance</button>
             </div>
             <div class="custom-theme-editor hidden" id="custom-theme-editor">
               <!-- color groups populated by _renderCustomThemeSection() -->
@@ -1333,7 +1915,7 @@
           </div>
 
           <div class="settings-section" data-section="data">
-            <div class="settings-section-title">Settings backup</div>
+            <div class="settings-section-title"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-save" /></svg><span>Settings backup</span></div>
             <div class="settings-row">
               <label class="settings-label">Export / import</label>
               <div class="settings-control">
@@ -1356,39 +1938,29 @@
 
   <!-- New Project modal -->
   <div class="modal-overlay hidden" id="modal-new-project">
-    <div class="modal modal--xwide">
+    <div class="modal modal--xwide modal--new-project">
       <div class="modal-header">
-        <span class="modal-title">New Project</span>
-        <button class="modal-close" data-close="modal-new-project">✕</button>
+        <span class="modal-title">New NovaApp Project</span>
+        <button class="modal-close" data-close="modal-new-project" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
 
       <div class="modal-body modal-body--new-project">
+        <aside class="np-categories" id="np-categories" aria-label="Starter categories"></aside>
         <div class="np-left">
-          <div class="template-grid" id="template-grid"></div>
-
-          <div class="modal-fields">
-            <div class="field-row">
-              <label class="field-label">App Name</label>
-              <input class="field-input" id="new-app-name" placeholder="My App">
+          <div class="np-gallery-heading">
+            <div>
+              <h2 id="np-category-title">All starters</h2>
+              <p>Choose a starting point for your NovaByte app.</p>
             </div>
-            <div class="field-row">
-              <label class="field-label">App ID <span class="field-hint">reverse domain</span></label>
-              <input class="field-input" id="new-app-id" placeholder="com.example.myapp" spellcheck="false">
-            </div>
-            <div class="field-row">
-              <label class="field-label">Project Folder</label>
-              <div class="path-input-row">
-                <input class="field-input" id="new-app-dir" placeholder="/path/to/projects/my-app" spellcheck="false">
-                <button class="icon-btn" id="btn-pick-dir" title="Browse">…</button>
-              </div>
-            </div>
-
-            <!-- Populated only for templates that declare placeholderFields
-                 (e.g. Web App Wrapper's URL). Hidden entirely otherwise, so
-                 templates with nothing extra to configure don't show an
-                 empty section. -->
-            <div class="field-row np-placeholder-fields hidden" id="np-placeholder-fields"></div>
+            <input id="np-template-search" type="search" placeholder="Search starters" aria-label="Search starters">
           </div>
+          <div class="np-user-template-actions">
+            <button class="action-btn action-btn--ghost" id="btn-save-user-template" type="button">Save open project as starter</button>
+            <button class="action-btn action-btn--ghost" id="btn-import-user-template" type="button">Import starter</button>
+            <button class="action-btn action-btn--ghost" id="btn-export-user-template" type="button">Export selected starter</button>
+            <input id="user-template-import-file" type="file" accept=".json,application/json" hidden>
+          </div>
+          <div class="template-grid" id="template-grid"></div>
         </div>
 
         <div class="np-right">
@@ -1398,6 +1970,27 @@
               <span class="np-preview-name" id="np-preview-name"></span>
               <span class="np-preview-desc" id="np-preview-desc"></span>
             </div>
+          </div>
+
+          <div class="np-project-fields">
+            <div class="np-project-fields-grid">
+              <div class="field-row">
+                <label class="field-label" for="new-app-name">App name</label>
+                <input class="field-input" id="new-app-name" placeholder="My App">
+              </div>
+              <div class="field-row">
+                <label class="field-label" for="new-app-id">App ID <span class="field-hint">reverse domain</span></label>
+                <input class="field-input" id="new-app-id" placeholder="com.example.myapp" spellcheck="false">
+              </div>
+              <div class="field-row np-project-folder">
+                <label class="field-label" for="new-app-dir">Project folder</label>
+                <div class="path-input-row">
+                  <input class="field-input" id="new-app-dir" placeholder="/path/to/projects/my-app" spellcheck="false">
+                  <button class="icon-btn" id="btn-pick-dir" title="Browse">…</button>
+                </div>
+              </div>
+            </div>
+            <div class="field-row np-placeholder-fields hidden" id="np-placeholder-fields"></div>
           </div>
 
           <div class="np-preview-body">
@@ -1423,23 +2016,23 @@
 
   <!-- Context menu -->
   <div class="context-menu hidden" id="context-menu">
-    <button class="context-menu-item" id="filectx-rename">✏️ Rename</button>
-    <button class="context-menu-item" id="filectx-duplicate">📋 Duplicate</button>
-    <button class="context-menu-item" id="filectx-compare">🔀 Compare With...</button>
-    <button class="context-menu-item" id="ctx-new-file">📄 New File Here</button>
-    <button class="context-menu-item" id="ctx-new-folder">📁 New Folder Here</button>
+    <button class="context-menu-item" id="filectx-rename"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-edit" /></svg> Rename</button>
+    <button class="context-menu-item" id="filectx-duplicate"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg> Duplicate</button>
+    <button class="context-menu-item" id="filectx-compare"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-diff" /></svg> Compare With...</button>
+    <button class="context-menu-item" id="ctx-new-file"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-file-plus" /></svg> New File Here</button>
+    <button class="context-menu-item" id="ctx-new-folder"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-folder-plus" /></svg> New Folder Here</button>
     <div class="context-menu-sep" id="filectx-sep"></div>
-    <button class="context-menu-item context-menu-item--danger" id="filectx-delete">🗑 Delete</button>
+    <button class="context-menu-item context-menu-item--danger" id="filectx-delete"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-trash" /></svg> Delete</button>
   </div>
 
   <!-- Recents context menu -->
   <div class="context-menu hidden" id="recent-context-menu">
-    <button class="context-menu-item" id="rctx-open">↗ Open</button>
-    <button class="context-menu-item" id="rctx-pin">📌 Pin to top</button>
-    <button class="context-menu-item" id="rctx-copy-path">📋 Copy folder path</button>
-    <button class="context-menu-item" id="rctx-reveal">🗂 Reveal in file explorer</button>
+    <button class="context-menu-item" id="rctx-open"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-open" /></svg> Open</button>
+    <button class="context-menu-item" id="rctx-pin"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-pin" /></svg> Pin to top</button>
+    <button class="context-menu-item" id="rctx-copy-path"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg> Copy folder path</button>
+    <button class="context-menu-item" id="rctx-reveal"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-folder-open" /></svg> Reveal in file explorer</button>
     <div class="context-menu-sep"></div>
-    <button class="context-menu-item context-menu-item--danger" id="rctx-remove">✕ Remove from Recents</button>
+    <button class="context-menu-item context-menu-item--danger" id="rctx-remove"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg> Remove from Recents</button>
   </div>
 
   <!-- JSON viewer modal -->
@@ -1447,7 +2040,7 @@
     <div class="modal modal--wide">
       <div class="modal-header">
         <span class="modal-title">manifest.json</span>
-        <button class="modal-close" data-close="modal-json">✕</button>
+        <button class="modal-close" data-close="modal-json" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="modal-body">
         <pre class="json-viewer" id="json-viewer"></pre>
@@ -1459,7 +2052,7 @@
   <div class="modal-overlay hidden" id="modal-command-palette">
     <div class="modal modal--palette">
       <div class="modal-search-row">
-        <span class="modal-search-icon">›_</span>
+        <span class="modal-search-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-search" /></svg></span>
         <input class="modal-search-input" id="cp-input" placeholder="Type a command…" spellcheck="false"
           autocomplete="off">
       </div>
@@ -1481,17 +2074,47 @@
   </div>
 
   <div class="modal-overlay hidden" id="modal-workspace">
-    <div class="modal modal--wide">
-      <div class="modal-header">
-        <span class="modal-title">Workspaces</span>
-        <button class="modal-close" data-close="modal-workspace">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="workspace-actions">
-          <button class="action-btn" id="btn-workspace-save">Save current workspace</button>
+    <div class="modal modal--xwide workspace-modal">
+      <div class="workspace-modal-header">
+        <div class="workspace-heading">
+          <div class="workspace-heading-icon" aria-hidden="true">▦</div>
+          <div>
+            <div class="workspace-eyebrow">YOUR SETUPS</div>
+            <h2 class="workspace-title">Workspaces</h2>
+            <p class="workspace-subtitle">Save a project with its open files and return to it later.</p>
+          </div>
         </div>
-        <div class="workspace-list" id="workspace-list">
-          <div class="workspace-empty">No saved workspaces</div>
+        <button class="modal-close" data-close="modal-workspace" title="Close" aria-label="Close workspaces"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
+      </div>
+      <div class="modal-body workspace-modal-body">
+        <section class="workspace-save-card" aria-label="Save current workspace">
+          <div class="workspace-save-copy">
+            <span class="workspace-section-kicker">CURRENT PROJECT</span>
+            <strong id="workspace-current-project">No project open</strong>
+            <span id="workspace-save-hint">Open a project to save its current setup.</span>
+          </div>
+          <div class="workspace-save-controls">
+            <input id="workspace-name-input" class="field-input" type="text" maxlength="64"
+              placeholder="Name this workspace" autocomplete="off">
+            <button class="action-btn action-btn--primary" id="btn-workspace-save" type="button" disabled>
+              <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-plus" /></svg> Save workspace
+            </button>
+          </div>
+        </section>
+
+        <div class="workspace-list-toolbar">
+          <div>
+            <div class="workspace-section-title">Saved workspaces</div>
+            <div class="workspace-count" id="workspace-count">0 workspaces</div>
+          </div>
+          <label class="workspace-search">
+            <span aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg></span>
+            <input id="workspace-search" type="search" placeholder="Search workspaces…" autocomplete="off">
+          </label>
+        </div>
+
+        <div class="workspace-list" id="workspace-list" aria-live="polite">
+          <div class="workspace-empty">No saved workspaces yet. Save the current project setup to get started.</div>
         </div>
       </div>
     </div>
@@ -1501,11 +2124,28 @@
     <div class="modal modal--wide modal--search">
       <div class="modal-header">
         <span class="modal-title">Search in Project</span>
-        <button class="modal-close" data-close="modal-global-search">✕</button>
+        <button class="modal-close" data-close="modal-global-search" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="modal-body modal-body--search">
-        <input type="text" id="gs-input" class="gs-input" placeholder="Search file contents… (Esc to close)"
-          autocomplete="off" />
+        <div class="gs-query-wrap">
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+          <input type="text" id="gs-input" class="gs-input" placeholder="Search across project files…"
+            autocomplete="off" aria-label="Search project file contents" />
+          <kbd>ESC</kbd>
+        </div>
+        <div class="gs-toolbar" role="toolbar" aria-label="Search options">
+          <div class="gs-toggle-group" aria-label="Match options">
+            <button type="button" class="gs-toggle" data-search-option="caseSensitive" aria-pressed="false" title="Match case">Aa</button>
+            <button type="button" class="gs-toggle" data-search-option="wholeWord" aria-pressed="false" title="Match whole word">Word</button>
+            <button type="button" class="gs-toggle" data-search-option="regex" aria-pressed="false" title="Use regular expression">.*</button>
+          </div>
+          <span class="gs-toolbar-hint">Enter to open result · ↑↓ to navigate</span>
+          <button type="button" class="gs-copy-results" id="gs-copy-results" disabled><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg> Copy results</button>
+        </div>
+        <div class="gs-filter-row">
+          <label><span>Include</span><input id="gs-include" type="text" placeholder="src/**/*.js, *.json" autocomplete="off"></label>
+          <label><span>Exclude</span><input id="gs-exclude" type="text" placeholder="dist/**, **/*.min.js" autocomplete="off"></label>
+        </div>
         <div id="gs-meta" class="gs-meta"></div>
         <div id="gs-results" class="gs-results"></div>
       </div>
@@ -1518,13 +2158,13 @@
       <div class="modal-header">
         <div class="diff-header-labels">
           <span class="diff-label" id="diff-label-left">—</span>
-          <span class="diff-label-sep">⇄</span>
+          <span class="diff-label-sep" aria-hidden="true"><svg class="ui-icon ui-icon--small"><use href="#ui-icon-swap" /></svg></span>
           <span class="diff-label" id="diff-label-right">—</span>
         </div>
         <div class="diff-header-actions">
-          <button class="icon-btn" id="btn-diff-prev" title="Previous change">↑</button>
-          <button class="icon-btn" id="btn-diff-next" title="Next change">↓</button>
-          <button class="modal-close" data-close="modal-diff">✕</button>
+          <button class="icon-btn" id="btn-diff-prev" title="Previous change" aria-label="Previous change"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-up" /></svg></button>
+          <button class="icon-btn" id="btn-diff-next" title="Next change" aria-label="Next change"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-down" /></svg></button>
+          <button class="modal-close" data-close="modal-diff" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
         </div>
       </div>
       <div class="modal-body modal-body--diff">
@@ -1537,28 +2177,43 @@
   <div class="modal-overlay hidden" id="modal-about">
     <div class="modal modal--about">
       <div class="modal-header">
-        <span class="modal-title">About</span>
-        <button class="modal-close" data-close="modal-about">✕</button>
+        <div class="about-modal-heading">
+          <span class="about-modal-eyebrow">ABOUT THIS APP</span>
+          <span class="modal-title">NovaByte Studio</span>
+        </div>
+        <button class="modal-close" data-close="modal-about" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="modal-body modal-body--about">
-        <div class="about-logo">
-          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
-            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
-              opacity="0.4" />
-            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
-              font-family="system-ui">NB</text>
-          </svg>
+        <section class="about-hero">
+          <div class="about-logo" aria-hidden="true">
+            <svg class="app-brand-logo" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="2" fill="none" />
+              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none" opacity="0.4" />
+              <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle" font-family="system-ui">NB</text>
+            </svg>
+          </div>
+          <div class="about-identity">
+            <div class="about-name">NovaByte Studio</div>
+            <p class="about-tagline">Build, package, and ship apps for NovaByte OS.</p>
+            <div class="about-version" id="about-version">Version 1.2.20</div>
+          </div>
+        </section>
+        <div class="about-details">
+          <div class="about-detail">
+            <span>Designed for</span>
+            <strong>NovaByte OS &amp; NBOSP</strong>
+          </div>
+          <div class="about-detail">
+            <span>Created by</span>
+            <strong>DirazCoder</strong>
+          </div>
         </div>
-        <div class="about-name">NovaByte Studio</div>
-        <div class="about-version" id="about-version">Version 1.2.10</div>
-        <div class="about-copy">© 2026 NovaByteOfficial</div>
         <a class="about-link" id="about-releases-link" href="#"
-          onclick="nw.Shell.openExternal('https://github.com/NovaByteOfficial/novapack-studio/releases'); return false;">View
-          Releases on GitHub</a>
+          onclick="nw.Shell.openExternal('https://github.com/DirazCoder/novapack-studio/releases'); return false;">View releases on GitHub</a>
       </div>
       <div class="modal-footer">
-        <button class="modal-btn" data-close="modal-about">Close</button>
+        <span class="about-copyright">© 2026 DirazCoder</span>
+        <button class="modal-btn" data-close="modal-about">Done</button>
       </div>
     </div>
   </div>
@@ -1568,16 +2223,16 @@
     <div class="modal modal--wide">
       <div class="modal-header">
         <span class="modal-title">Update Available</span>
-        <button class="modal-close" data-close="modal-update">✕</button>
+        <button class="modal-close" data-close="modal-update" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="modal-body modal-body--update">
         <div class="update-heading-row">
           <div class="about-logo">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
-              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+            <svg class="app-brand-logo" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="2" fill="none" />
+              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none"
                 opacity="0.4" />
-              <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+              <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle"
                 font-family="system-ui">NB</text>
             </svg>
           </div>
@@ -1599,24 +2254,30 @@
   <div class="modal-overlay hidden" id="modal-help">
     <div class="modal modal--wide modal--help">
       <div class="modal-header">
-        <span class="modal-title">Help</span>
-        <button class="modal-close" data-close="modal-help">✕</button>
+        <div class="help-modal-heading">
+          <span class="help-modal-eyebrow">NOVABYTE STUDIO GUIDE</span>
+          <span class="modal-title">Help &amp; documentation</span>
+        </div>
+        <button class="modal-close" data-close="modal-help" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="help-logo-row">
-        <div class="about-logo">
+        <div class="about-logo" aria-hidden="true">
           <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="#22c55e" stroke-width="2" fill="none" />
-            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="#22c55e" stroke-width="1" fill="none"
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="2" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none"
               opacity="0.4" />
-            <text x="24" y="28" fill="#22c55e" font-size="11" font-weight="700" text-anchor="middle"
+            <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle"
               font-family="system-ui">NB</text>
           </svg>
         </div>
-        <div class="about-name">NovaByte Studio</div>
-        <div class="about-copy">Everything you need to build, package, and ship a `.novaapp`.</div>
+        <div class="help-logo-copy">
+          <span class="help-logo-kicker">QUICK REFERENCE</span>
+          <div class="about-name">Build with confidence</div>
+          <div class="about-copy">Browse the guides for projects, manifests, permissions, builds, and shortcuts.</div>
+        </div>
       </div>
       <div class="modal-body modal-body--help">
-        <nav class="help-nav" id="help-nav">
+        <nav class="help-nav" id="help-nav" aria-label="Help topics">
           <button class="help-nav-btn active" data-help-section="how-to-use">How to Use</button>
           <button class="help-nav-btn" data-help-section="manifest">Manifest</button>
           <button class="help-nav-btn" data-help-section="permissions">Permissions</button>
@@ -1636,7 +2297,7 @@
               <li><strong>Build</strong> from the Build tab — this validates your manifest, bundles every file, and writes a <code>.novaapp</code> to your output directory.</li>
               <li><strong>Inspect</strong> any <code>.novaapp</code> by dragging it into the Package Inspector to check its manifest, files, and signature.</li>
             </ol>
-            <p class="help-note">⚠️ Reference external scripts such as <code>app.js</code> instead of putting code in an inline script block. The host defers packaged entry-page scripts until HTML parsing is complete, so DOM-ready wrappers are not needed. See the FAQ for details.</p>
+            <p class="help-note"><svg class="ui-icon help-note-icon" aria-hidden="true"><use href="#ui-icon-alert" /></svg> Reference external scripts such as <code>app.js</code> instead of putting code in an inline script block. The host defers packaged entry-page scripts until HTML parsing is complete, so DOM-ready wrappers are not needed. See the FAQ for details.</p>
           </div>
 
           <div class="help-pane" data-help-pane="manifest">
@@ -1649,13 +2310,14 @@
               <tr><td><code>version</code></td><td>Semantic version <code>x.y.z</code></td></tr>
               <tr><td><code>entry</code></td><td>Main HTML file to load</td></tr>
             </table>
-            <p>Optional fields include <code>description</code>, <code>author</code>, <code>email</code>, <code>website</code>, <code>icon</code>, <code>type</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>unrestrictedEntry</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>transparent</code>, <code>categories</code>, <code>handles</code>, <code>ipc</code>, <code>notifications</code>, <code>shareTarget</code>, <code>registryScopes</code>, <code>allowNestedWebview</code>, <code>allowPopupsToEscapeSandbox</code>, and <code>sandbox</code>. Studio preserves manifest properties that are not edited in its form.</p>
+            <p>Optional fields include <code>description</code>, <code>author</code>, <code>email</code>, <code>website</code>, <code>icon</code>, <code>type</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>permissionReasons</code>, <code>unrestrictedEntry</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>transparent</code>, <code>categories</code>, <code>handles</code>, <code>ipc</code>, <code>notifications</code>, <code>shareTarget</code>, <code>registryScopes</code>, <code>allowNestedWebview</code>, <code>allowPopupsToEscapeSandbox</code>, and <code>sandbox</code>. Studio preserves manifest properties that are not edited in its form.</p>
             <p class="help-note">App IDs must be lowercase reverse-domain (<code>io.github.you.app</code>) — <code>MyApp</code> or <code>myapp</code> with no dot will fail validation at Build time. Web-app shortcuts use the <code>webapp_</code> prefix instead.</p>
           </div>
 
           <div class="help-pane" data-help-pane="permissions">
             <h3>Permissions</h3>
             <p>Studio lists all 52 current permission strings. Declare required grants in <code>permissions</code>; missing medium-or-higher-risk grants may be requested at launch, but denial does not block the app. Optional sensitive grants in <code>optionalPermissions</code> are not prompted at launch and can be requested at runtime or granted from Settings → Apps. Low-risk grants are auto-granted unless previously denied. App-owned <code>/data/</code> files and user-selected files do not need broad filesystem permissions.</p>
+            <p>Use <strong>Permission reasons</strong> in this tab to explain each grant. Studio saves the text in <code>permissionReasons</code>; NovaByte OS displays it in permission prompts. Reasons must be non-empty and at most 500 characters. A reason for an undeclared permission is preserved but unused.</p>
             <table class="help-table">
               <tr><th>Category</th><th>Permissions</th><th>Risk range</th></tr>
               <tr><td>Filesystem</td><td><code>fs:access</code>, <code>fs:metadata</code>, <code>fs:watch</code>, <code>fs:read:images</code>, <code>fs:read:video</code>, <code>fs:read:audio</code></td><td>Low – Critical</td></tr>
@@ -1676,7 +2338,7 @@
 
           <div class="help-pane" data-help-pane="signing">
             <h3>Building</h3>
-            <p>Hitting <strong>Build</strong> validates your manifest and declared permissions, compiles detected C/C++ sources with <code>emcc</code> into WebAssembly (when present), Base64-encodes project files, optionally signs the package, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory. C/C++ projects require Emscripten on your PATH.</p>
+            <p>Hitting <strong>Build</strong> validates your manifest and declared permissions, compiles detected C/C++ sources with <code>emcc</code> into WebAssembly (when present), Base64-encodes project files, optionally signs the package, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory. Packaged Studio releases include Emscripten; source or development runs need Emscripten on your PATH.</p>
           </div>
 
           <div class="help-pane" data-help-pane="shortcuts">
@@ -1712,6 +2374,28 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div class="modal-overlay hidden studio-dialog-overlay" id="studio-dialog-overlay">
+    <section class="modal studio-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="studio-dialog-title" aria-describedby="studio-dialog-message">
+      <div class="studio-dialog-header">
+        <span class="studio-dialog-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-help" /></svg></span>
+        <div class="studio-dialog-heading">
+          <span class="studio-dialog-eyebrow">NOVABYTE STUDIO</span>
+          <h2 class="studio-dialog-title" id="studio-dialog-title">Confirm action</h2>
+        </div>
+      </div>
+      <div class="studio-dialog-body">
+        <p class="studio-dialog-message" id="studio-dialog-message"></p>
+        <input class="field-input studio-dialog-input hidden" id="studio-dialog-input"
+          type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="studio-dialog-footer">
+        <button class="modal-btn studio-dialog-cancel" id="studio-dialog-cancel" type="button">Cancel</button>
+        <button class="modal-btn modal-btn--primary studio-dialog-confirm" id="studio-dialog-confirm" type="button">Continue</button>
+      </div>
+    </section>
   </div>
 
   <!-- CodeMirror 6 — bundled via esbuild (see package.json scripts) -->
@@ -1759,6 +2443,14 @@
       function updateIntegrityUI() {
         window.setSelectedIntegrityMethod?.(integritySelect ? integritySelect.value : 'blake3');
       }
+
+      window.applyBuildSigningMethod = (method) => {
+        if (![...methodSelect.options].some((option) => option.value === method)) return;
+        methodSelect.value = method;
+        window.setSelectedSigningMethod?.(method);
+        if (customRow) customRow.classList.toggle('hidden', method !== 'custom');
+        if (devKeyRow) devKeyRow.classList.toggle('hidden', method === 'custom' || method === 'none');
+      };
 
       methodSelect.addEventListener('change', updateSigningUI);
       if (integritySelect) integritySelect.addEventListener('change', updateIntegrityUI);

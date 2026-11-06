@@ -76,7 +76,7 @@ for (const target of platforms) {
       description: 'NovaByte Studio',
       icon: path.join(root, 'assets', iconName),
       LSApplicationCategoryType: 'public.app-category.developer-tools',
-      NSHumanReadableCopyright: 'Copyright 2026 NovaByteOfficial',
+      NSHumanReadableCopyright: 'Copyright 2026 DirazCoder',
     },
   });
 }
