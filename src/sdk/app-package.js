@@ -37,6 +37,22 @@
 
 const AppPackage = (() => {
   const NOVAAPP_FORMAT_VERSION = '1.0';
+  let _sharedPermissionCatalog = null;
+  try {
+    _sharedPermissionCatalog = require('./permissions.js');
+  } catch (error) {
+    if (error.code !== 'MODULE_NOT_FOUND' || !error.message.includes('./permissions.js')) {
+      throw error;
+    }
+  }
+  const LEGACY_PERMISSION_ALIASES = _sharedPermissionCatalog?.LEGACY_PERMISSION_ALIASES || {
+    'vfs:metadata': 'fs:metadata',
+    'vfs:metedata': 'fs:metadata',
+    'vfs:access': 'fs:access',
+    'vfs:read': 'fs:access',
+    'vfs:write': 'fs:access',
+    'vfs:delete': 'fs:access',
+  };
   const _crypto = (typeof window !== 'undefined' ? window.crypto : null)
     || globalThis.crypto
     || require('crypto');
@@ -128,6 +144,45 @@ const AppPackage = (() => {
       files:        pkg.files,
       compiled_at:  pkg.compiled_at
     });
+  }
+
+  // Signature encoding helpers.
+  //
+  // NOVAAPP.md documents the package signature as base64url, and tools
+  // mirroring Studio's build (repackage.js et al.) emit base64url — but
+  // signPackage/verifyPackage historically emitted and parsed plain hex.
+  // A correctly-signed base64url package therefore NEVER verified against
+  // the trust store (hex parsing mangled the bytes), silently pinning every
+  // such package at Unverified forever, even after its key was trusted.
+  // Signing now emits the documented base64url; verification accepts BOTH
+  // encodings (hex first, then base64/base64url) so packages from either
+  // generation verify. Both interpretations are tried in order when a
+  // string is ambiguous (hex chars are also valid base64).
+
+  function _bytesToBase64Url(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function _signatureCandidates(signature) {
+    const s = String(signature || '').trim();
+    if (!s) return [];
+    const candidates = [];
+    if (/^[0-9a-fA-F]+$/.test(s) && s.length >= 2 && s.length % 2 === 0) {
+      candidates.push(new Uint8Array(s.match(/.{2}/g).map(b => parseInt(b, 16))));
+    }
+    if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(s) && s.length >= 2) {
+      const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+      try {
+        const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, '=');
+        const bin = atob(padded);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        candidates.push(out);
+      } catch (_) { /* not base64 either — hex candidate (if any) stands */ }
+    }
+    return candidates;
   }
 
   // ─── Key material helpers ───────────────────────────────────────────────────
@@ -280,6 +335,19 @@ const AppPackage = (() => {
     };
   }
 
+  async function mapWithConcurrency(items, mapper, concurrency = 4) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(items.length, concurrency);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        results[index] = await mapper(items[index]);
+      }
+    }));
+    return results;
+  }
+
   async function computeIntegrity(pkg, method = DEFAULT_INTEGRITY_METHOD) {
     const m = method || DEFAULT_INTEGRITY_METHOD;
     const hasher = _getHasher(m);
@@ -288,21 +356,25 @@ const AppPackage = (() => {
     const payload = new TextEncoder().encode(_signingPayload(pkg));
     const payloadHash = await hasher.hash(payload);
 
-    const fileHashes = {};
-    for (const [relPath, encoded] of Object.entries(pkg.files || {})) {
+    const fileEntries = await mapWithConcurrency(Object.entries(pkg.files || {}), async ([relPath, encoded]) => {
       const binary = atob(encoded);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      fileHashes[relPath] = await hasher.hash(bytes);
-    }
+      return [relPath, await hasher.hash(bytes)];
+    });
 
-    return { method: m, payloadHash, fileHashes };
+    return { method: m, payloadHash, fileHashes: Object.fromEntries(fileEntries) };
   }
 
   async function verifyIntegrity(pkg) {
     if (!pkg || !pkg.integrity) return false;
     const { method, payloadHash, fileHashes } = pkg.integrity;
-    if (method === 'none' || !payloadHash) return true;
+    // Fail closed: a block recorded with method 'none' (or without a
+    // payload digest) proves nothing — there are no hashes to compare, so
+    // there is nothing to verify. Returning true here let any package that
+    // simply skipped hashing ride the integrity-only install path as
+    // "verified".
+    if (method === 'none' || !payloadHash) return false;
 
     const hasher = _getHasher(method);
     if (!hasher) return false;
@@ -311,16 +383,17 @@ const AppPackage = (() => {
     const currentPayloadHash = await hasher.hash(payload);
     if (currentPayloadHash !== payloadHash) return false;
 
-    for (const [relPath, expectedHash] of Object.entries(fileHashes || {})) {
+    const entries = Object.entries(fileHashes || {});
+    if (entries.some(([relPath]) => !pkg.files?.[relPath])) return false;
+
+    const checks = await mapWithConcurrency(entries, async ([relPath, expectedHash]) => {
       const encoded = pkg.files?.[relPath];
-      if (!encoded) return false;
       const binary = atob(encoded);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const currentFileHash = await hasher.hash(bytes);
-      if (currentFileHash !== expectedHash) return false;
-    }
-    return true;
+      return (await hasher.hash(bytes)) === expectedHash;
+    });
+    return checks.every(Boolean);
   }
 
   // ─── Signing & verification ─────────────────────────────────────────────────
@@ -363,7 +436,8 @@ const AppPackage = (() => {
     const payload = new TextEncoder().encode(_signingPayload(pkg));
     const cryptoKey = await _toCryptoKey(privateKey, 'sign', method);
     const sig = await _crypto.subtle.sign(spec.algo, cryptoKey, payload);
-    return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+    // Documented format: base64url (see _signatureCandidates).
+    return _bytesToBase64Url(new Uint8Array(sig));
   }
 
   async function verifyPackage(pkg, publicKey, method) {
@@ -411,10 +485,14 @@ const AppPackage = (() => {
     try {
       const payload = new TextEncoder().encode(_signingPayload(pkg));
       const cryptoKey = await _toCryptoKey(publicKey, 'verify', m);
-      const sigMatch = pkg.signature.match(/.{2}/g);
-      if (!sigMatch) return false;
-      const sigBytes = new Uint8Array(sigMatch.map(b => parseInt(b, 16)));
-      return await _crypto.subtle.verify(spec.algo, cryptoKey, sigBytes, payload);
+      // Accept the documented base64url form AND the hex form historical
+      // builds emitted — see _signatureCandidates.
+      for (const sigBytes of _signatureCandidates(pkg.signature)) {
+        try {
+          if (await _crypto.subtle.verify(spec.algo, cryptoKey, sigBytes, payload)) return true;
+        } catch (_) { /* wrong length/encoding for this key — next candidate */ }
+      }
+      return false;
     } catch (_) {
       return false;
     }
@@ -462,6 +540,9 @@ const AppPackage = (() => {
         pkg.files[path] = btoa(binary);
       }
     }
+    if (manifest.permissions?.includes('system:root') && !pkg.files[manifest.unrestrictedEntry]) {
+      throw new Error(`Root package is missing unrestrictedEntry file "${manifest.unrestrictedEntry}"`);
+    }
 
     if (options.signingKey) {
       const method = options.signingMethod || DEFAULT_SIGNING_METHOD;
@@ -470,9 +551,14 @@ const AppPackage = (() => {
       pkg.signer = options.signerName || 'self-signed';
     }
 
-    if (options.integrityMethod !== 'none') {
-      const intMethod = options.integrityMethod || DEFAULT_INTEGRITY_METHOD;
-      pkg.integrity = await computeIntegrity(pkg, intMethod);
+    // Integrity is opt-in per call: the Packages app and Studio-style
+    // builders pass an explicit method (Studio v1.1.80+ defaults new
+    // projects to None), and computing one implicitly via the blake3
+    // default hard-required @noble/hashes — a bare createPackage() in an
+    // environment without that dependency threw instead of building the
+    // package it was asked to build.
+    if (options.integrityMethod && options.integrityMethod !== 'none') {
+      pkg.integrity = await computeIntegrity(pkg, options.integrityMethod);
     }
 
     return pkg;
@@ -483,23 +569,36 @@ const AppPackage = (() => {
   async function installPackage(pkg, options = {}) {
     let verified = false;
     let signer = null;
+    const isSystemBundle = options.source === 'system-bundle';
+
+    if (isSystemBundle && options.skipVerify) {
+      throw new Error('System-bundle packages cannot bypass signature verification');
+    }
 
     if (!options.skipVerify) {
       const trustStore = options.trustStore || [];
       const result = await verifyAgainstTrustStore(pkg, trustStore, options.revocationCheck);
       verified = result.trusted;
       signer = result.signer;
-      if (!verified && !options.allowUnverified) {
-        const intOk = options.allowIntegrityFallback ? await verifyIntegrity(pkg) : false;
-        if (!intOk) {
-          const msg = 'Package signature did not match any trusted signer and integrity check failed';
-          if (typeof EventLog !== 'undefined') {
-            EventLog.log({ app: 'Packages', category: 'packages', severity: 'error', message: `Install failed for ${pkg?.manifest?.id || '(unknown)'}: ${msg}`, data: { appId: pkg?.manifest?.id, reason: 'signature' } });
-          }
-          throw new Error(msg);
+
+      if (isSystemBundle) {
+        if (pkg?.manifest?.system !== true || !verified || signer !== 'NovaByte System') {
+          throw new Error('System-bundle package must have a valid NovaByte System signature');
         }
+        if (!pkg.integrity || !await verifyIntegrity(pkg)) {
+          throw new Error('System-bundle package failed integrity verification');
+        }
+      } else if (!verified && options.allowIntegrityFallback && await verifyIntegrity(pkg)) {
+        // Integrity-only installs prove package contents, not publisher identity.
         verified = true;
         signer = signer || 'integrity-only';
+      }
+      if (!verified && !options.allowUnverified && !isSystemBundle) {
+        const msg = 'Package signature did not match any trusted signer and integrity check failed';
+        if (typeof EventLog !== 'undefined') {
+          EventLog.log({ app: 'Packages', category: 'packages', severity: 'error', message: `Install failed for ${pkg?.manifest?.id || '(unknown)'}: ${msg}`, data: { appId: pkg?.manifest?.id, reason: 'signature' } });
+        }
+        throw new Error(msg);
       }
     }
 
@@ -508,6 +607,20 @@ const AppPackage = (() => {
       const msg = `Invalid manifest: ${validation.errors.join(', ')}`;
       if (typeof EventLog !== 'undefined') {
             EventLog.log({ app: 'Packages', category: 'packages', severity: 'error', message: `Install failed for ${pkg?.manifest?.id || '(unknown)'}: ${msg}`, data: { appId: pkg?.manifest?.id, reason: 'manifest' } });
+      }
+      throw new Error(msg);
+    }
+    if (pkg.manifest.permissions?.includes('system:root')
+      && typeof pkg.files?.[pkg.manifest.unrestrictedEntry] !== 'string') {
+      const msg = `Root package is missing unrestrictedEntry file "${pkg.manifest.unrestrictedEntry}"`;
+      if (typeof EventLog !== 'undefined') {
+        EventLog.log({
+          app: 'Packages',
+          category: 'security',
+          severity: 'error',
+          message: `Install failed for ${pkg.manifest.id}: ${msg}`,
+          data: { appId: pkg.manifest.id, permission: 'system:root', action: 'root-package-invalid' },
+        });
       }
       throw new Error(msg);
     }
@@ -521,21 +634,41 @@ const AppPackage = (() => {
       throw new Error(msg);
     }
 
+    // A package may declare itself as a system app, but that declaration
+    // only has authority when the package has been cryptographically
+    // verified against the dedicated System signing key — a separate,
+    // more tightly held key from the general trusted-signing one (see
+    // trust-store.js's 'NovaByte System' entry). Checking against the
+    // general trusted-signing entry here would let any reviewed
+    // third-party app claim system: true, which defeats the point of
+    // having a separate system key at all. The manifest flag is part of
+    // the signed payload, so it cannot be changed after signing.
+    const system = verified && signer === 'NovaByte System' && pkg.manifest?.system === true;
+
     const appConfig = {
       ...pkg.manifest,
+      manifest:      pkg.manifest,
       files:         pkg.files,
       signature:     pkg.signature,
+      signing:       pkg.signing,
+      integrity:     pkg.integrity,
+      novabyte_app:  pkg.novabyte_app,
+      compiled_at:   pkg.compiled_at,
       verified,
       signer,
+      system,
       source:        options.source || 'file',
       installedDate: new Date().toISOString()
     };
 
-    const registered = (typeof AppRegistry !== 'undefined') && AppRegistry?.registerApp(appConfig, { force: !!options.force });
+    const registered = (typeof AppRegistry !== 'undefined') &&
+      AppRegistry?.registerApp(appConfig, { force: !!options.force });
 
     if (registered && typeof window.NovaAppPackageStore !== 'undefined' && window.NovaAppPackageStore.installApp) {
       try {
         await window.NovaAppPackageStore.installApp({
+          novabyte_app: pkg.novabyte_app,
+          compiled_at: pkg.compiled_at,
           id: appConfig.id,
           name: appConfig.name,
           version: appConfig.version,
@@ -572,8 +705,10 @@ const AppPackage = (() => {
     return { success: true, app: registered, verified, signer, warnings: validation.warnings };
   }
 
-  function uninstallPackage(appId) {
-    const result = (typeof AppRegistry !== 'undefined' && AppRegistry?.unregisterApp(appId)) || false;
+  async function uninstallPackage(appId) {
+    const result = (typeof AppRegistry !== 'undefined' && AppRegistry?.uninstallApp)
+      ? await AppRegistry.uninstallApp(appId)
+      : false;
     if (typeof EventLog !== 'undefined') {
       EventLog.log({
         app: 'Packages',
@@ -644,29 +779,157 @@ const AppPackage = (() => {
   // mistake (wrong file embedded) or a deliberate attempt to bloat the
   // manifest / waste memory on every render of the app list, launcher,
   // taskbar, etc. — icon strings get parsed and rendered repeatedly across
-  // many UI surfaces (see appmanager.js svgIcon()/createEl() call sites),
+  // many UI surfaces (see the App Manager package's svgIcon()/createEl() call sites),
   // so an oversized one has an outsized cost relative to its purpose.
   const MAX_ICON_DATA_URI_BYTES = 512 * 1024; // 512KB
+  const IPC_ENDPOINT_PATTERN = /^(?:service|provider):[a-z0-9][a-z0-9._-]{0,127}$/;
+  const IPC_ACTION_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+
+  function _knownPermissionIds() {
+    if (_sharedPermissionCatalog?.PERMISSION_IDS instanceof Set) {
+      return _sharedPermissionCatalog.PERMISSION_IDS;
+    }
+    const hostPermissions = typeof AppPermissionManager !== 'undefined'
+      ? AppPermissionManager?.PERMISSION_TYPES
+      : null;
+    return new Set(Object.values(hostPermissions || {}).filter((value) => typeof value === 'string'));
+  }
 
   function validateManifest(manifest) {
     const errors = [], warnings = [];
-    if (!manifest || typeof manifest !== 'object') {
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
       return { valid: false, errors: ['Manifest is missing or not an object'], warnings: [] };
     }
     ['id', 'name', 'version', 'entry'].forEach(f => {
       if (!manifest[f]) errors.push(`Missing required field: ${f}`);
     });
-    if (manifest.id && !manifest.id.startsWith('webapp_')) {
+    if (manifest.id && typeof manifest.id !== 'string') {
+      errors.push('App id must be a string');
+    } else if (manifest.id && !manifest.id.startsWith('webapp_')) {
       if (!/^[a-z][a-z0-9]*(\.[a-z0-9]+)+$/.test(manifest.id))
         errors.push(`Invalid app ID "${manifest.id}". Must be reverse domain format.`);
     }
     if (manifest.version && !/^\d+\.\d+\.\d+$/.test(manifest.version))
       warnings.push(`Version "${manifest.version}" doesn't follow semver (x.y.z)`);
-    if (manifest.permissions) {
-      const valid = Object.values((typeof AppPermissionManager !== 'undefined' && AppPermissionManager?.PERMISSION_TYPES) || {});
-      manifest.permissions.forEach(p => {
-        if (valid.length > 0 && !valid.includes(p)) warnings.push(`Unknown permission: ${p}`);
+    if (manifest.handles !== undefined) {
+      const handles = manifest.handles;
+      if (!handles || typeof handles !== 'object' || Array.isArray(handles)) {
+        errors.push('handles must be an object');
+      } else {
+        for (const key of Object.keys(handles)) {
+          if (!['protocols', 'extensions', 'mimeTypes', 'roles'].includes(key)) {
+            errors.push(`handles.${key} is not supported`);
+          }
+        }
+        const definitions = [
+          ['protocols', value => /^[a-z][a-z0-9+.-]*:?$/i.test(value.trim())],
+          ['extensions', value => /^\.[a-z0-9][a-z0-9._+-]*$/i.test(value.trim())],
+          ['mimeTypes', value => /^[a-z0-9!#$&^_.+-]+\/(?:[a-z0-9!#$&^_.+-]+|\*)$/i.test(value.split(';', 1)[0].trim())],
+          ['roles', value => value.trim().toLowerCase() === 'home'],
+        ];
+        for (const [key, isValid] of definitions) {
+          if (handles[key] === undefined) continue;
+          if (!Array.isArray(handles[key]) || handles[key].length > 100) {
+            errors.push(`handles.${key} must be an array of at most 100 strings`);
+            continue;
+          }
+          handles[key].forEach((value, index) => {
+            if (typeof value !== 'string' || !isValid(value)) {
+              errors.push(`handles.${key}[${index}] is invalid`);
+            }
+          });
+        }
+      }
+    }
+    if (manifest.shareTarget !== undefined) {
+      const shareTarget = manifest.shareTarget;
+      if (!shareTarget || typeof shareTarget !== 'object' || Array.isArray(shareTarget)) {
+        errors.push('shareTarget must be an object');
+      } else {
+        for (const key of Object.keys(shareTarget)) {
+          if (key !== 'mimeTypes') errors.push(`shareTarget.${key} is not supported`);
+        }
+        if (shareTarget.mimeTypes !== undefined) {
+          if (!Array.isArray(shareTarget.mimeTypes) || shareTarget.mimeTypes.length > 20) {
+            errors.push('shareTarget.mimeTypes must be an array of at most 20 MIME patterns');
+          } else {
+            const seenMime = new Set();
+            shareTarget.mimeTypes.forEach((value, index) => {
+              const base = typeof value === 'string' ? value.split(';', 1)[0].trim() : '';
+              const valid = /^\*\/\*$/.test(base) || /^[a-z0-9!#$&^_.+-]+\/(?:[a-z0-9!#$&^_.+-]+|\*)$/i.test(base);
+              if (!valid) {
+                errors.push(`shareTarget.mimeTypes[${index}] is invalid`);
+              } else if (seenMime.has(base.toLowerCase())) {
+                errors.push(`shareTarget.mimeTypes[${index}] is duplicated`);
+              } else {
+                seenMime.add(base.toLowerCase());
+              }
+            });
+          }
+        }
+      }
+    }
+    if (manifest.ipc !== undefined) {
+      const ipcManifest = manifest.ipc;
+      if (!ipcManifest || typeof ipcManifest !== 'object' || Array.isArray(ipcManifest)) {
+        errors.push('ipc must be an object');
+      } else {
+        for (const key of Object.keys(ipcManifest)) {
+          if (!['exports', 'receives'].includes(key)) errors.push(`ipc.${key} is not supported`);
+        }
+        for (const [key, pattern] of [
+          ['exports', IPC_ENDPOINT_PATTERN],
+          ['receives', IPC_ACTION_PATTERN],
+        ]) {
+          const values = ipcManifest[key];
+          if (values === undefined) continue;
+          if (!Array.isArray(values) || values.length > 100) {
+            errors.push(`ipc.${key} must be an array of at most 100 strings`);
+            continue;
+          }
+          const seen = new Set();
+          values.forEach((value, index) => {
+            if (typeof value !== 'string' || !pattern.test(value)) {
+              errors.push(`ipc.${key}[${index}] is invalid`);
+            } else if (seen.has(value)) {
+              errors.push(`ipc.${key}[${index}] is duplicated`);
+            } else {
+              seen.add(value);
+            }
+          });
+        }
+      }
+    }
+    const knownPermissions = _knownPermissionIds();
+    for (const field of ['permissions', 'optionalPermissions']) {
+      if (manifest[field] === undefined) continue;
+      if (!Array.isArray(manifest[field])) {
+        errors.push(`${field} must be an array`);
+        continue;
+      }
+      manifest[field].forEach((permission, index) => {
+        if (typeof permission !== 'string') {
+          errors.push(`${field}[${index}] must be a string`);
+        } else if (LEGACY_PERMISSION_ALIASES[permission]) {
+          warnings.push(
+            `Legacy permission "${permission}" is supported for compatibility; use "${LEGACY_PERMISSION_ALIASES[permission]}" for new apps`
+          );
+        } else if (knownPermissions.size > 0 && !knownPermissions.has(permission)) {
+          warnings.push(`Unknown permission: ${permission}`);
+        }
       });
+    }
+    const requestsRoot = Array.isArray(manifest.permissions) && manifest.permissions.includes('system:root');
+    const rootEntry = manifest.unrestrictedEntry;
+    if (rootEntry !== undefined && (typeof rootEntry !== 'string'
+      || !/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[a-z0-9_./-]+\.js$/i.test(rootEntry))) {
+      errors.push('unrestrictedEntry must name a packaged JavaScript file without parent-directory segments');
+    }
+    if (requestsRoot && typeof rootEntry !== 'string') {
+      errors.push('system:root requires unrestrictedEntry to name a packaged JavaScript file');
+    }
+    if (Array.isArray(manifest.optionalPermissions) && manifest.optionalPermissions.includes('system:root')) {
+      errors.push('system:root must be declared as a required permission, not optionalPermissions');
     }
     if (typeof manifest.icon === 'string' && manifest.icon.startsWith('data:')) {
       // .length on a data: URI string is a fine proxy for its encoded byte

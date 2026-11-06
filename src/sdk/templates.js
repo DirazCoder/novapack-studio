@@ -195,11 +195,11 @@ note below before assuming C++ will make everything faster.
 
 ## Requirements
 
-Building this project requires Emscripten (\`emcc\`) on your PATH. Studio
-does not bundle or install a compiler -- if \`emcc\` isn't found, Build will
-fail with install instructions rather than silently skip module.cpp.
+Packaged Studio releases include a platform-specific Emscripten SDK. When
+running Studio from source or a development build, Emscripten (\`emcc\`) must
+be installed separately and available on your PATH.
 
-Install it yourself first:
+For source/development builds, install it yourself first:
   macOS:            brew install emscripten
   Linux/Windows:    git clone https://github.com/emscripten-core/emsdk.git
                      cd emsdk && ./emsdk install latest && ./emsdk activate latest
@@ -517,7 +517,7 @@ main();`,
 
   utility: {
     name: 'Utility App',
-    description: "File-access tool using NovaByte's virtual filesystem",
+    description: "App-data tool using NovaByte's scoped filesystem",
     icon: '🔧',
     files: {
       'index.html': (m) => `<!DOCTYPE html>
@@ -549,11 +549,7 @@ main();`,
 function main() {
   const lifecycle = new AbortController();
 
-  // This app's own scratch file. vfs:write (and read-back of anything it
-  // wrote) only ever succeeds under /data/ — a write anywhere
-  // else fails with PERMISSION_DENIED even with the vfs:write grant held.
-  // vfs:read alone can still see the shared tree; it's only write/rename/
-  // move/delete that are scoped this tightly.
+  // App-owned files under /data/ need no filesystem permission.
   const APP_FILE_PATH = '/data/files/example.txt';
 
   // ipc() rejects on error rather than resolving with {error}, so this adapts
@@ -573,18 +569,18 @@ function main() {
   }
 
   async function listFiles() {
-    const res = await send('nova:vfs:list', { path: '/' });
+    const res = await send('nova:fs:list', { path: '/data/' });
     log(res.error ? res.error.message : JSON.stringify(res.result, null, 2));
   }
 
   async function readFile() {
-    const res = await send('nova:vfs:read', { path: APP_FILE_PATH });
+    const res = await send('nova:fs:read', { path: APP_FILE_PATH });
     // The file's content comes back on 'data', not 'content'.
     log(res.error ? res.error.message : (res.result?.data ?? '(empty)'));
   }
 
   async function writeFile() {
-    const res = await send('nova:vfs:write', {
+    const res = await send('nova:fs:write', {
       path: APP_FILE_PATH,
       content: 'Hello from ${escapeJsString(m.name)}',
     });
@@ -1049,9 +1045,7 @@ main();`,
 // The nova:ready handshake is automatic — no setup call needed.
 
 function main() {
-  // vfs:write only ever succeeds under /data/ — a write
-  // anywhere else fails with PERMISSION_DENIED regardless of the vfs:write
-  // grant, so the store has to live inside this app's own data folder.
+  // App-owned files under /data/ need no filesystem permission.
   const STORE_PATH = '/data/files/entries.json';
   const lifecycle = new AbortController();
 
@@ -1073,7 +1067,7 @@ function main() {
   }
 
   async function loadEntries() {
-    const res = await send('nova:vfs:read', { path: STORE_PATH });
+    const res = await send('nova:fs:read', { path: STORE_PATH });
     if (res.error) return [];
     try {
       // File content comes back on 'data', not 'content'.
@@ -1125,7 +1119,7 @@ function main() {
       const entries = await loadEntries();
       entries.push({ title, notes, createdAt: new Date().toISOString() });
 
-      const res = await send('nova:vfs:write', {
+      const res = await send('nova:fs:write', {
         path: STORE_PATH,
         content: JSON.stringify(entries, null, 2),
       });
@@ -2267,16 +2261,6 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
     if (template === 'browser') {
       manifestObj.permissions = ['net:external', 'sandbox:nested-webview'];
       manifestObj.allowNestedWebview = true;
-    }
-
-    // Both templates' app.js call nova:vfs:read/write against files in this
-    // app's private /data/files/ folder. Without declaring these here, calls would still
-    // compile and run, but every one of them would reject with
-    // PERMISSION_DENIED on a fresh install, since permissions.md is explicit
-    // that only entries in `permissions` go through the launch-time consent
-    // queue — a template that never asks for the grant can never get it.
-    if (template === 'form' || template === 'utility') {
-      manifestObj.permissions = ['vfs:read', 'vfs:write'];
     }
 
     fs.writeFileSync(path.join(targetDir, 'manifest.json'), JSON.stringify(manifestObj, null, 2));

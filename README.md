@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.01-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.10-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -65,7 +65,7 @@ The flags also accept `--windows` and `--macos` aliases. A platform-specific bui
 ### Prerequisites
 
 - Basic HTML, CSS, and JavaScript knowledge
-- For the `native-cpp` template only: [Emscripten](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`) on your PATH. Studio doesn't bundle a compiler — Build fails with install instructions if `emcc` isn't found, rather than silently skipping the C++ source. This path is verified in CI on Windows, Linux, and macOS.
+- For the `native-cpp` template only: packaged Studio releases include a platform-specific Emscripten SDK. When running Studio from source or a development build, install [Emscripten](https://emscripten.org/docs/getting_started/downloads.html) (`emcc`) and make it available on your PATH.
 
 ### Supported languages
 
@@ -75,7 +75,7 @@ The flags also accept `--windows` and `--macos` aliases. A platform-specific bui
 | HTML | Native — runs as-is in the webview | No build step required |
 | CSS | Native — runs as-is in the webview | No build step required |
 | TypeScript | Editor-only (intellisense/type-checking) | Not compiled or transpiled by Build — write plain JS for anything that ships |
-| C/C++ | Compiled to WebAssembly via `emcc` at Build time | Requires Emscripten on your PATH; see Prerequisites and the `native-cpp` template |
+| C/C++ | Compiled to WebAssembly via `emcc` at Build time | Packaged releases include Emscripten; source/development builds need an SDK on PATH |
 
 ### Available templates
 
@@ -90,7 +90,7 @@ The flags also accept `--windows` and `--macos` aliases. A platform-specific bui
 | `form` | Structured form that saves entries via NovaByte's virtual filesystem |
 | `markdown-viewer` | Live markdown preview using a bundled vendor library |
 | `chat` | Message list with input — client-side state, no permissions needed |
-| `native-cpp` | C++ compiled to WebAssembly, UI in HTML/CSS/JS — requires `emcc` (see Prerequisites) |
+| `native-cpp` | C++ compiled to WebAssembly, UI in HTML/CSS/JS — packaged releases include Emscripten |
 
 ### Bundled external dependencies (`vendor/`)
 
@@ -153,7 +153,7 @@ NovaByte Studio includes a full-featured CodeMirror 6 editor with:
 - **Workspaces** — save and restore open file sets per project
 - **Build history** — persisted build log with success/failure status, timestamps, and re-run
 - **Syntax check** — esbuild-powered JS syntax validation with line-precise error reporting
-- **Package Inspector** — drop a `.novaapp` to inspect manifest, files, signature validity, and permission audit (declared vs detected `nova:*` actions)
+- **Package Inspector** — drop a `.novaapp` to inspect its manifest, files, signature validity, and statically inferred permission requirements (filesystem and network grants remain path/destination-dependent)
 - **Update checker** — GitHub Releases API integration with semver badge and changelog modal
 - **Resizable file tree rail** — drag to resize, collapse/expand, persisted width
 - **Pinned recent projects** — pin frequently-used projects to the top of the recents list

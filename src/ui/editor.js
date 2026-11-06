@@ -14,7 +14,7 @@ import { defaultKeymap, history,
          historyKeymap, indentWithTab }        from '@codemirror/commands';
 import { foldGutter, indentOnInput,
          syntaxHighlighting, defaultHighlightStyle,
-         bracketMatching, foldKeymap,
+         bracketMatching, foldKeymap, ensureSyntaxTree,
          indentUnit, HighlightStyle }          from '@codemirror/language';
 import { search, openSearchPanel,
          closeSearchPanel, SearchQuery,
@@ -31,7 +31,7 @@ import { cpp }                                  from '@codemirror/lang-cpp';
 import { autocompletion, completionKeymap,
          closeBrackets, closeBracketsKeymap,
          completeAnyWord }                     from '@codemirror/autocomplete';
-import { linter, lintGutter, lintKeymap }      from '@codemirror/lint';
+import { linter, lintGutter, lintKeymap, setDiagnostics } from '@codemirror/lint';
 import { MergeView, goToNextChunk as _goToNextChunk, goToPreviousChunk as _goToPreviousChunk } from '@codemirror/merge';
 import { tsFacet, tsSync, tsAutocomplete,
          tsLinter }                            from '@valtown/codemirror-ts';
@@ -94,6 +94,28 @@ const tsFacetComp  = new Compartment(); // ts/js type-aware completion, per file
 // so it's cached — switching tabs within the same project must NOT rebuild it.
 
 const _tsEnvCache = new Map(); // projectRoot -> VirtualTypeScriptEnvironment
+const _LIVE_SYNTAX_EXTS = new Set(['.json', '.css', '.html', '.htm']);
+
+function _liveSyntaxLinter(view) {
+  const { state } = view;
+  const tree = ensureSyntaxTree(state, state.doc.length, 100);
+  if (!tree) return [];
+
+  const diagnostics = [];
+  tree.iterate({
+    enter(node) {
+      if (!node.type.isError) return;
+      const from = Math.min(node.from, state.doc.length);
+      diagnostics.push({
+        from,
+        to: Math.min(Math.max(node.to, from + 1), state.doc.length),
+        severity: 'error',
+        message: `Invalid ${node.name === '⚠' ? 'syntax' : node.name} syntax.`,
+      });
+    },
+  });
+  return diagnostics;
+}
 
 function _isTsAwareExt(ext) {
   return ext === '.ts' || ext === '.tsx' || ext === '.js' ||
@@ -306,6 +328,22 @@ let _view          = null;
 let _onSaveCb      = null;
 let _onChangeCb    = null;
 let _themeObserver = null;
+let _permissionHoverHandler = null;
+
+const permissionHoverEvents = EditorView.domEventHandlers({
+  mousemove(event, view) {
+    _permissionHoverHandler?.('move', event, view);
+    return false;
+  },
+  click(event, view) {
+    _permissionHoverHandler?.('click', event, view);
+    return false;
+  },
+  mouseleave(event, view) {
+    _permissionHoverHandler?.('leave', event, view);
+    return false;
+  },
+});
 
 function _destroyView() {
   if (_themeObserver) { _themeObserver.disconnect(); _themeObserver = null; }
@@ -349,8 +387,10 @@ function _createView(host, content, ext, filePath, projectRoot, onChangeCb, onSa
     doc: content,
     extensions: [
       ...baseExtensions(onChangeCb, onSaveCb, onCursorChange),
-      langForExt(ext),
+        permissionHoverEvents,
+        langForExt(ext),
       tsFacetComp.of(_buildTsExtensions(filePath, ext, projectRoot)),
+      ...(_LIVE_SYNTAX_EXTS.has(ext) ? [linter(_liveSyntaxLinter, { delay: 500 })] : []),
     ],
   });
 
@@ -366,6 +406,34 @@ window.CM = {
   get view() { return _view; },
   getValue() {
     return _view ? _view.state.doc.toString() : '';
+  },
+
+  setPermissionHoverHandler(handler) {
+    _permissionHoverHandler = typeof handler === 'function' ? handler : null;
+  },
+
+  setSyntaxDiagnostics(diagnostics) {
+    if (!_view) return;
+    const doc = _view.state.doc;
+    const markers = diagnostics.flatMap((diagnostic) => {
+      if (diagnostic.editor === false) return [];
+      let from;
+      if (Number.isInteger(diagnostic.editorFrom)) {
+        from = Math.max(0, Math.min(diagnostic.editorFrom, doc.length));
+      } else if (Number.isInteger(diagnostic.line) && diagnostic.line >= 1 && diagnostic.line <= doc.lines) {
+        const line = doc.line(diagnostic.line);
+        from = line.from + Math.max(0, Math.min((diagnostic.column || 1) - 1, line.length));
+      } else {
+        return [];
+      }
+      return [{
+        from,
+        to: Math.min(from + 1, doc.length),
+        severity: diagnostic.severity === 'warning' ? 'warning' : 'error',
+        message: diagnostic.message,
+      }];
+    });
+    _view.dispatch(setDiagnostics(_view.state, markers));
   },
 
   setValue(content) {

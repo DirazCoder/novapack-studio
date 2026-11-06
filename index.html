@@ -104,9 +104,6 @@
         <button class="sidebar-btn" id="btn-inspect">
           <span class="sidebar-btn-icon">🔍</span> Inspect .novaapp
         </button>
-        <button class="sidebar-btn" id="btn-run-novabyte">
-          <span class="sidebar-btn-icon">▶</span> Run NovaByte
-        </button>
         <button class="sidebar-btn" id="btn-editor-settings">
           <span class="sidebar-btn-icon">⚙</span> Settings
         </button>
@@ -142,7 +139,6 @@
           <div class="shortcut"><kbd id="sc-new">Ctrl+N</kbd> New project</div>
           <div class="shortcut"><kbd id="sc-open">Ctrl+O</kbd> Open folder</div>
           <div class="shortcut"><kbd id="sc-build">Ctrl+B</kbd> Build</div>
-          <div class="shortcut"><kbd id="sc-run">Ctrl+R</kbd> Run NovaByte</div>
           <div class="shortcut"><kbd id="sc-quickopen">Ctrl+P</kbd> Quick open</div>
           <div class="shortcut"><kbd id="sc-palette">Ctrl+Shift+P</kbd> Command palette</div>
           <div class="shortcut"><kbd id="sc-search">Ctrl+Shift+F</kbd> Search project</div>
@@ -194,7 +190,7 @@
               <div class="editor-tabs" id="editor-tabs"></div>
               <div class="editor-tabbar-actions">
                 <button class="icon-btn" id="btn-diff-vs-saved" title="Diff vs Saved (Ctrl/Cmd+Shift+D)">🔀</button>
-                <button class="icon-btn" id="btn-check-syntax" title="Check Syntax">✓</button>
+                <button class="icon-btn" id="btn-check-syntax" title="Check JavaScript, JSON, CSS, or HTML syntax">✓</button>
                 <button class="icon-btn" id="btn-toggle-preview" title="Toggle HTML Preview">⬜</button>
                 <button class="action-btn action-btn--ghost" id="btn-editor-save-all"
                   title="Save All (Ctrl/Cmd+Alt+S)">Save All</button>
@@ -245,72 +241,127 @@
           <!-- Tab: Manifest editor -->
           <div class="tab-panel" id="panel-manifest">
             <div class="manifest-editor manifest-editor--v2">
-
-              <div class="manifest-section manifest-section--identity">
-                <div class="manifest-section-title">Identity</div>
-
-                <div class="field-row">
-                  <label class="field-label">App ID <span class="field-hint">reverse domain</span></label>
-                  <div class="mf-id-row">
-                    <input class="field-input" id="mf-id" placeholder="com.example.myapp" spellcheck="false">
-                    <span class="mf-id-status" id="mf-id-status"></span>
-                  </div>
-                  <div class="mf-id-feedback" id="mf-id-feedback"></div>
+              <header class="manifest-page-header">
+                <div>
+                  <div class="manifest-page-eyebrow">APP CONFIGURATION</div>
+                  <h2 class="manifest-page-title">Manifest</h2>
+                  <p class="manifest-page-description">Define your app’s identity and the metadata included in its package.</p>
                 </div>
+                <span class="manifest-page-step">01 <span>/</span> 03</span>
+              </header>
 
-                <div class="field-row-pair">
-                  <div class="field-row">
-                    <label class="field-label">Name</label>
-                    <input class="field-input" id="mf-name" placeholder="My App">
-                  </div>
-                  <div class="field-row field-row--narrow">
-                    <label class="field-label">Version</label>
-                    <input class="field-input" id="mf-version" placeholder="1.0.0" spellcheck="false">
-                  </div>
-                </div>
-
-                <div class="field-row">
-                  <label class="field-label">Description <span class="field-hint">optional</span></label>
-                  <input class="field-input" id="mf-description" placeholder="A short description">
-                </div>
-
-                <div class="field-row-pair">
-                  <div class="field-row">
-                    <label class="field-label">Author <span class="field-hint">optional</span></label>
-                    <input class="field-input" id="mf-author" placeholder="Your Name">
-                  </div>
-                  <div class="field-row field-row--narrow">
-                    <label class="field-label">Entry File</label>
-                    <input class="field-input" id="mf-entry" placeholder="index.html" spellcheck="false">
-                  </div>
-                </div>
-
-                <div class="field-row">
-                  <label class="field-label">Icon <span class="field-hint">Lucide name or custom image</span></label>
-                  <div class="icon-picker-row">
-                    <div class="icon-preview-box" id="mf-icon-preview" title="Click to upload custom image">
-                      <span class="icon-preview-plus" id="mf-icon-plus">+</span>
-                      <img id="mf-icon-img" src="" alt=""
-                        style="display:none;width:100%;height:100%;object-fit:cover;border-radius:7px;">
-                    </div>
-                    <div class="icon-picker-right">
-                      <input class="field-input" id="mf-icon" placeholder="e.g. gamepad-2  (or upload image above)"
-                        spellcheck="false">
-                      <div class="icon-picker-actions">
-                        <button class="icon-picker-btn" id="btn-icon-upload" type="button">Upload image</button>
-                        <button class="icon-picker-btn icon-picker-btn--clear" id="btn-icon-clear" type="button"
-                          style="display:none">Clear</button>
+              <div class="manifest-workspace">
+                <div class="manifest-main">
+                  <div class="manifest-section manifest-section--identity">
+                    <div class="manifest-card-heading">
+                      <span class="manifest-card-index">01</span>
+                      <div>
+                        <h3>App identity</h3>
+                        <p>These details identify your app in NovaByte.</p>
                       </div>
                     </div>
-                  </div>
-                  <input type="file" id="mf-icon-file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
-                    style="display:none">
-                </div>
-              </div>
 
-              <div class="manifest-actions">
-                <button class="action-btn action-btn--ghost" id="btn-view-json">View JSON</button>
-                <button class="action-btn action-btn--primary" id="btn-save-manifest">Save manifest.json</button>
+                    <div class="field-row">
+                      <label class="field-label" for="mf-id">App ID <span class="field-hint">reverse domain</span></label>
+                      <div class="mf-id-row">
+                        <input class="field-input" id="mf-id" placeholder="com.example.myapp" spellcheck="false">
+                        <span class="mf-id-status" id="mf-id-status"></span>
+                      </div>
+                      <div class="mf-id-feedback" id="mf-id-feedback"></div>
+                    </div>
+
+                    <div class="field-row-pair">
+                      <div class="field-row">
+                        <label class="field-label" for="mf-name">Name</label>
+                        <input class="field-input" id="mf-name" placeholder="My App">
+                      </div>
+                      <div class="field-row field-row--narrow">
+                        <label class="field-label" for="mf-version">Version</label>
+                        <input class="field-input" id="mf-version" placeholder="1.0.0" spellcheck="false">
+                      </div>
+                    </div>
+
+                    <div class="field-row">
+                      <label class="field-label" for="mf-description">Description <span class="field-hint">optional</span></label>
+                      <input class="field-input" id="mf-description" placeholder="A short description">
+                    </div>
+
+                    <div class="field-row-pair">
+                      <div class="field-row">
+                        <label class="field-label" for="mf-author">Author <span class="field-hint">optional</span></label>
+                        <input class="field-input" id="mf-author" placeholder="Your Name">
+                      </div>
+                      <div class="field-row field-row--narrow">
+                        <label class="field-label" for="mf-entry">Entry file</label>
+                        <input class="field-input" id="mf-entry" placeholder="index.html" spellcheck="false">
+                      </div>
+                    </div>
+
+                    <div class="field-row">
+                      <label class="field-label">Icon <span class="field-hint">Lucide name or custom image</span></label>
+                      <div class="icon-picker-row">
+                        <div class="icon-preview-box" id="mf-icon-preview" title="Click to upload custom image">
+                          <span class="icon-preview-plus" id="mf-icon-plus">+</span>
+                          <img id="mf-icon-img" src="" alt=""
+                            style="display:none;width:100%;height:100%;object-fit:cover;border-radius:7px;">
+                        </div>
+                        <div class="icon-picker-right">
+                          <input class="field-input" id="mf-icon" placeholder="e.g. gamepad-2  (or upload image above)"
+                            spellcheck="false">
+                          <div class="icon-picker-actions">
+                            <button class="icon-picker-btn" id="btn-icon-upload" type="button">Upload image</button>
+                            <button class="icon-picker-btn icon-picker-btn--clear" id="btn-icon-clear" type="button"
+                              style="display:none">Clear</button>
+                          </div>
+                        </div>
+                      </div>
+                      <input type="file" id="mf-icon-file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                        style="display:none">
+                    </div>
+                  </div>
+                  <div class="manifest-actions">
+                    <button class="action-btn action-btn--ghost" id="btn-view-json">View JSON</button>
+                    <button class="action-btn action-btn--primary" id="btn-save-manifest">Save manifest.json</button>
+                  </div>
+                </div>
+
+                <aside class="manifest-side-stack">
+                  <section class="manifest-preview-card">
+                    <div class="manifest-card-heading">
+                      <span class="manifest-card-index">LIVE</span>
+                      <div>
+                        <h3>App preview</h3>
+                        <p>Updates as you edit.</p>
+                      </div>
+                    </div>
+                    <div class="manifest-app-preview">
+                      <div class="manifest-preview-icon" id="manifest-preview-icon">A</div>
+                      <div class="manifest-preview-title-group">
+                        <strong id="manifest-preview-name">Your app</strong>
+                        <span id="manifest-preview-version">Version 1.0.0</span>
+                      </div>
+                    </div>
+                    <div class="manifest-preview-details">
+                      <div><span>App ID</span><code id="manifest-preview-id">com.example.myapp</code></div>
+                      <div><span>Entry</span><code id="manifest-preview-entry">index.html</code></div>
+                      <div><span>Permissions</span><code id="manifest-preview-permissions">0 selected</code></div>
+                    </div>
+                  </section>
+
+                  <section class="manifest-next-card">
+                    <div class="manifest-next-label">NEXT STEPS</div>
+                    <button class="manifest-next-action" id="btn-manifest-permissions" type="button">
+                      <span class="manifest-next-number">02</span>
+                      <span><strong>Review permissions</strong><small>Choose what your app can access.</small></span>
+                      <span class="manifest-next-arrow">›</span>
+                    </button>
+                    <button class="manifest-next-action" id="btn-manifest-design" type="button">
+                      <span class="manifest-next-number">03</span>
+                      <span><strong>Configure window</strong><small>Set size and startup behavior in Design.</small></span>
+                      <span class="manifest-next-arrow">›</span>
+                    </button>
+                  </section>
+                </aside>
               </div>
             </div>
           </div>
@@ -770,60 +821,107 @@
 
           <!-- Tab: Build -->
           <div class="tab-panel" id="panel-build">
-            <div class="build-config">
-              <div class="build-config-section-title">Output</div>
-              <div class="build-config-row">
-                <label class="field-label">Output directory</label>
-                <div class="path-input-row">
-                  <input class="field-input" id="build-outdir" placeholder="./dist" spellcheck="false">
-                  <button class="icon-btn" id="btn-pick-outdir" title="Browse">…</button>
+            <div class="build-page">
+              <header class="build-page-header">
+                <div>
+                  <div class="build-page-eyebrow">PACKAGE PIPELINE</div>
+                  <h2 class="build-page-title">Build</h2>
+                  <p class="build-page-description">Package the current project with the signing and integrity settings from Sign.</p>
+                </div>
+                <span class="build-page-step">01 <span>/</span> 02</span>
+              </header>
+
+              <div class="build-workspace">
+                <section class="build-config">
+                  <div class="build-card-heading">
+                    <span class="build-card-index">01</span>
+                    <div>
+                      <h3>Build settings</h3>
+                      <p>Choose where your package is written.</p>
+                    </div>
+                  </div>
+                  <div class="build-config-row">
+                    <label class="field-label" for="build-outdir">Output directory</label>
+                    <div class="path-input-row">
+                      <input class="field-input" id="build-outdir" placeholder="./dist" spellcheck="false">
+                      <button class="icon-btn" id="btn-pick-outdir" title="Browse">…</button>
+                    </div>
+                  </div>
+                  <label class="build-clean-option" for="build-clean">
+                    <input type="checkbox" id="build-clean" checked>
+                    <span class="build-clean-copy">
+                      <strong>Clean output directory before building</strong>
+                      <small class="build-clean-warning">Deletes everything inside this folder first.</small>
+                    </span>
+                  </label>
+
+                  <div class="build-summary-card" id="build-summary-card">
+                    <div class="build-summary-title">Package preview</div>
+                    <div class="build-summary-row">
+                      <span class="build-summary-label">Signing</span>
+                      <span class="build-summary-value" id="build-summary-signing">—</span>
+                    </div>
+                    <div class="build-summary-row">
+                      <span class="build-summary-label">Integrity</span>
+                      <span class="build-summary-value" id="build-summary-integrity">—</span>
+                    </div>
+                    <div class="build-summary-row">
+                      <span class="build-summary-label">Output</span>
+                      <span class="build-summary-value build-summary-value--path" id="build-summary-outpath">—</span>
+                    </div>
+                  </div>
+
+                  <button class="build-btn" id="btn-build">
+                    <span class="build-btn-label">Build Package</span>
+                    <span class="build-btn-fill" id="build-btn-fill"></span>
+                  </button>
+                  <div class="build-output-actions">
+                    <button class="build-utility-btn" id="btn-copy-build-path" type="button">Copy output path</button>
+                    <button class="build-utility-btn" id="btn-open-build-folder" type="button">Open output folder</button>
+                  </div>
+                </section>
+
+                <div class="build-side-stack">
+                  <section class="build-output-card">
+                    <div class="build-output-header">
+                      <div class="build-card-heading">
+                        <span class="build-card-index">02</span>
+                        <div>
+                          <h3>Build output</h3>
+                          <p>Progress, warnings, and package details.</p>
+                        </div>
+                      </div>
+                      <button class="icon-btn build-log-clear" id="btn-clear-build-log" type="button" title="Clear build output">Clear</button>
+                    </div>
+                    <div class="build-log" id="build-log">
+                      <div class="build-log-empty">Build output will appear here</div>
+                    </div>
+                  </section>
+
+                  <div class="build-history" id="build-history">
+                    <div class="build-history-header">
+                      <span class="build-history-title">Recent builds</span>
+                      <button class="icon-btn" id="btn-clear-history" title="Clear history">🗑</button>
+                    </div>
+                    <div class="build-history-list" id="build-history-list">
+                      <div class="build-history-empty">No builds yet</div>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="build-config-row">
-                <label class="field-label field-label--check">
-                  <input type="checkbox" id="build-clean" checked> Clean last build automatically
-                </label>
-              </div>
-
-            <div class="build-summary-card" id="build-summary-card">
-              <div class="build-summary-title">This build will produce</div>
-              <div class="build-summary-row">
-                <span class="build-summary-label">Signing</span>
-                <span class="build-summary-value" id="build-summary-signing">—</span>
-              </div>
-              <div class="build-summary-row">
-                <span class="build-summary-label">Integrity</span>
-                <span class="build-summary-value" id="build-summary-integrity">—</span>
-              </div>
-              <div class="build-summary-row">
-                <span class="build-summary-label">Output to</span>
-                <span class="build-summary-value build-summary-value--path" id="build-summary-outpath">—</span>
-              </div>
             </div>
-
-            <button class="build-btn" id="btn-build">
-              <span class="build-btn-label">Build Package</span>
-              <span class="build-btn-fill" id="build-btn-fill"></span>
-            </button>
-
-            <div class="build-log" id="build-log">
-              <div class="build-log-empty">Build output will appear here</div>
-            </div>
-
-            <div class="build-history" id="build-history">
-              <div class="build-history-header">
-                <span class="build-history-title">Build History</span>
-                <button class="icon-btn" id="btn-clear-history" title="Clear history">🗑</button>
-              </div>
-              <div class="build-history-list" id="build-history-list">
-                <div class="build-history-empty">No builds yet</div>
-              </div>
-            </div>
-          </div>
           </div>
 
           <div class="tab-panel hidden" id="panel-sign">
-            <div class="sign-tab-wrap">
+            <div class="sign-page">
+              <header class="sign-page-header">
+                <div>
+                  <div class="sign-page-eyebrow">PACKAGE SECURITY</div>
+                  <h2 class="sign-page-title">Signing &amp; integrity</h2>
+                  <p class="sign-page-description">Set up local signing for development builds and choose how package contents are verified.</p>
+                </div>
+                <span class="sign-page-step">02 <span>/</span> 03</span>
+              </header>
 
               <div class="sign-status-strip" id="sign-status-strip">
                 <div class="sign-status-item">
@@ -842,75 +940,106 @@
                 </div>
               </div>
 
-              <button class="legacy-disclosure" id="btn-localdev-toggle" type="button" aria-expanded="false">
-                <span class="legacy-disclosure-arrow">▸</span> Local Dev Signing (testing only, not trusted)
-              </button>
+              <div class="sign-workspace">
+                <section class="sign-localdev-card">
+                  <button class="legacy-disclosure sign-localdev-toggle" id="btn-localdev-toggle" type="button" aria-expanded="false" aria-controls="localdev-config">
+                    <span class="legacy-disclosure-arrow">▸</span>
+                    <span class="sign-toggle-copy">
+                      <strong>Local development signing</strong>
+                      <small>Generate a keypair and self-sign a build for testing.</small>
+                    </span>
+                    <span class="sign-toggle-badge">LOCAL ONLY</span>
+                  </button>
+                  <div class="sign-localdev-note">
+                    <strong>Signature vs. integrity</strong>
+                    <span>A signature identifies the signing key. An integrity hash detects package changes; neither setting grants OS trust to a self-signed publisher.</span>
+                  </div>
 
-              <div class="sign-section legacy-config hidden" id="localdev-config">
-                <div class="sign-section-hint">
-                  Self-sign with a key generated on this machine, for local testing only.
-                  Self-signed builds are <strong>not</strong> trusted by NBOSP — they'll always
-                  show the "Unverified" dialog on install, since nobody but you vouches for them.
-                </div>
-                <div class="sign-config-row">
-                  <label class="field-label">Signing method</label>
-                  <select class="field-input" id="sign-method-select">
-                    <option value="ed25519">Ed25519</option>
-                    <option value="ml-dsa-65">ML-DSA-65 (post-quantum, experimental)</option>
-                    <option value="ed448">Ed448</option>
-                    <option value="ecdsa-p256">ECDSA P-256</option>
-                    <option value="ecdsa-p384">ECDSA P-384</option>
-                    <option value="rsa-pss-4096">RSA-PSS 4096</option>
-                    <option value="custom">Custom</option>
-                    <option value="none" selected>None (unsigned)</option>
-                  </select>
-                </div>
-                <div class="sign-config-row">
-                  <label class="field-label">Integrity method</label>
-                  <select class="field-input" id="sign-integrity-select">
-                    <option value="blake3">BLAKE3</option>
-                    <option value="sha256">SHA-256</option>
-                    <option value="sha512">SHA-512</option>
-                    <option value="none" selected>None</option>
-                  </select>
-                </div>
-                <div class="sign-config-row hidden" id="sign-custom-key-row">
-                  <label class="field-label">Custom signing key / payload</label>
-                  <textarea class="field-input field-input--mono" id="sign-dev-custom-key"
-                    placeholder="Paste custom key material or signing payload here" rows="3"
-                    spellcheck="false"></textarea>
-                </div>
-                <div class="sign-config-row" id="sign-dev-key-row">
-                  <label class="field-label">Dev private key (JWK)</label>
-                  <div class="key-field-wrap">
-                    <textarea class="field-input field-input--mono key-field--masked" id="sign-dev-privkey"
-                      placeholder="Paste a private key JWK, or click Generate" rows="3" spellcheck="false"></textarea>
-                    <div class="key-field-actions">
-                      <button class="icon-btn icon-btn--ghost" id="btn-privkey-reveal" type="button"
-                        title="Show private key" aria-pressed="false">👁</button>
-                      <button class="icon-btn icon-btn--ghost" id="btn-privkey-copy" type="button"
-                        title="Copy private key">⧉</button>
+                  <div class="sign-section legacy-config hidden" id="localdev-config">
+                    <div class="sign-section-hint">
+                      Self-sign with a key generated on this machine, for local testing only.
+                      Self-signed builds are <strong>not</strong> trusted by NBOSP — they will always
+                      show the "Unverified" dialog on install, since nobody but you vouches for them.
+                    </div>
+                    <div class="sign-config-grid">
+                      <div class="sign-config-row">
+                        <label class="field-label" for="sign-method-select">Signing method</label>
+                        <select class="field-input" id="sign-method-select">
+                          <option value="ed25519">Ed25519</option>
+                          <option value="ml-dsa-65">ML-DSA-65 (post-quantum, experimental)</option>
+                          <option value="ed448">Ed448</option>
+                          <option value="ecdsa-p256">ECDSA P-256</option>
+                          <option value="ecdsa-p384">ECDSA P-384</option>
+                          <option value="rsa-pss-4096">RSA-PSS 4096</option>
+                          <option value="custom">Custom</option>
+                          <option value="none" selected>None (unsigned)</option>
+                        </select>
+                      </div>
+                      <div class="sign-config-row">
+                        <label class="field-label" for="sign-integrity-select">Integrity method</label>
+                        <select class="field-input" id="sign-integrity-select">
+                          <option value="blake3">BLAKE3</option>
+                          <option value="sha256">SHA-256</option>
+                          <option value="sha512">SHA-512</option>
+                          <option value="none" selected>None</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="sign-config-row hidden" id="sign-custom-key-row">
+                      <label class="field-label" for="sign-dev-custom-key">Custom signing key / payload</label>
+                      <textarea class="field-input field-input--mono" id="sign-dev-custom-key"
+                        placeholder="Paste custom key material or signing payload here" rows="3"
+                        spellcheck="false"></textarea>
+                    </div>
+                    <div class="sign-config-row" id="sign-dev-key-row">
+                      <label class="field-label" for="sign-dev-privkey">Dev private key (JWK)</label>
+                      <div class="key-field-wrap">
+                        <textarea class="field-input field-input--mono key-field--masked" id="sign-dev-privkey"
+                          placeholder="Paste a private key JWK, or click Generate" rows="3" spellcheck="false"></textarea>
+                        <div class="key-field-actions">
+                          <button class="icon-btn icon-btn--ghost" id="btn-privkey-reveal" type="button"
+                            title="Show private key" aria-pressed="false">👁</button>
+                          <button class="icon-btn icon-btn--ghost" id="btn-privkey-copy" type="button"
+                            title="Copy private key">⧉</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="sign-actions-row">
+                      <button class="secondary-btn" id="btn-sign-generate-key">Generate New Keypair</button>
+                      <button class="secondary-btn" id="btn-sign-selfsign" disabled>Self-Sign Last Build</button>
+                    </div>
+                    <div class="sign-keypair-out hidden" id="sign-keypair-out">
+                      <div class="sign-keypair-label">Generated public key (safe to share/keep) — not used for trust
+                        automatically:</div>
+                      <div class="key-field-wrap">
+                        <textarea class="field-input field-input--mono" id="sign-dev-pubkey" rows="3" readonly
+                          spellcheck="false"></textarea>
+                        <div class="key-field-actions">
+                          <button class="icon-btn icon-btn--ghost" id="btn-pubkey-copy" type="button"
+                            title="Copy public key">⧉</button>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div class="sign-actions-row">
-                  <button class="secondary-btn" id="btn-sign-generate-key">Generate New Keypair</button>
-                  <button class="secondary-btn" id="btn-sign-selfsign" disabled>Self-Sign Last Build</button>
-                </div>
-                <div class="sign-keypair-out hidden" id="sign-keypair-out">
-                  <div class="sign-keypair-label">Generated public key (safe to share/keep) — not used for trust
-                    automatically:</div>
-                  <div class="key-field-wrap">
-                    <textarea class="field-input field-input--mono" id="sign-dev-pubkey" rows="3" readonly
-                      spellcheck="false"></textarea>
-                    <div class="key-field-actions">
-                      <button class="icon-btn icon-btn--ghost" id="btn-pubkey-copy" type="button"
-                        title="Copy public key">⧉</button>
+                </section>
+
+                <aside class="sign-side-stack">
+                  <section class="sign-trust-card">
+                    <div class="sign-trust-icon">!</div>
+                    <div>
+                      <div class="sign-trust-title">Development keys are not publisher trust</div>
+                      <p>Self-signing proves a package matches your key. It does not make NovaByte OS trust the publisher.</p>
                     </div>
-                  </div>
-                </div>
+                  </section>
+                  <section class="sign-workflow-card">
+                    <div class="sign-workflow-label">BUILD WORKFLOW</div>
+                    <p>Choose methods here, then create or update your package from the Build tab.</p>
+                    <button class="sign-build-link" id="btn-sign-go-build" type="button">
+                      <span>Go to Build</span><span aria-hidden="true">→</span>
+                    </button>
+                  </section>
+                </aside>
               </div>
-
             </div>
           </div>
 
@@ -1091,10 +1220,24 @@
 
       <!-- Inspector screen -->
       <div class="inspector-screen hidden" id="screen-inspector">
+        <div class="inspector-hero">
+          <div class="inspector-hero-copy">
+            <div class="inspector-eyebrow">PACKAGE INSPECTOR</div>
+            <h2 class="inspector-title">Inspect a .novaapp</h2>
+            <p class="inspector-description">Review package metadata, permissions, files, and signature trust before installing.</p>
+          </div>
+          <div class="inspector-steps" aria-label="Inspection checks">
+            <span><b>01</b> Package</span>
+            <span><b>02</b> Permissions</span>
+            <span><b>03</b> Signature</span>
+          </div>
+        </div>
         <div class="inspector-dropzone" id="inspector-dropzone">
-          <div class="inspector-dropzone-icon">📦</div>
-          <div class="inspector-dropzone-label">Drop a .novaapp file here</div>
-          <div class="inspector-dropzone-sub">or <button class="link-btn" id="btn-pick-novaapp">browse</button></div>
+          <div class="inspector-dropzone-mark" aria-hidden="true">↓</div>
+          <div class="inspector-dropzone-label">Drop your package to inspect it</div>
+          <div class="inspector-dropzone-sub">Choose a <code>.novaapp</code> file from this device</div>
+          <button class="action-btn action-btn--primary" id="btn-pick-novaapp">Browse packages</button>
+          <div class="inspector-dropzone-footnote">Nothing is installed or executed during inspection.</div>
         </div>
         <div class="inspector-result hidden" id="inspector-result"></div>
       </div>
@@ -1408,7 +1551,7 @@
           </svg>
         </div>
         <div class="about-name">NovaByte Studio</div>
-        <div class="about-version" id="about-version">Version 1.2.01</div>
+        <div class="about-version" id="about-version">Version 1.2.10</div>
         <div class="about-copy">© 2026 NovaByteOfficial</div>
         <a class="about-link" id="about-releases-link" href="#"
           onclick="nw.Shell.openExternal('https://github.com/NovaByteOfficial/novapack-studio/releases'); return false;">View
@@ -1506,33 +1649,34 @@
               <tr><td><code>version</code></td><td>Semantic version <code>x.y.z</code></td></tr>
               <tr><td><code>entry</code></td><td>Main HTML file to load</td></tr>
             </table>
-            <p>Common optional fields: <code>description</code>, <code>author</code>, <code>icon</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>categories</code>.</p>
+            <p>Optional fields include <code>description</code>, <code>author</code>, <code>email</code>, <code>website</code>, <code>icon</code>, <code>type</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>unrestrictedEntry</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>transparent</code>, <code>categories</code>, <code>handles</code>, <code>ipc</code>, <code>notifications</code>, <code>shareTarget</code>, <code>registryScopes</code>, <code>allowNestedWebview</code>, <code>allowPopupsToEscapeSandbox</code>, and <code>sandbox</code>. Studio preserves manifest properties that are not edited in its form.</p>
             <p class="help-note">App IDs must be lowercase reverse-domain (<code>io.github.you.app</code>) — <code>MyApp</code> or <code>myapp</code> with no dot will fail validation at Build time. Web-app shortcuts use the <code>webapp_</code> prefix instead.</p>
           </div>
 
           <div class="help-pane" data-help-pane="permissions">
             <h3>Permissions</h3>
-            <p>Permissions gate what your app can access on the host OS. Declare required permissions in <code>permissions</code>; missing sensitive grants may be requested at launch, but denial does not block the app. Optional sensitive permissions are not prompted at launch and can be requested at runtime or granted from Settings → Apps. Low-risk permissions are auto-granted when declared unless previously denied.</p>
+            <p>Studio lists all 52 current permission strings. Declare required grants in <code>permissions</code>; missing medium-or-higher-risk grants may be requested at launch, but denial does not block the app. Optional sensitive grants in <code>optionalPermissions</code> are not prompted at launch and can be requested at runtime or granted from Settings → Apps. Low-risk grants are auto-granted unless previously denied. App-owned <code>/data/</code> files and user-selected files do not need broad filesystem permissions.</p>
             <table class="help-table">
               <tr><th>Category</th><th>Permissions</th><th>Risk range</th></tr>
-              <tr><td>Filesystem</td><td><code>vfs:access</code>, <code>vfs:read</code>, <code>vfs:write</code>, <code>vfs:delete</code>, <code>vfs:metadata</code></td><td>Low – Critical</td></tr>
+              <tr><td>Filesystem</td><td><code>fs:access</code>, <code>fs:metadata</code>, <code>fs:watch</code>, <code>fs:read:images</code>, <code>fs:read:video</code>, <code>fs:read:audio</code></td><td>Low – Critical</td></tr>
+              <tr><td>Apps</td><td><code>apps:communicate</code></td><td>High</td></tr>
               <tr><td>Network</td><td><code>net:internal</code>, <code>net:external</code>, <code>net:websocket</code></td><td>Low – High</td></tr>
-              <tr><td>Clipboard</td><td><code>clipboard:read</code>, <code>clipboard:write</code></td><td>Low – High</td></tr>
               <tr><td>Mail</td><td><code>mail:read</code>, <code>mail:write</code>, <code>mail:send</code>, <code>mail:delete</code></td><td>High – Critical</td></tr>
               <tr><td>Calendar</td><td><code>calendar:read</code>, <code>calendar:write</code>, <code>calendar:delete</code></td><td>Medium – High</td></tr>
               <tr><td>Contacts</td><td><code>contacts:read</code>, <code>contacts:write</code>, <code>contacts:delete</code></td><td>Medium – High</td></tr>
-              <tr><td>Device</td><td><code>device:notifications</code>, <code>device:geolocation</code>, <code>device:camera</code>, <code>device:microphone</code></td><td>Low – Critical</td></tr>
-              <tr><td>System</td><td><code>system:info</code>, <code>system:settings</code>, <code>system:apps</code>, <code>system:app-launch</code>, <code>system:events</code>, <code>system:root</code>, <code>system:background</code>, <code>system:background:live</code>, <code>system:autostart</code></td><td>Low – Critical</td></tr>
+              <tr><td>Device</td><td><code>device:notifications</code>, <code>device:geolocation</code>, <code>device:camera</code>, <code>device:microphone</code>, <code>clipboard:read</code>, <code>clipboard:write</code></td><td>Low – Critical</td></tr>
+              <tr><td>Data</td><td><code>data:export</code>, <code>data:backup</code>, <code>secrets:store</code></td><td>Low – Medium</td></tr>
+              <tr><td>System</td><td><code>system:info</code>, <code>system:settings</code>, <code>system:apps</code>, <code>system:app-launch</code>, <code>system:root</code>, <code>system:events</code>, <code>system:background</code>, <code>system:background:live</code>, <code>system:autostart</code>, <code>system:badge</code>, <code>system:schedule</code>, <code>system:share-target</code>, <code>push:receive</code>, <code>registry.read</code>, <code>registry.write</code>, <code>registry.system</code></td><td>Low – Critical</td></tr>
               <tr><td>Admin</td><td><code>admin:apps</code>, <code>admin:users</code>, <code>admin:system</code>, <code>admin:audit</code></td><td>High – Critical</td></tr>
               <tr><td>Sandbox</td><td><code>sandbox:nested-webview</code>, <code>sandbox:same-origin</code>, <code>sandbox:escape-popups</code></td><td>High – Critical</td></tr>
             </table>
             <p>Hover any permission in the Permissions tab (or in the manifest editor) for its exact risk level and description.</p>
-            <p class="help-note"><code>admin:*</code> permissions also require the machine itself to be in Admin Access mode (Settings → Privacy &amp; Security) — granting the permission alone isn't enough. <code>mail:*</code> always acts on whichever account the user has connected via the Email app; there's no way to supply separate credentials.</p>
+            <p class="help-note"><code>fs:access</code> is special access enabled manually in Settings, never prompt-granted; shared media uses type-specific read grants, while picked documents are scoped to the user's selection. The legacy <code>vfs:*</code> names remain accepted by NovaByte OS for compatibility, but new apps should use <code>fs:*</code>. <code>admin:*</code> also requires machine Admin Access mode. <code>system:root</code> runs <code>unrestrictedEntry</code> outside the sandbox; it does not itself run Linux commands as root. <code>mail:*</code> acts on the account connected via the Email app.</p>
           </div>
 
           <div class="help-pane" data-help-pane="signing">
             <h3>Building</h3>
-            <p>Hitting <strong>Build</strong> validates your manifest and permissions, Base64-encodes every project file, generates a signature over the payload, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory.</p>
+            <p>Hitting <strong>Build</strong> validates your manifest and declared permissions, compiles detected C/C++ sources with <code>emcc</code> into WebAssembly (when present), Base64-encodes project files, optionally signs the package, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory. C/C++ projects require Emscripten on your PATH.</p>
           </div>
 
           <div class="help-pane" data-help-pane="shortcuts">
@@ -1559,7 +1703,7 @@
             <p>Drop single minified files (JS/CSS) into the <code>vendor/</code> folder in your project — they're bundled automatically at Build time. Reference them as <code>&lt;script src="vendor/yourlib.min.js" defer&gt;&lt;/script&gt;</code>. Don't copy entire <code>node_modules</code> folders in.</p>
 
             <p><strong>My manifest permission isn't doing anything?</strong></p>
-            <p>Studio lists all 40 supported permissions in the Permissions section of this Help window. Some permissions also need a matching manifest flag: <code>sandbox:nested-webview</code> needs <code>"allowNestedWebview": true</code>, <code>sandbox:same-origin</code> needs <code>"sandbox": { "allowSameOrigin": true }</code>, and <code>sandbox:escape-popups</code> needs <code>"allowPopupsToEscapeSandbox": true</code>. Both the permission and its flag are required. Low-risk permissions are auto-granted when declared unless previously denied; denial of any permission does not block app launch.</p>
+            <p>Studio lists all 52 current permissions in the Permissions tab. Some also require manifest opt-ins: <code>sandbox:nested-webview</code> needs <code>"allowNestedWebview": true</code>, <code>sandbox:same-origin</code> needs <code>"sandbox": { "allowSameOrigin": true }</code>, and <code>sandbox:escape-popups</code> needs <code>"allowPopupsToEscapeSandbox": true</code>. Both the permission and its opt-in are required. Low-risk permissions are auto-granted unless previously denied; denial does not block app launch.</p>
 
             <p><strong>Still stuck?</strong></p>
             <p>Open the Command Palette (<kbd>Ctrl+Shift+P</kbd>) and search for an action by name, or consult <code>NOVAAPP.md</code> in the Studio repository for the complete manifest, permission, and IPC API reference.</p>

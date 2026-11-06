@@ -9,25 +9,19 @@
 
 const fs    = require('fs');
 const path  = require('path');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const ignore = require('ignore');
 
 const AppPackage = (typeof window !== 'undefined' && window.__NB_SDK && window.__NB_SDK['AppPackage'])
   || require('./app-package.js');
+const { PERMISSION_IDS, LEGACY_PERMISSION_ALIASES } = require('./permissions.js');
 
 // ── C++ / WebAssembly compilation ───────────────────────────────────────────
 //
-// Studio does not bundle or install a compiler. It only looks for `emcc`
-// (the Emscripten compiler driver) already on the user's PATH, and compiles
-// with it if found. If it's not found, build() fails with install
-// instructions instead of silently skipping the C++ files or trying to
-// fetch/install a toolchain itself — a build that "succeeds" while quietly
-// leaving out the app's actual logic would be worse than a clear failure.
-//
-// Every call below goes through execFileSync with an argv array, never a
-// shell string — emcc's arguments are entirely Studio-controlled constants
-// (file paths discovered on disk, not user-supplied flags), so there's no
-// string-concatenation-into-a-shell-command surface here.
+// Native compilation prefers the platform-specific Emscripten SDK shipped
+// alongside Studio, then falls back to an SDK already available on PATH.
+// Child processes are asynchronous so compiling never blocks NW.js's UI
+// thread or triggers Atomics.wait restrictions in the renderer.
 
 const CPP_SOURCE_EXTENSIONS = new Set(['.cpp', '.cc', '.cxx', '.c']);
 
@@ -47,43 +41,90 @@ function detectCppSources(absDir) {
   return found;
 }
 
+/** Run a child process without blocking the NW.js renderer. */
+function runFile(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { maxBuffer: 32 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+  });
+}
+
+function findBundledEmsdk() {
+  const envFile = process.platform === 'win32' ? 'emsdk_env.bat' : 'emsdk_env.sh';
+  if (process.env.NOVAPACK_EMSDK) {
+    const explicitRoot = path.resolve(process.env.NOVAPACK_EMSDK);
+    if (fs.existsSync(path.join(explicitRoot, envFile))) return explicitRoot;
+  }
+  const starts = [
+    process.resourcesPath,
+    path.dirname(process.execPath),
+    typeof __dirname !== 'undefined' ? __dirname : null,
+    process.cwd(),
+  ].filter(Boolean);
+  const checked = new Set();
+  for (const start of starts) {
+    let current = path.resolve(start);
+    for (let depth = 0; depth < 8; depth++) {
+      if (checked.has(current)) break;
+      checked.add(current);
+      const envScript = path.join(current, 'emsdk', envFile);
+      if (fs.existsSync(envScript)) return path.dirname(envScript);
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return null;
+}
+
+async function loadEmsdkEnvironment(emsdkRoot) {
+  const windows = process.platform === 'win32';
+  const env = {
+    ...process.env,
+    EM_CONFIG: path.join(emsdkRoot, '.emscripten'),
+  };
+  await runFile(path.join(emsdkRoot, windows ? 'emsdk.bat' : 'emsdk'), ['activate', 'latest'], {
+    cwd: emsdkRoot,
+    env,
+    shell: windows,
+  });
+
+  const result = windows
+    ? await runFile('cmd.exe', ['/d', '/s', '/c', `call "${path.join(emsdkRoot, 'emsdk_env.bat')}" >nul && set`], { cwd: emsdkRoot, env })
+    : await runFile('/bin/bash', ['-c', 'source "$1/emsdk_env.sh" >/dev/null && env -0', 'novapack-emsdk', emsdkRoot], { cwd: emsdkRoot, env });
+
+  const parsed = {};
+  const entries = windows ? result.stdout.split(/\r?\n/) : result.stdout.split('\0');
+  for (const entry of entries) {
+    const equals = entry.indexOf('=');
+    if (equals > 0) parsed[entry.slice(0, equals)] = entry.slice(equals + 1);
+  }
+  return { ...env, ...parsed, EM_CONFIG: env.EM_CONFIG };
+}
+
 /**
- * Locate emcc directly by attempting to run it, rather than shelling out to
- * `where`/`which` first. This replaces an earlier version that used
- * `where`/`which` to search for a specific filename (emcc.bat on Windows,
- * emcc elsewhere) -- that approach broke in practice for two independent
- * reasons discovered against a real Windows install:
- *   1. Emscripten's Windows build doesn't always ship emcc.bat -- some
- *      versions (confirmed: 6.0.6) ship emcc.exe directly instead, so
- *      searching only for the .bat name found nothing even with a fully
- *      correct PATH.
- *   2. `where.exe`'s own lookup proved unreliable in the same session where
- *      directly invoking the .exe by its full path worked fine -- so even
- *      fixing the filename wouldn't have been a complete fix.
- * Directly attempting `emcc --version` sidesteps both: Node's own
- * execFileSync PATH resolution is what actually matters at runtime (it's
- * the same resolution compileCppSources() below relies on to invoke emcc),
- * so testing via that exact mechanism can't disagree with itself the way
- * asking a separate lookup tool did.
+ * Check whether emcc can run with the selected environment.
  *
- * @returns {string|null} 'emcc' if callable via PATH resolution, or null
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {Promise<string|null>}
  */
-function findEmcc() {
+async function findEmcc(env = process.env) {
   try {
-    // shell:true on Windows for the same reason compileCppSources() needs
-    // it -- Windows can't exec .bat/.cmd files (and, per the discovery
-    // above, apparently not all .exe launcher stubs either, in a shell
-    // without cmd's own PATHEXT/lookup behavior) via execFile's normal
-    // non-shell path. The command run is a fixed literal ('emcc', with a
-    // fixed argument) -- nothing from user input reaches this call, so
-    // shell:true doesn't reopen an injection surface here.
-    execFileSync('emcc', ['--version'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    await runFile('emcc', ['--version'], {
+      env,
       shell: process.platform === 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     return 'emcc';
   } catch {
-    return null; // emcc isn't runnable via PATH resolution
+    return null;
   }
 }
 
@@ -111,31 +152,21 @@ function emccInstallHints() {
  * @param {string[]} cppFiles - Absolute paths, from detectCppSources()
  * @param {string} emccPath
  * @param {function} log
- * @returns {{compiled: string[], errors: Array<{file:string, message:string}>}}
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<{compiled: string[], errors: Array<{file:string, message:string}>}>}
  */
-function compileCppSources(cppFiles, emccPath, log) {
+async function compileCppSources(cppFiles, emccPath, log, env = process.env) {
   const compiled = [];
   const errors = [];
-  // execFileSync cannot launch a .bat/.cmd file directly on Windows --
-  // Node's own docs are explicit about this: those files require shell:true
-  // (or exec/spawn's shell option) rather than execFile's normal exec-family
-  // syscall path. emcc on Windows IS emcc.bat (see findEmcc's binName), so
-  // without this the compile call fails with an unhelpful ENOENT/EINVAL even
-  // though findEmcc() already proved emcc.bat exists and is on PATH.
-  // shell:true here does NOT reopen the injection surface we avoided
-  // elsewhere (see the CVE-2026-47668 discussion) -- every argument below is
-  // still passed as a separate array element, never concatenated into a
-  // single command string; only srcFile/outJs come from disk (real file
-  // paths found by our own directory walk), and everything else is a fixed
-  // literal. shell:true only changes *how* Windows launches a .bat file, not
-  // whether arguments get shell-interpreted as one blob.
+  // Windows needs a shell to launch emcc's .bat/.cmd entry point. Arguments
+  // remain separate argv entries and compiler flags are Studio-controlled.
   const needsShell = process.platform === 'win32';
 
   for (const srcFile of cppFiles) {
     const outJs = srcFile.replace(/\.(cpp|cc|cxx|c)$/i, '.js');
     log(`Compiling ${path.basename(srcFile)}...`);
     try {
-      execFileSync(emccPath, [
+      await runFile(emccPath, [
         srcFile,
         '-o', outJs,
         '-O2',
@@ -145,10 +176,10 @@ function compileCppSources(cppFiles, emccPath, log) {
         '-s', 'EXPORT_NAME=Module',
         '-s', 'EXPORTED_RUNTIME_METHODS=["ccall","cwrap","getValue","setValue","UTF8ToString","stringToUTF8","lengthBytesUTF8","HEAP8","HEAPU8","HEAP16","HEAPU16","HEAP32","HEAPU32","HEAPF32","HEAPF64"]',
         '-s', 'EXPORTED_FUNCTIONS=["_malloc","_free"]',
-      ], { stdio: ['ignore', 'pipe', 'pipe'], shell: needsShell });
+      ], { stdio: ['ignore', 'pipe', 'pipe'], shell: needsShell, env });
       compiled.push(srcFile);
     } catch (e) {
-      const stderr = e.stderr ? e.stderr.toString('utf8') : e.message;
+      const stderr = e.stderr ? String(e.stderr) : e.message;
       errors.push({ file: srcFile, message: stderr });
     }
   }
@@ -309,6 +340,10 @@ async function build({ projectDir, outDir, onLog = () => {}, signingKey, signerN
     }
 
     // Validate app ID
+    if (typeof manifest.id !== 'string') {
+      err('Invalid app ID — expected a string');
+      return { success: false, error: 'Invalid app ID' };
+    }
     if (!manifest.id.startsWith('webapp_')) {
       if (!/^[a-z][a-z0-9]*(\.[a-z0-9]+)+$/.test(manifest.id)) {
         err(`Invalid app ID "${manifest.id}" — use reverse domain format (e.g. com.example.app)`);
@@ -316,15 +351,29 @@ async function build({ projectDir, outDir, onLog = () => {}, signingKey, signerN
       }
     }
 
-    // Validate permissions against known list
-    if (manifest.permissions) {
-      const validPerms = Object.values(AppPackage.PERMISSION_TYPES || {});
-      if (validPerms.length > 0) {
-        const invalid = manifest.permissions.filter(p => !validPerms.includes(p));
-        if (invalid.length) {
-          warn(`Unknown permissions will be stripped: ${invalid.join(', ')}`);
-          manifest.permissions = manifest.permissions.filter(p => validPerms.includes(p));
-        }
+    // Validate both declaration lists against the shared current catalog.
+    // Keep documented vfs aliases intact so older projects retain their
+    // compatibility behavior; unknown strings are warned about and removed.
+    for (const field of ['permissions', 'optionalPermissions']) {
+      if (manifest[field] === undefined) continue;
+      if (!Array.isArray(manifest[field])) {
+        err(`manifest.json ${field} must be an array`);
+        return { success: false, error: `${field} must be an array` };
+      }
+      const invalid = manifest[field].filter((permission) =>
+        typeof permission !== 'string' ||
+        (!PERMISSION_IDS.has(permission) && !LEGACY_PERMISSION_ALIASES[permission])
+      );
+      if (invalid.length) {
+        warn(`Unknown ${field} will be stripped: ${invalid.join(', ')}`);
+        manifest[field] = manifest[field].filter((permission) =>
+          typeof permission === 'string' &&
+          (PERMISSION_IDS.has(permission) || LEGACY_PERMISSION_ALIASES[permission])
+        );
+      }
+      const legacy = manifest[field].filter((permission) => LEGACY_PERMISSION_ALIASES[permission]);
+      if (legacy.length) {
+        warn(`Legacy permissions retained for compatibility: ${legacy.join(', ')}`);
       }
     }
 
@@ -345,10 +394,21 @@ async function build({ projectDir, outDir, onLog = () => {}, signingKey, signerN
     const cppFiles = detectCppSources(absDir);
     if (cppFiles.length > 0) {
       log(`Found ${cppFiles.length} C/C++ source file(s)`);
-      const emccPath = findEmcc();
+      const emsdkRoot = findBundledEmsdk();
+      let emccEnv = process.env;
+      if (emsdkRoot) {
+        log('Preparing bundled Emscripten SDK...');
+        try {
+          emccEnv = await loadEmsdkEnvironment(emsdkRoot);
+        } catch (error) {
+          err(`Could not activate bundled Emscripten SDK: ${error.message}`);
+          return { success: false, error: 'emscripten_sdk_activation_failed' };
+        }
+      }
+      const emccPath = await findEmcc(emccEnv);
       if (!emccPath) {
         const hints = emccInstallHints();
-        err('emcc not found on PATH — Emscripten is required to compile this project\'s C++ sources.');
+        err(`emcc not found${emsdkRoot ? ' in the bundled SDK' : ' on PATH'} — Emscripten is required to compile this project's C++ sources.`);
         err(`Install it, then re-run build. See ${hints.docs}`);
         return {
           success: false,
@@ -356,7 +416,7 @@ async function build({ projectDir, outDir, onLog = () => {}, signingKey, signerN
           installHints: hints,
         };
       }
-      const { compiled, errors } = compileCppSources(cppFiles, emccPath, log);
+      const { compiled, errors } = await compileCppSources(cppFiles, emccPath, log, emccEnv);
       if (errors.length > 0) {
         for (const { file, message } of errors) {
           err(`Failed to compile ${path.basename(file)}:`);
@@ -485,7 +545,7 @@ async function verify(pkgPath, trustStore = []) {
 function listActions(pkgPath) {
   const pkg     = loadPackage(pkgPath);
   const actions = new Set();
-  const re      = /nova:[a-z:]+/g;
+  const re      = /nova:[a-zA-Z0-9:_-]+/g;
 
   for (const [, encoded] of Object.entries(pkg.files)) {
     try {

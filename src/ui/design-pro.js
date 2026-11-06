@@ -311,7 +311,7 @@
 
     // ── Permission badge overlay ──────────────────────────────────────────
     // Badges are little colored chips rendered over any element whose
-    // data-nb-perm attribute references a permission id (vfs:read, etc.).
+    // data-nb-perm attribute references a permission id from NovaApp's catalog.
     // We render them in a single overlay <div> positioned over the canvas,
     // repositioned on scroll/resize/mutation, instead of per-element (which
     // would fight the user's own layout).
@@ -327,17 +327,67 @@
     };
 
     function _permRisk(id) {
-      // Risk tag derived from permission id prefix — matches the host's
-      // PERMISSIONS table without needing to ship a copy.
-      if (/^vfs:/.test(id)) return id === 'vfs:read' ? 'medium' :
-                                 id === 'vfs:write' ? 'high' :
-                                 id === 'vfs:delete' ? 'critical' : 'low';
-      if (/^net:/.test(id)) return 'medium';
-      if (/^device:/.test(id)) return 'high';
-      if (/^clipboard:/.test(id)) return id === 'clipboard:write' ? 'medium' : 'high';
-      if (/^admin:/.test(id)) return 'high';
-      if (/^sandbox:/.test(id)) return 'high';
-      return '_default';
+      const risks = {
+        'vfs:access': 'critical',
+        'vfs:read': 'critical',
+        'vfs:write': 'critical',
+        'vfs:delete': 'critical',
+        'vfs:metadata': 'medium',
+        'vfs:metedata': 'medium',
+        'fs:access': 'critical',
+        'fs:metadata': 'medium',
+        'fs:watch': 'low',
+        'fs:read:images': 'medium',
+        'fs:read:video': 'medium',
+        'fs:read:audio': 'medium',
+        'apps:communicate': 'high',
+        'net:internal': 'high',
+        'net:external': 'low',
+        'net:websocket': 'low',
+        'mail:read': 'high',
+        'mail:write': 'critical',
+        'mail:send': 'critical',
+        'mail:delete': 'critical',
+        'calendar:read': 'medium',
+        'calendar:write': 'high',
+        'calendar:delete': 'high',
+        'contacts:read': 'medium',
+        'contacts:write': 'high',
+        'contacts:delete': 'high',
+        'device:notifications': 'low',
+        'device:geolocation': 'high',
+        'device:camera': 'critical',
+        'device:microphone': 'critical',
+        'clipboard:read': 'high',
+        'clipboard:write': 'low',
+        'data:export': 'low',
+        'data:backup': 'low',
+        'secrets:store': 'medium',
+        'system:info': 'medium',
+        'system:settings': 'medium',
+        'system:apps': 'medium',
+        'system:app-launch': 'low',
+        'system:root': 'critical',
+        'system:events': 'medium',
+        'system:background': 'medium',
+        'system:background:live': 'high',
+        'system:autostart': 'high',
+        'system:badge': 'low',
+        'system:schedule': 'medium',
+        'system:share-target': 'medium',
+        'push:receive': 'medium',
+        'registry.read': 'low',
+        'registry.write': 'medium',
+        'registry.system': 'critical',
+        'admin:apps': 'high',
+        'admin:users': 'critical',
+        'admin:system': 'critical',
+        'admin:audit': 'high',
+        'sandbox:nested-webview': 'critical',
+        'sandbox:same-origin': 'high',
+        'sandbox:escape-popups': 'high',
+      };
+      return risks[id] || '_default';
     }
 
     function _renderBadges() {
@@ -991,20 +1041,34 @@
   // without writing code. Each entry has the permission it requires, the
   // nova: IPC channel it sends, and a small parameter schema.
   const IPC_ACTIONS = [
-    { id: 'vfs:openFile',   label: 'Open File Dialog',     perm: 'vfs:read',     channel: 'nova:dialog:open',    params: { accept: ['.txt', '.md'], multiple: false } },
-    { id: 'vfs:saveFile',   label: 'Save File Dialog',     perm: 'vfs:write',    channel: 'nova:dialog:save',    params: { filename: '', content: '' } },
-    { id: 'vfs:readFile',   label: 'Read File',            perm: 'vfs:read',     channel: 'nova:vfs:read',       params: { path: '' } },
-    { id: 'vfs:writeFile',  label: 'Write File',           perm: 'vfs:write',    channel: 'nova:vfs:write',      params: { path: '', content: '' } },
+    { id: 'fs:openFile',    label: 'Open File Dialog',     perm: null, channel: 'nova:dialog:open', params: { accept: ['.txt', '.md'] } },
+    { id: 'fs:saveFile',    label: 'Save File Dialog',     perm: null, channel: 'nova:dialog:save', params: { filename: '', content: '' } },
+    { id: 'fs:readFile',    label: 'Read App File',        perm: null, channel: 'nova:fs:read', params: { path: '/data/files/' } },
+    { id: 'fs:writeFile',   label: 'Write App File',       perm: null, channel: 'nova:fs:write', params: { path: '/data/files/', content: '' } },
     { id: 'clipboard:read', label: 'Read Clipboard',       perm: 'clipboard:read', channel: 'nova:clipboard:read', params: {} },
     { id: 'clipboard:write',label: 'Write Clipboard',      perm: 'clipboard:write', channel: 'nova:clipboard:write', params: { text: '' } },
     { id: 'win:minimize',   label: 'Minimize Window',      perm: null,           channel: 'nova:window:minimize', params: {} },
     { id: 'win:maximize',   label: 'Maximize/Restore',     perm: null,           channel: 'nova:window:maximize', params: {} },
     { id: 'win:close',      label: 'Close Window',         perm: null,           channel: 'nova:window:close',   params: {} },
     { id: 'notify',         label: 'Show Notification',    perm: 'device:notifications', channel: 'nova:notifications:show', params: { title: '', body: '' } },
-    { id: 'net:fetch',      label: 'HTTP Request',         perm: 'net:external', handler: 'fetch', params: { url: '', method: 'GET' } },
+    { id: 'net:fetch',      label: 'HTTP Request (destination-scoped)', perm: null, handler: 'fetch', params: { url: '', method: 'GET' } },
     { id: 'shell:open',     label: 'Open URL in OS browser', perm: null,         handler: 'openUrl', params: { url: '' } },
   ];
   const _IPC_ACTION_MAP = Object.fromEntries(IPC_ACTIONS.map((a) => [a.id, a]));
+  for (const [legacyId, currentId] of Object.entries({
+    'vfs:openFile': 'fs:openFile',
+    'vfs:saveFile': 'fs:saveFile',
+    'vfs:readFile': 'fs:readFile',
+    'vfs:writeFile': 'fs:writeFile',
+  })) {
+    const currentAction = _IPC_ACTION_MAP[currentId];
+    _IPC_ACTION_MAP[legacyId] = {
+      ...currentAction,
+      params: legacyId === 'vfs:openFile'
+        ? { ...currentAction.params, multiple: false }
+        : currentAction.params,
+    };
+  }
 
   function _renderActionInspector() {
     const panel = $('nbpro-action-inspector');
@@ -1189,7 +1253,10 @@
     if (!permId) return true;
     const m = _readProjectManifest();
     if (!m) return false;
-    const granted = (m.data && m.data.permissions) || [];
+    const granted = [
+      ...(Array.isArray(m.data?.permissions) ? m.data.permissions : []),
+      ...(Array.isArray(m.data?.optionalPermissions) ? m.data.optionalPermissions : []),
+    ];
     return granted.includes(permId);
   }
 
@@ -1650,10 +1717,10 @@
     },
     {
       id: 'nb-dropzone', label: 'Dropzone', icon: '⤓',
-      html: `<div class="nb-dropzone" data-nb-perm="vfs:read">
+      html: `<div class="nb-dropzone" data-nb-perm="">
         <div class="nb-dropzone-icon">⤓</div>
         <div class="nb-dropzone-text">Drop files here or click to browse</div>
-        <div class="nb-dropzone-hint">Requires vfs:read</div>
+        <div class="nb-dropzone-hint">File selection is user-mediated</div>
       </div>`,
       css: `.nb-dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;border:2px dashed rgba(34,197,94,0.4);border-radius:12px;background:rgba(34,197,94,0.04);cursor:pointer;transition:background 180ms ease,border-color 180ms ease}
 .nb-dropzone:hover,.nb-dropzone--over{background:rgba(34,197,94,0.1);border-color:#22c55e}

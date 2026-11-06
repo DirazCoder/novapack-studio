@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
 const { fileURLToPath, pathToFileURL } = require('url');
+const { PERMISSIONS, PERMISSION_IDS, LEGACY_PERMISSION_ALIASES } = require('./src/sdk/permissions.js');
 // Used by the Design tab for source-accurate HTML/CSS patching (surgical
 // edits instead of whole-file overwrites) -- see the Design tab module
 // below for why. Requires `npm install parse5 css` in this project.
@@ -85,78 +86,88 @@ const state = {
 };
 window.state = state;
 
-// Permissions catalogue (mirrors app-permission-manager.js).
-const PERMISSIONS = [
-  { id: 'vfs:access', label: 'Shared file access', risk: 'high', description: 'Reading and editing user files throughout the shared NovaByte VFS; one grant covers read and write' },
-  { id: 'vfs:read', label: 'Read files', risk: 'medium', description: 'Reading files a user opens/imports' },
-  { id: 'vfs:write', label: 'Write files', risk: 'high', description: 'Saving files, exports, generated output' },
-  { id: 'vfs:delete', label: 'Delete files', risk: 'critical', description: 'File managers, cleanup tools' },
-  { id: 'vfs:metadata', label: 'File metadata', risk: 'low', description: 'Listing/sizing files without reading contents' },
-  { id: 'net:internal', label: 'Internal network', risk: 'high', description: 'Calling this OS\'s own API/server endpoints -- also reaches private-network and cloud metadata addresses (169.254.169.254), not just same-origin' },
-  { id: 'net:external', label: 'External network', risk: 'low', description: 'Calling public internet services (declare in the manifest; auto-granted unless previously denied)' },
-  { id: 'net:websocket', label: 'WebSocket', risk: 'low', description: 'Public WebSocket connections (declare in the manifest; auto-granted unless previously denied)' },
-  { id: 'device:notifications', label: 'Notifications', risk: 'low', description: 'Alerts, reminders, background-task completion pings' },
-  { id: 'device:geolocation', label: 'Geolocation', risk: 'high', description: 'Maps, weather, location-tagged content' },
-  { id: 'device:camera', label: 'Camera', risk: 'critical', description: 'Photo capture, video chat, QR/barcode scanning' },
-  { id: 'device:microphone', label: 'Microphone', risk: 'critical', description: 'Voice recording, voice chat, dictation' },
-  // clipboard:read/write were split out of vfs:read -- the clipboard is a
-  // shared, ambient, cross-app channel and a permission literally named
-  // "read files" was a misleading label for "also read whatever's on the
-  // system clipboard". vfs:read is still honored as a fallback for apps
-  // granted it before this split, so this isn't a breaking change.
-  { id: 'clipboard:read', label: 'Read clipboard', risk: 'high', description: 'Paste-in tools, import-from-clipboard features. Can expose whatever any other app or the user copied, not just your own app\'s data.' },
-  { id: 'clipboard:write', label: 'Write clipboard', risk: 'low', description: 'Copy-to-clipboard features (auto-granted when declared; does not allow reading clipboard contents)' },
-  { id: 'mail:read', label: 'Read emails', risk: 'high', description: 'Inbox viewers, search, unread-count widgets' },
-  { id: 'mail:write', label: 'Compose emails', risk: 'critical', description: 'Mark-as-read/move tools, compose-preview UIs' },
-  { id: 'mail:send', label: 'Send emails', risk: 'critical', description: 'Send-on-your-behalf tools (needs its own SMTP config UI -- see below)' },
-  { id: 'mail:delete', label: 'Delete emails', risk: 'critical', description: 'Cleanup/triage tools (spam pruning, bulk delete)' },
-  { id: 'calendar:read', label: 'Read calendar', risk: 'medium', description: 'Agenda widgets, scheduling assistants' },
-  { id: 'calendar:write', label: 'Edit calendar', risk: 'high', description: 'Event creation, meeting schedulers' },
-  { id: 'calendar:delete', label: 'Delete calendar events', risk: 'high', description: 'Calendar cleanup/sync tools' },
-  { id: 'contacts:read', label: 'Read contacts', risk: 'medium', description: 'Address-book pickers, CRM-style lookups' },
-  { id: 'contacts:write', label: 'Edit contacts', risk: 'high', description: 'Contact import/sync tools' },
-  { id: 'contacts:delete', label: 'Delete contacts', risk: 'high', description: 'Dedup/cleanup tools' },
-  { id: 'system:info', label: 'System info', risk: 'medium', description: 'Diagnostics, \'about this device\' panels -- also gates reading settings values like username, region, timezone, and devMode' },
-  { id: 'system:settings', label: 'System settings', risk: 'medium', description: 'Preference sync, theme/settings dashboards' },
-  { id: 'system:apps', label: 'Manage apps', risk: 'medium', description: 'Launchers, app-store-style installers, dock/dashboard replacements' },
-  { id: 'system:app-launch', label: 'Launch installed apps', risk: 'low', description: 'Launching an installed app without access to app inventory or management' },
-  { id: 'system:events', label: 'System events', risk: 'medium', description: 'Reacting to OS-level events (theme change, etc.)' },
-  { id: 'system:root', label: 'Run with root access', risk: 'critical', description: "Running the app's unrestrictedEntry as its complete host-page implementation instead of loading its HTML entry in the app sandbox; requires Developer Mode, Root Access, and a separate explicit confirmation" },
-  { id: 'system:background', label: 'Run scheduled background tasks', risk: 'medium', description: 'Periodic sync/checks while closed -- reminders, cache refresh, polling (see below)' },
-  { id: 'system:background:live', label: 'Keep running after you close it', risk: 'high', description: 'Staying alive after the window closes -- timers, active transfers, live connections (see below)' },
-  { id: 'system:autostart', label: 'Start automatically when NovaByte starts', risk: 'high', description: 'Launching automatically at OS startup with no user action at all (see below)' },
-  { id: 'admin:apps', label: 'Manage apps (admin)', risk: 'high', description: 'Fleet/security audit tools -- see actual grants per app, not just declared ones (needs admin mode, see below)' },
-  { id: 'admin:users', label: 'Manage users', risk: 'critical', description: 'Session monitors, force-logout tools (needs admin mode)' },
-  { id: 'admin:system', label: 'System administration', risk: 'critical', description: 'Security-policy dashboards, lockout/IP-block tuning (needs admin mode)' },
-  { id: 'admin:audit', label: 'Audit logs', risk: 'high', description: 'Security/activity log viewers (needs admin mode)' },
-  // NOTE: unlike every other entry here, this permission alone does nothing --
-  // the app's manifest.json must ALSO set "allowNestedWebview": true (a
-  // top-level manifest boolean, not a permission) for app-sandbox.js's
-  // isNestedWebviewPermitted() to allow it. Both gates must pass. See the
-  // Browser template in templates.js for a working example of both together.
-  { id: 'sandbox:nested-webview', label: 'Embed live web content (nested browser view)', risk: 'critical', description: 'Apps that need to create their own <webview> for in-app browsing (e.g. a browser-style app). Requires manifest.allowNestedWebview: true as well.' },
-  // Same two-gate pattern as sandbox:nested-webview above: this permission
-  // alone does nothing. The manifest must ALSO set "sandbox.allowSameOrigin":
-  // true (nested under sandbox, unlike allowNestedWebview which is
-  // top-level) for app-sandbox.js's sanitizeSandboxAttr() to add
-  // allow-same-origin to the app's webview. 'high', not 'critical': this
-  // widens what an existing XSS in the guest can reach (shared cookies/
-  // localStorage/sessionStorage on the origin) rather than handing the
-  // guest a whole second uncontained renderer the way nested-webview does.
-  { id: 'sandbox:same-origin', label: 'Access shared cookies & storage', risk: 'high', description: 'Apps that need a stable origin for cross-tab logic or an IPC bridge that depends on window.location.origin matching. Requires manifest.sandbox.allowSameOrigin: true as well.' },
-  // Same two-gate pattern as sandbox:nested-webview and sandbox:same-origin
-  // above: this permission alone does nothing. The manifest must ALSO set
-  // "allowPopupsToEscapeSandbox": true (top-level, like allowNestedWebview)
-  // for app-sandbox.js's sanitizeSandboxAttr() to add
-  // allow-popups-to-escape-sandbox to the app's webview. 'high' risk:
-  // a popup that escapes the sandbox is a fully unrestricted browsing
-  // context, comparable risk to sandbox:same-origin.
-  { id: 'sandbox:escape-popups', label: 'Let popups escape the sandbox', risk: 'high', description: 'Apps whose popups need to open as normal, unsandboxed browser windows (e.g. OAuth flows, external checkout). Requires manifest.allowPopupsToEscapeSandbox: true as well.' },
-];
-
 // Precomputed lookup tables for the permissions catalogue. Built once so
 // hot paths (permission hover, audit rendering) don't iterate the array.
 const _PERMISSION_MAP = Object.fromEntries(PERMISSIONS.map((p) => [p.id, p]));
+
+function _permissionsForChannel(channel) {
+  const action = channel.replace(/^nova:/, '');
+  if (PERMISSION_IDS.has(action)) return [action];
+  if (LEGACY_PERMISSION_ALIASES[action]) return [LEGACY_PERMISSION_ALIASES[action]];
+
+  const [family, method] = action.split(':');
+  const methodName = (method || '').toLowerCase();
+  const fixedPermissions = {
+    'fs:watch': ['fs:watch'],
+    'notifications:show': ['device:notifications'],
+    'notifications:post': ['device:notifications'],
+    'calendar:list': ['calendar:read'],
+    'calendar:save': ['calendar:write'],
+    'calendar:remove': ['calendar:delete'],
+    'contacts:list': ['contacts:read'],
+    'contacts:save': ['contacts:write'],
+    'contacts:remove': ['contacts:delete'],
+    'data:export': ['data:export'],
+    'data:import': ['data:export'],
+    'data:backup': ['data:backup'],
+    'data:restore': ['data:backup'],
+    'alarms:create': ['system:schedule'],
+    'alarms:clear': ['system:schedule'],
+    'alarms:getAll': ['system:schedule'],
+    'badge:set': ['system:badge'],
+    'badge:clear': ['system:badge'],
+    'push:register': ['push:receive'],
+    'push:unregister': ['push:receive'],
+    'background:stay-alive': ['system:background:live'],
+    'app:list': ['system:apps'],
+    'app:install': ['system:apps'],
+    'app:uninstall': ['system:apps'],
+    'app:launch': ['system:app-launch'],
+    'app:openDefaultAppsSettings': ['system:apps'],
+    'settings:get': ['system:info'],
+    'system:info': ['system:info'],
+  };
+  if (fixedPermissions[action]) return fixedPermissions[action];
+
+  if (family === 'notifications') return ['device:notifications'];
+  if (family === 'alarms') return ['system:schedule'];
+  if (family === 'badge') return ['system:badge'];
+  if (family === 'push') return ['push:receive'];
+  if (family === 'share' && methodName === 'inbound') return ['system:share-target'];
+  if (family === 'background' && methodName.startsWith('wake')) return ['system:background'];
+  if (family === 'ipc' && ['call', 'provide', 'broadcast', 'onbroadcast'].includes(methodName)) {
+    return ['apps:communicate'];
+  }
+
+  if (family === 'mail') {
+    if (['connect', 'disconnect', 'restore', 'preview', 'markread', 'move'].includes(methodName)) return ['mail:write'];
+    if (methodName === 'send') return ['mail:send'];
+    if (methodName === 'remove') return ['mail:delete'];
+    if (['folders', 'messages', 'message', 'search', 'account'].includes(methodName)) return ['mail:read'];
+  }
+  if (family === 'reg') {
+    if (['get', 'stat', 'list', 'export', 'watch'].includes(methodName)) return ['registry.read'];
+    if (['set', 'remove', 'import'].includes(methodName)) return ['registry.write'];
+  }
+  return [];
+}
+
+function _canonicalPermission(permission) {
+  return LEGACY_PERMISSION_ALIASES[permission] || permission;
+}
+
+function _permissionAtLinePosition(lineText, offset) {
+  let start = Math.max(0, Math.min(offset, lineText.length));
+  let end = start;
+  const isPermissionChar = (char) => /[a-zA-Z0-9_:.-]/.test(char);
+  while (start > 0 && isPermissionChar(lineText[start - 1])) start--;
+  while (end < lineText.length && isPermissionChar(lineText[end])) end++;
+  if (start === end) return null;
+
+  const id = lineText.slice(start, end);
+  const permission = _PERMISSION_MAP[_canonicalPermission(id)];
+  return permission ? { id, permission } : null;
+}
 
 // ── nova: snippet bodies ─────────────────────────────────────────────────
 //
@@ -175,33 +186,42 @@ const _PERMISSION_MAP = Object.fromEntries(PERMISSIONS.map((p) => [p.id, p]));
 // (see the Snippets section of _buildCommandRegistry below), rather than
 // showing a fake or misleading one.
 const _PERM_SNIPPETS = {
-  'vfs:read': `const file = await window.nova.ipc('nova:vfs:read', { path: '/path/to/file' });\n`,
-  'vfs:write': `await window.nova.ipc('nova:vfs:write', { path: '/path/to/file', content: '' });\n`,
-  'vfs:delete': `await window.nova.ipc('nova:vfs:delete', { path: '/path/to/file' });\n`,
-  'vfs:metadata': `const meta = await window.nova.ipc('nova:vfs:metadata', { path: '/path/to/file' });\n`,
-  'net:internal': `const result = await window.nova.ipc('nova:net:internal', { url: '/api/endpoint' });\n`,
-  'net:external': `const result = await window.nova.ipc('nova:net:external', { url: 'https://api.example.com/...' });\n`,
-  'net:websocket': `const socket = await window.nova.ipc('nova:net:websocket', { url: 'wss://example.com/socket' });\n`,
-  'device:notifications': `await window.nova.ipc('nova:device:notifications', { title: '', body: '' });\n`,
-  'device:geolocation': `const position = await window.nova.ipc('nova:device:geolocation', {});\n`,
-  'device:camera': `const photo = await window.nova.ipc('nova:device:camera', {});\n`,
-  'device:microphone': `const recording = await window.nova.ipc('nova:device:microphone', {});\n`,
+  'fs:metadata': `const { stat } = await window.nova.ipc('nova:fs:stat', { path: 'media:/Pictures/photo.png' });\n`,
+  'fs:watch': `const watch = await window.novaOS.fs.watch('appdata:/notes/todo.txt', console.log);\n`,
+  'fs:read:images': `const image = await window.novaOS.fs.read('media:/Pictures/photo.png');\n`,
+  'net:internal': `const response = await fetch('https://localhost:3003/api/endpoint');\n`,
+  'net:external': `const response = await fetch('https://api.example.com/data');\n`,
+  'net:websocket': `const socket = await window.nova.websocket('wss://example.com/socket');\n`,
+  'device:notifications': `await window.nova.ipc('nova:notifications:show', { title: 'Update', body: 'Ready' });\n`,
+  'device:geolocation': `const position = await window.novaOS.geolocation.getCurrentPosition();\n`,
+  'device:camera': `const stream = await window.nova.getUserMedia({ video: true });\n`,
+  'device:microphone': `const stream = await window.nova.getUserMedia({ audio: true });\n`,
   'clipboard:read': `const clipboardText = await window.nova.ipc('nova:clipboard:read', {});\n`,
   'clipboard:write': `await window.nova.ipc('nova:clipboard:write', { text: '' });\n`,
-  'mail:read': `const messages = await window.nova.ipc('nova:mail:read', {});\n`,
-  'mail:write': `await window.nova.ipc('nova:mail:write', { id: '', changes: {} });\n`,
-  'mail:send': `await window.nova.ipc('nova:mail:send', { to: '', subject: '', body: '' });\n`,
-  'mail:delete': `await window.nova.ipc('nova:mail:delete', { id: '' });\n`,
-  'calendar:read': `const events = await window.nova.ipc('nova:calendar:read', {});\n`,
-  'calendar:write': `await window.nova.ipc('nova:calendar:write', { title: '', start: '', end: '' });\n`,
-  'calendar:delete': `await window.nova.ipc('nova:calendar:delete', { id: '' });\n`,
-  'contacts:read': `const contacts = await window.nova.ipc('nova:contacts:read', {});\n`,
-  'contacts:write': `await window.nova.ipc('nova:contacts:write', { id: '', changes: {} });\n`,
-  'contacts:delete': `await window.nova.ipc('nova:contacts:delete', { id: '' });\n`,
+  'mail:read': `const { data } = await window.nova.mail.messages({ folder: 'INBOX', page: 1, limit: 20 });\n`,
+  'mail:write': `await window.nova.mail.markRead([101], 'INBOX');\n`,
+  'mail:send': `await window.nova.mail.send({ to: 'person@example.com', subject: 'Hello', text: 'Hi', smtpHost: 'smtp.example.com', smtpPort: 587 });\n`,
+  'mail:delete': `await window.nova.mail.remove([101], 'INBOX');\n`,
+  'calendar:read': `const { events } = await window.nova.calendar.list();\n`,
+  'calendar:write': `await window.nova.calendar.save({ title: 'Meeting', date: '2026-11-06' });\n`,
+  'calendar:delete': `await window.nova.calendar.remove('event-id');\n`,
+  'contacts:read': `const { contacts } = await window.nova.contacts.list();\n`,
+  'contacts:write': `await window.nova.contacts.save({ id: 'contact-1', name: 'Jane Doe' });\n`,
+  'contacts:delete': `await window.nova.contacts.remove('contact-1');\n`,
+  'data:export': `const { envelope } = await window.nova.data.export({ prefix: 'settings.' });\n`,
+  'data:backup': `const { envelope } = await window.nova.data.backup();\n`,
+  'secrets:store': `await window.novaOS.secrets.set('api-token', 'value');\n`,
   'system:info': `const info = await window.nova.ipc('nova:system:info', {});\n`,
-  'system:settings': `await window.nova.ipc('nova:system:settings', { key: '', value: '' });\n`,
-  'system:apps': `const apps = await window.nova.ipc('nova:system:apps', {});\n`,
-  'system:events': `window.nova.on('nova:system:events', (event) => {\n  // handle OS-level event\n});\n`,
+  'system:settings': `await window.nova.ipc('nova:settings:set', { key: 'theme', value: 'nord' });\n`,
+  'system:apps': `const { apps } = await window.nova.apps.list();\n`,
+  'system:app-launch': `await window.nova.apps.launch('com.example.other');\n`,
+  'system:events': `window.nova.onEvent('system:themeChanged', (data) => console.log(data));\n`,
+  'system:badge': `await window.novaOS.badge.set(3);\n`,
+  'system:schedule': `await window.novaOS.alarms.create({ name: 'sync', periodMinutes: 30 });\n`,
+  'system:share-target': `const unsubscribe = window.novaOS.share.onInbound((share) => console.log(share));\n`,
+  'push:receive': `const unsubscribe = window.novaOS.push.onMessage((message) => console.log(message));\n`,
+  'registry.read': `const value = await window.novaOS.registry.get('HKNS/shell/theme');\n`,
+  'registry.write': `await window.novaOS.registry.set('HKNA/com.example.myapp/theme', 'dark');\n`,
 };
 
 function _permSnippetCommands() {
@@ -215,18 +235,25 @@ function _permSnippetCommands() {
       // actually declared -- inserting a call for a permission the app
       // hasn't granted itself would just hand the live-permission-check
       // (added above) an instant false positive.
-      when: () => tabs.length > 0 && (readManifestForm().permissions || []).includes(p.id),
+      when: () => {
+        const manifest = readManifestForm();
+        return tabs.length > 0 && (
+          (manifest.permissions || []).includes(p.id) ||
+          (manifest.optionalPermissions || []).includes(p.id)
+        );
+      },
       action: () => window.CM?.insertAtCursor(_PERM_SNIPPETS[p.id]),
     }));
 }
 const PERMISSION_CATEGORIES = {
-  vfs:       { label: 'Filesystem',        icon: '\u{1F4C1}' },
+  fs:        { label: 'Filesystem',        icon: '\u{1F4C1}' },
+  apps:      { label: 'Apps',              icon: '\u{1F4F1}' },
   net:       { label: 'Network',           icon: '\u21C4' },
-  clipboard: { label: 'Clipboard',         icon: '\u29C9' },
   mail:      { label: 'Mail',              icon: '\u2709' },
   calendar:  { label: 'Calendar',          icon: '\u{1F4C5}' },
   contacts:  { label: 'Contacts',          icon: '\u2630' },
   device:    { label: 'Device',            icon: '\u25C9' },
+  data:      { label: 'Data',              icon: '\u{1F5C3}' },
   system:    { label: 'System',            icon: '\u2699' },
   admin:     { label: 'Admin',             icon: '\u{1F6E1}' },
   sandbox:   { label: 'Sandbox',           icon: '\u29C8' },
@@ -254,6 +281,7 @@ const STORAGE_KEY = 'novapack_studio_data';
 let _fileTreeWatcher = null;
 let _fileTreeWatcherTimer = null;
 let _fileTreeDragAbort = null; // AbortController for the tree's drag/drop listeners
+let _gitStatusRefreshId = 0;
 
 let _manifestWatcher = null;
 let _manifestWatcherTimer = null;
@@ -590,6 +618,7 @@ function _performAutosave() {
 }
 
 function _onManifestFormChanged() {
+  _renderManifestPreview();
   if (state.autosaveMode !== 'realtime') return;
   if (!state.autosaveManifest) return;
   if (_autosaveDebounce) clearTimeout(_autosaveDebounce);
@@ -625,7 +654,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.01';
+const STUDIO_VERSION = '1.2.10';
 const GITHUB_REPO = 'NovaByteOfficial/novapack-studio';
 
 // Theme
@@ -917,6 +946,9 @@ function _readManifest(dir) {
       if (parsed.permissions !== undefined && !Array.isArray(parsed.permissions)) {
         return { _error: `${name}: "permissions" must be an array` };
       }
+      if (parsed.optionalPermissions !== undefined && !Array.isArray(parsed.optionalPermissions)) {
+        return { _error: `${name}: "optionalPermissions" must be an array` };
+      }
       return parsed;
     } catch (err) {
       return { _error: `${name}: ${err.message}` };
@@ -1157,9 +1189,37 @@ function populateManifestForm(manifest) {
 
   _validateAppIdField();
   _syncWindowPreview();
+  _renderManifestPreview();
+}
+
+function _renderManifestPreview() {
+  const name = $('mf-name')?.value.trim() || 'Your app';
+  const appId = $('mf-id')?.value.trim() || 'com.example.myapp';
+  const version = $('mf-version')?.value.trim() || '1.0.0';
+  const entry = $('mf-entry')?.value.trim() || 'index.html';
+  const icon = $('manifest-preview-icon');
+  if (icon) {
+    icon.textContent = name === 'Your app' ? 'A' : [...name][0].toLocaleUpperCase();
+    icon.classList.toggle('is-invalid', !!$('mf-id')?.value.trim() && !$('mf-id-status')?.classList.contains('is-valid'));
+  }
+  const previewName = $('manifest-preview-name');
+  const previewVersion = $('manifest-preview-version');
+  const previewId = $('manifest-preview-id');
+  const previewEntry = $('manifest-preview-entry');
+  const previewPermissions = $('manifest-preview-permissions');
+  if (previewName) previewName.textContent = name;
+  if (previewVersion) previewVersion.textContent = `Version ${version}`;
+  if (previewId) previewId.textContent = appId;
+  if (previewEntry) previewEntry.textContent = entry;
+  if (previewPermissions) {
+    const count = $('permissions-grid')?.querySelectorAll('.perm-item.selected').length || 0;
+    previewPermissions.textContent = `${count} selected`;
+  }
 }
 
 function _permCategory(id) {
+  if (id.startsWith('registry.') || id.startsWith('push:')) return 'system';
+  if (id.startsWith('clipboard:')) return 'device';
   return id.split(':')[0];
 }
 
@@ -1374,60 +1434,45 @@ function _initEditorPermissionHover() {
   const editorHost = $('cm-editor-host');
   if (!editorHost) return;
 
-  // Throttle mousemove to one tooltip update per animation frame so a
-  // frantic pointer sweep across the editor doesn't hammer posAtCoords.
-  let pending = null;
-  let rafId = null;
-  const flush = () => {
-    rafId = null;
-    if (!pending) return;
-    const { clientX, clientY } = pending;
-    pending = null;
-
-    if (!window.CM || !window.CM.view) return;
-    const view = window.CM.view;
-
-    // CodeMirror's posAtCoords can throw internally (not just return null)
-    // when called while the view is mid-layout, detached, or its container
-    // is momentarily display:none -- e.g. right as a tab becomes visible.
+  let pinned = false;
+  const showAt = (event, view) => {
     let pos;
     try {
-      pos = view.posAtCoords({ left: clientX, top: clientY });
-    } catch (err) {
+      pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    } catch {
       clear();
-      return;
+      return false;
     }
-    if (pos == null) { clear(); return; }
+    if (pos == null) { clear(); return false; }
 
     const line = view.state.doc.lineAt(pos);
-    const lineText = line.text;
-    const offsetInLine = pos - line.from;
+    const match = _permissionAtLinePosition(line.text, pos - line.from);
+    if (!match) { clear(); return false; }
 
-    let start = offsetInLine;
-    let end = offsetInLine;
-    while (start > 0 && /[\w:]/.test(lineText[start - 1])) start--;
-    while (end < lineText.length && /[\w:]/.test(lineText[end])) end++;
-    const word = lineText.slice(start, end);
-
-    const perm = _PERMISSION_MAP[word];
-    if (!perm) { clear(); return; }
-
-    dot.style.background = riskColors[perm.risk] || '#8b949e';
-    idEl.textContent = perm.id;
-    body.textContent = perm.description || '';
+    dot.style.background = riskColors[match.permission.risk] || '#8b949e';
+    idEl.textContent = match.id;
+    body.textContent = match.permission.description || '';
     tooltip.classList.remove('hidden');
     tooltip.classList.add('is-visible');
-    _positionPermTooltip(clientX, clientY);
+    _positionPermTooltip(event.clientX, event.clientY);
+    return true;
   };
 
-  editorHost.addEventListener('mousemove', (e) => {
-    pending = e;
-    if (rafId == null) rafId = requestAnimationFrame(flush);
+  window.CM?.setPermissionHoverHandler((type, event, view) => {
+    if (type === 'leave') {
+      if (!pinned) clear();
+      return;
+    }
+    if (type === 'click') {
+      pinned = showAt(event, view);
+      return;
+    }
+    if (!pinned) showAt(event, view);
   });
 
-  editorHost.addEventListener('mouseleave', () => {
-    pending = null;
-    if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
+  document.addEventListener('click', (e) => {
+    if (editorHost.contains(e.target)) return;
+    pinned = false;
     clear();
   });
 }
@@ -1445,22 +1490,28 @@ function readManifestForm() {
   const selectedPerms = [...$('permissions-grid').querySelectorAll('.perm-item.selected')]
     .map((el) => el.dataset.id);
 
-  const manifest = {
+  const diskManifest = state.projectDir ? _readManifest(state.projectDir) : null;
+  const manifest = diskManifest && !diskManifest._error ? { ...diskManifest } : {};
+  const existingPermissions = Array.isArray(manifest.permissions) ? manifest.permissions : [];
+  const preservedPermissions = existingPermissions.filter((permission) => !PERMISSION_IDS.has(permission));
+
+  Object.assign(manifest, {
     id: $('mf-id').value.trim(),
     name: $('mf-name').value.trim(),
     version: $('mf-version').value.trim() || '1.0.0',
     entry: $('mf-entry').value.trim() || 'index.html',
-    permissions: selectedPerms,
-  };
+    permissions: [...new Set([...preservedPermissions, ...selectedPerms])],
+  });
 
-  if ($('mf-description').value.trim()) manifest.description = $('mf-description').value.trim();
-  if ($('mf-author').value.trim()) manifest.author = $('mf-author').value.trim();
+  manifest.description = $('mf-description').value.trim() || undefined;
+  manifest.author = $('mf-author').value.trim() || undefined;
 
   // Icon: prefer uploaded data URI, fall back to text field (Lucide name).
   const iconDataUri = $('mf-icon-img').dataset.uri || '';
   const iconText = $('mf-icon').value.trim();
   if (iconDataUri) manifest.icon = iconDataUri;
   else if (iconText) manifest.icon = iconText;
+  else manifest.icon = undefined;
 
   manifest.defaultSize = [width, height];
   manifest.minSize = [minWidth, minHeight];
@@ -5032,6 +5083,7 @@ function populateFileTree(dir) {
   if (!tree) return;
   tree.replaceChildren();
   _buildTreeItems(dir, tree, 0);
+  _applyGitStatusToTree();
   _refreshGitStatus(dir);
 }
 
@@ -5041,20 +5093,28 @@ function populateFileTree(dir) {
 // there's no injection surface even if a path contained shell metacharacters.
 function _refreshGitStatus(dir) {
   if (!dir) return;
+  const refreshId = ++_gitStatusRefreshId;
+  const isCurrentRefresh = () => refreshId === _gitStatusRefreshId && state.projectDir === dir;
 
   execFile('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir }, (err) => {
+    if (!isCurrentRefresh()) return;
     if (err) {
       // Not a repo (or git isn't installed) -- clear any stale state from a
       // previously open project and leave the tree as-is.
-      if (state.gitRoot) { state.gitRoot = null; state.gitStatus = null; state.gitNumstat = null; }
+      state.gitRoot = null;
+      state.gitStatus = null;
+      state.gitNumstat = null;
+      _applyGitStatusToTree();
       return;
     }
 
     execFile('git', ['rev-parse', '--show-toplevel'], { cwd: dir }, (err2, topLevel) => {
+      if (!isCurrentRefresh()) return;
       if (err2) return;
       const root = topLevel.trim();
 
       execFile('git', ['status', '--porcelain=v1', '-uall'], { cwd: dir, maxBuffer: 10 * 1024 * 1024 }, (err3, out) => {
+        if (!isCurrentRefresh()) return;
         if (err3) return;
 
         const statusMap = new Map(); // absolute path -> 'M' | 'A' | 'D' | '?' | etc.
@@ -5079,6 +5139,7 @@ function _refreshGitStatus(dir) {
         // huge diffs) shouldn't block status from rendering, so it's kept
         // as a separate non-blocking pass.
         execFile('git', ['diff', '--numstat', 'HEAD'], { cwd: root, maxBuffer: 10 * 1024 * 1024 }, (errN, outN) => {
+          if (!isCurrentRefresh()) return;
           const numstat = new Map(); // absolute path -> { add, del }
           if (!errN && outN) {
             for (const line of outN.split('\n')) {
@@ -5111,9 +5172,9 @@ function _gitBadge(ch) {
 }
 
 function _applyGitStatusToTree() {
-  if (!state.gitStatus) return;
   document.querySelectorAll('#file-tree .file-item[data-path]').forEach((el) => {
     el.querySelector('.git-badge')?.remove();
+    if (!state.gitStatus) return;
     const code = state.gitStatus.get(el.dataset.path);
     if (!code) return;
     // Prefer worktree status (what differs from the index) for the tree
@@ -6480,11 +6541,11 @@ function _onCmChange() {
 // ── Live undeclared-permission check ────────────────────────────────────
 //
 // Same idea as builder.js's listActions() + app.js's _renderPermissionAudit
-// (declared-vs-detected via the nova:[a-z:]+ regex), but scoped to just the
+// (declared-vs-detected via channel names), but scoped to just the
 // buffer currently open in the editor and run on a debounce as you type,
 // instead of at build/inspect time across the whole packaged app. Reuses
 // the *same* regex source so the two detectors can't silently drift apart.
-const _LIVE_PERM_RE = /nova:[a-z:]+/g;
+const _LIVE_PERM_RE = /nova:[a-zA-Z0-9:_-]+/g;
 let _livePermScanTimer = null;
 const _LIVE_PERM_DEBOUNCE_MS = 300;
 
@@ -6509,8 +6570,13 @@ function _runLivePermissionScan() {
   const matches = content.match(_LIVE_PERM_RE);
   if (!matches || !matches.length) { _setLivePermStatus(null); return; }
 
-  const detected = new Set(matches);
-  const declared = new Set(readManifestForm().permissions || []);
+  const detected = new Set(matches.flatMap(_permissionsForChannel));
+  if (!detected.size) { _setLivePermStatus(null); return; }
+  const manifest = readManifestForm();
+  const declared = new Set([
+    ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+    ...(Array.isArray(manifest.optionalPermissions) ? manifest.optionalPermissions : []),
+  ].map(_canonicalPermission));
   const undeclared = [...detected.difference(declared)];
 
   if (undeclared.length === 0) {
@@ -7357,13 +7423,146 @@ function _setSyntaxStatus(type, text) {
   el.className = `status-bar-item status-bar-item--clickable status-bar-item--${type}`;
 }
 
-function checkSyntax() {
+function _syntaxCurrentContent(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const openTab = tabs.find((tab) => path.resolve(tab.filePath) === resolvedPath);
+  if (openTab) {
+    if (openTab === _getActiveTab() && window.CM) return window.CM.getValue();
+    if (openTab.liveContent !== undefined) return openTab.liveContent;
+    return openTab.originalContent;
+  }
+  return fs.readFileSync(resolvedPath, 'utf8');
+}
+
+function _htmlStyles(htmlText, htmlPath) {
+  const styles = [];
+  const linkedPaths = new Set();
+  const doc = parse5.parse(htmlText, { sourceCodeLocationInfo: true });
+
+  function visit(node) {
+    if (node.tagName === 'style') {
+      const location = node.sourceCodeLocation;
+      const inlineCss = location?.startTag && location?.endTag
+        ? htmlText.slice(location.startTag.endOffset, location.endTag.startOffset)
+        : (node.childNodes || []).map((child) => child.value || '').join('');
+      if (inlineCss.trim()) {
+        styles.push({
+          filePath: `${htmlPath} (inline style)`,
+          content: inlineCss,
+          editorOffset: location?.startTag?.endOffset,
+          editorContent: htmlText,
+        });
+      }
+    } else if (node.tagName === 'link') {
+      const attrs = new Map((node.attrs || []).map(({ name, value }) => [name.toLowerCase(), value]));
+      const rel = (attrs.get('rel') || '').toLowerCase().split(/\s+/);
+      const href = attrs.get('href');
+      if (rel.includes('stylesheet') && href && !/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(href)) {
+        const pathPart = href.split(/[?#]/, 1)[0];
+        let decodedPath;
+        try {
+          decodedPath = decodeURIComponent(pathPart);
+        } catch {
+          decodedPath = pathPart;
+        }
+        const root = path.resolve(state.projectDir || path.dirname(htmlPath));
+        const basePath = decodedPath.startsWith('/') ? root : path.dirname(htmlPath);
+        const cssPath = path.resolve(basePath, decodedPath.replace(/^[/\\]+/, ''));
+        const relative = path.relative(root, cssPath);
+        const outsideProject = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+        if (!outsideProject && path.extname(cssPath).toLowerCase() === '.css') linkedPaths.add(cssPath);
+      }
+    }
+
+    for (const child of node.childNodes || []) visit(child);
+  }
+
+  visit(doc);
+  for (const cssPath of linkedPaths) {
+    if (fs.existsSync(cssPath) && fs.statSync(cssPath).isFile()) {
+      styles.push({ filePath: cssPath, content: _syntaxCurrentContent(cssPath) });
+    } else {
+      styles.push({ filePath: cssPath, content: null });
+    }
+  }
+  return styles;
+}
+
+function _syntaxPositionAtOffset(content, offset) {
+  const end = Math.max(0, Math.min(offset, content.length));
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < end; i++) {
+    if (content[i] === '\r') {
+      if (content[i + 1] === '\n' && i + 1 < end) i++;
+      line++;
+      column = 1;
+    } else if (content[i] === '\n') {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+  }
+  return { line, column };
+}
+
+function _cssSyntaxDiagnostics(content, fileName, { editor = true, editorOffset, editorContent } = {}) {
+  try {
+    require('css').parse(content, { source: fileName });
+    return [];
+  } catch (error) {
+    const sourceOffset = typeof error.source === 'string'
+      ? Math.max(0, content.length - error.source.length)
+      : 0;
+    const position = editorOffset !== undefined && editorContent
+      ? _syntaxPositionAtOffset(editorContent, editorOffset + sourceOffset)
+      : _syntaxPositionAtOffset(content, sourceOffset);
+    return [{
+      severity: 'error',
+      fileName,
+      line: position.line,
+      column: position.column,
+      message: error.reason || error.message,
+      editor,
+    }];
+  }
+}
+
+function _showSyntaxDiagnostics(fileName, diagnostics) {
+  window.CM?.setSyntaxDiagnostics(diagnostics);
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity !== 'error');
+  if (!diagnostics.length) {
+    _setSyntaxStatus('ok', '\u2713 No errors');
+    appendLog('success', `${fileName} -- no syntax errors`);
+    return;
+  }
+
+  const first = errors[0] || diagnostics[0];
+  const firstLocation = first.line ? `${first.line}:${first.column || 1}` : '?';
+  const status = errors.length ? 'error' : 'warn';
+  const label = errors.length
+    ? `\u2717 ${errors.length} error${errors.length === 1 ? '' : 's'} -- Ln ${firstLocation}`
+    : `\u26A0 ${warnings.length} warning${warnings.length === 1 ? '' : 's'} -- Ln ${firstLocation}`;
+  _setSyntaxStatus(status, label);
+
+  for (const diagnostic of diagnostics) {
+    const location = diagnostic.line ? `${diagnostic.line}:${diagnostic.column || 1}` : '?';
+    const rule = diagnostic.rule ? ` [${diagnostic.rule}]` : '';
+    appendLog(diagnostic.severity === 'error' ? 'error' : 'warn',
+      `${diagnostic.fileName || fileName}:${location} -- ${diagnostic.message}${rule}`);
+  }
+}
+
+async function checkSyntax() {
   const tab = _getActiveTab();
   if (!tab) { showToast('No file open to check'); return; }
 
   const ext = path.extname(tab.filePath).toLowerCase();
   const loader = _SYNTAX_LOADER_MAP[ext];
-  if (!loader) {
+  const supported = loader || ['.json', '.css', '.html', '.htm'].includes(ext);
+  if (!supported) {
     showToast(`Syntax check not supported for ${ext || 'this file type'}`);
     return;
   }
@@ -7371,38 +7570,92 @@ function checkSyntax() {
   const content = window.CM ? window.CM.getValue() : tab.originalContent;
   const fileName = path.basename(tab.filePath);
 
-  let esbuild;
   try {
-    esbuild = require('esbuild');
-  } catch (e) {
-    _setSyntaxStatus('error', 'esbuild unavailable');
-    appendLog('error', `esbuild not available: ${e.message}`);
-    return;
-  }
+    const diagnostics = [];
+    if (loader) {
+      const esbuild = require('esbuild');
+      try {
+        await esbuild.transform(content, { loader, sourcefile: fileName, logLevel: 'silent' });
+      } catch (error) {
+        for (const item of error.errors || [{ text: error.message }]) {
+          diagnostics.push({
+            severity: 'error',
+            fileName,
+            line: item.location?.line,
+            column: item.location ? item.location.column + 1 : undefined,
+            message: item.text,
+            editor: true,
+          });
+        }
+      }
+    } else if (ext === '.json') {
+      const { validate, lineColumn } = require('@jsonlint/core');
+      const result = validate(content, { mode: 'strict' });
+      const esbuild = require('esbuild');
+      const parseErrors = [];
+      try {
+        await esbuild.transform(content, { loader: 'json', sourcefile: fileName, logLevel: 'silent' });
+      } catch (error) {
+        for (const item of error.errors || [{ text: error.message }]) {
+          parseErrors.push({
+            severity: 'error',
+            fileName,
+            line: item.location?.line,
+            column: item.location ? item.location.column + 1 : undefined,
+            message: item.text,
+            editor: true,
+          });
+        }
+      }
+      if (parseErrors.length) diagnostics.push(...parseErrors);
+      else for (const item of result.diagnostics) {
+        const position = lineColumn(content, item.start);
+        diagnostics.push({
+          severity: item.severity === 'error' ? 'error' : 'warning',
+          fileName,
+          line: position.line,
+          column: position.column,
+          message: item.hint ? `${item.message} (${item.hint})` : item.message,
+          editor: true,
+        });
+      }
+    } else if (ext === '.css') {
+      diagnostics.push(..._cssSyntaxDiagnostics(content, fileName));
+    } else {
+      const { HTMLHint } = require('htmlhint');
+      for (const item of HTMLHint.verify(content)) {
+        diagnostics.push({
+          severity: item.type === 'error' ? 'error' : 'warning',
+          fileName,
+          line: item.line,
+          column: item.col,
+          message: item.message,
+          rule: item.rule?.id,
+          editor: true,
+        });
+      }
 
-  try {
-    esbuild.transformSync(content, { loader, sourcefile: fileName, logLevel: 'silent' });
-    _setSyntaxStatus('ok', '\u2713 No errors');
-    appendLog('success', `${fileName} -- no syntax errors`);
-  } catch (e) {
-    const errors = e.errors && e.errors.length ? e.errors : [{ text: e.message }];
-    const first = errors[0];
-    const loc = first.location ? `${first.location.line}:${first.location.column}` : '?';
-    const label = errors.length > 1
-      ? `\u2717 ${errors.length} errors -- Ln ${loc}`
-      : `\u2717 Ln ${loc}: ${first.text}`;
-    _setSyntaxStatus('error', label);
-
-    for (const err of errors) {
-      const eLoc = err.location ? `${err.location.line}:${err.location.column}` : '?';
-      appendLog('error', `${fileName}:${eLoc} -- ${err.text}`);
-    }
-    if (e.warnings && e.warnings.length) {
-      for (const w of e.warnings) {
-        const wLoc = w.location ? `${w.location.line}:${w.location.column}` : '?';
-        appendLog('warn', `${fileName}:${wLoc} -- ${w.text}`);
+      const cssFiles = _htmlStyles(content, tab.filePath);
+      for (const cssFile of cssFiles) {
+        if (cssFile.content === null) {
+          diagnostics.push({
+            severity: 'error',
+            fileName: path.basename(cssFile.filePath),
+            message: 'Linked stylesheet was not found.',
+          });
+          continue;
+        }
+        diagnostics.push(..._cssSyntaxDiagnostics(cssFile.content, path.basename(cssFile.filePath), {
+          editor: cssFile.editorOffset !== undefined,
+          editorOffset: cssFile.editorOffset,
+          editorContent: cssFile.editorContent,
+        }));
       }
     }
+    _showSyntaxDiagnostics(fileName, diagnostics);
+  } catch (error) {
+    _setSyntaxStatus('error', 'Syntax check failed');
+    appendLog('error', `${fileName} -- syntax checker failed: ${error.message}`);
   }
 }
 
@@ -7427,6 +7680,14 @@ function _readProjectVersion() {
 
 async function runBuild() {
   if (state.building || !state.projectDir) return;
+  const outDir = _getBuildOutDir();
+  if ($('build-clean')?.checked && _buildOutputContainsProject(outDir)) {
+    const message = 'Refusing to clean this output directory because it contains the project folder.';
+    clearLog();
+    appendLog('error', message);
+    showToast(message);
+    return;
+  }
   state.building = true;
 
   const btn = $('btn-build');
@@ -7446,8 +7707,6 @@ async function runBuild() {
     progress = Math.min(progress + (Math.random() * 3), 85);
     fill.style.width = progress + '%';
   }, 80);
-
-  const outDir = $('build-outdir').value.trim() || path.join(state.projectDir, 'dist');
 
   if ($('build-clean').checked && fs.existsSync(outDir)) {
     try {
@@ -7754,8 +8013,7 @@ function _updateBuildSummary() {
   integrityEl.textContent = _selectedIntegrityMethod === 'none' ? 'None' : _selectedIntegrityMethod;
   integrityEl.className = 'build-summary-value' + (_selectedIntegrityMethod === 'none' ? ' build-summary-value--warn' : '');
 
-  const outDir = ($('build-outdir')?.value || '').trim() || (state.projectDir ? path.join(state.projectDir, 'dist') : './dist');
-  outpathEl.textContent = outDir;
+  outpathEl.textContent = _getBuildOutDir();
 
   // C++/native detection -- purely a resting-state visual cue, not a
   // build-blocking check (build() itself still does the real detection +
@@ -7776,6 +8034,47 @@ function _updateBuildSummary() {
       hasCpp = false; // detection failing shouldn't block rendering the summary
     }
     btn.classList.toggle('build-btn--native', hasCpp);
+  }
+}
+
+function _getBuildOutDir() {
+  return ($('build-outdir')?.value || '').trim()
+    || (state.projectDir ? path.join(state.projectDir, 'dist') : './dist');
+}
+
+function _buildOutputContainsProject(outDir) {
+  const relativeProjectPath = path.relative(path.resolve(outDir), path.resolve(state.projectDir));
+  return relativeProjectPath === ''
+    || (relativeProjectPath !== '..'
+      && !relativeProjectPath.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relativeProjectPath));
+}
+
+async function _copyBuildOutputPath() {
+  try {
+    await navigator.clipboard.writeText(_getBuildOutDir());
+    showToast('Output path copied');
+  } catch (error) {
+    showToast(`Could not copy output path: ${error.message}`);
+  }
+}
+
+function _openBuildOutputFolder() {
+  const outDir = _getBuildOutDir();
+  if (!fs.existsSync(outDir)) {
+    showToast('Output folder does not exist yet. Build the package first.');
+    return;
+  }
+  try {
+    if (typeof nw !== 'undefined' && nw.Shell?.openItem) {
+      nw.Shell.openItem(outDir);
+    } else if (typeof nw !== 'undefined' && nw.Shell?.showItemInFolder) {
+      nw.Shell.showItemInFolder(outDir);
+    } else {
+      showToast('Opening folders is not available in this environment');
+    }
+  } catch (error) {
+    showToast(`Could not open output folder: ${error.message}`);
   }
 }
 
@@ -8061,7 +8360,6 @@ function _buildCommandRegistry() {
       id: 'build', label: 'Build Package', category: 'Build', action: () => { switchTab('build'); runBuild(); }, when: hasProject,
       shortcut: `${MOD_KEY}+B`
     },
-    { id: 'run-novabyte', label: 'Run NovaByte', category: 'Build', action: runNovaByte, when: hasProject },
     { id: 'clear-build-history', label: 'Clear Build History', category: 'Build', action: () => { localStorage.removeItem(BUILD_HISTORY_KEY); _renderBuildHistory(); } },
 
     // Workspace
@@ -8511,12 +8809,14 @@ function _renderPermissionAudit(declared, detected) {
   return card;
 }
 
-function inspectFile(filePath) {
+async function inspectFile(filePath) {
   let info, vResult, actions;
   try {
     info = inspect(filePath);
-    vResult = verify(filePath);
-    actions = listActions(filePath);
+    [vResult, actions] = await Promise.all([
+      verify(filePath),
+      Promise.resolve(listActions(filePath)),
+    ]);
   } catch (e) {
     $('inspector-dropzone').classList.remove('hidden');
     $('inspector-result').classList.add('hidden');
@@ -8541,14 +8841,24 @@ function inspectFile(filePath) {
   const idEl = document.createElement('div');
   idEl.className = 'inspector-app-id';
   idEl.textContent = info.manifest?.id || '';
-  headerText.append(nameEl, idEl);
+  const signatureNote = document.createElement('div');
+  signatureNote.className = 'inspector-signature-note';
+  signatureNote.textContent = vResult.reason;
+  headerText.append(nameEl, idEl, signatureNote);
 
   const badges = document.createElement('div');
   badges.className = 'inspector-badges';
   const sigBadge = document.createElement('span');
-  sigBadge.className = vResult.valid ? 'badge badge--green' : 'badge badge--red';
-  sigBadge.textContent = vResult.valid ? '\u2713 Valid' : '\u2717 Invalid sig';
-  badges.appendChild(sigBadge);
+  sigBadge.className = vResult.valid
+    ? 'badge badge--green'
+    : info.hasSignature ? 'badge badge--red' : 'badge badge--gray';
+  sigBadge.textContent = vResult.valid
+    ? '\u2713 Trusted signature'
+    : info.hasSignature ? '\u26A0 Untrusted signature' : 'Unsigned';
+  const formatBadge = document.createElement('span');
+  formatBadge.className = 'badge badge--gray';
+  formatBadge.textContent = info.format ? `Format ${info.format}` : 'Unknown format';
+  badges.append(sigBadge, formatBadge);
   header.append(headerText, badges);
   result.appendChild(header);
 
@@ -8590,19 +8900,16 @@ function inspectFile(filePath) {
 
   // Permission audit card -- .novaapp files are untrusted, so we treat
   // manifest.permissions and the detected action list as hostile input.
-  const declared = new Set(info.manifest?.permissions || []);
-  // nova:vfs:read -> vfs:read; nova:ready / nova:ready:response are system calls, not permissions
-  const SYSTEM_ACTIONS = new Set(['nova:ready', 'nova:ready:response']);
-  const detected = new Set(
-    actions
-      .filter((a) => !SYSTEM_ACTIONS.has(a))
-      .map((a) => a.replace(/^nova:/, ''))
-  );
+  const declared = new Set([
+    ...(Array.isArray(info.manifest?.permissions) ? info.manifest.permissions : []),
+    ...(Array.isArray(info.manifest?.optionalPermissions) ? info.manifest.optionalPermissions : []),
+  ].map(_canonicalPermission));
+  const detected = new Set(actions.flatMap(_permissionsForChannel));
   grid.appendChild(_renderPermissionAudit(declared, detected));
 
   // Files card
   const filesCard = document.createElement('div');
-  filesCard.className = 'inspector-card';
+  filesCard.className = 'inspector-card inspector-card--files';
   const filesTitle = document.createElement('div');
   filesTitle.className = 'inspector-card-title';
   filesTitle.textContent = `Files (${info.fileCount})`;
@@ -8623,9 +8930,9 @@ function inspectFile(filePath) {
 
   // Footer
   const footer = document.createElement('div');
-  footer.style.marginTop = '8px';
+  footer.className = 'inspector-actions';
   const another = document.createElement('button');
-  another.className = 'action-btn action-btn--ghost';
+  another.className = 'action-btn action-btn--primary';
   another.id = 'btn-inspect-another';
   another.textContent = 'Inspect another';
   another.addEventListener('click', showInspector);
@@ -9297,19 +9604,6 @@ function createProject() {
 
   closeModal('modal-new-project');
   loadProject(dir);
-}
-
-// Virtual runner. Spawns a second NW.js window pointing at the bundled
-// NBOSP runtime. Both the install path and the run path use detached: true +
-// unref() so the spawned process survives this Studio window closing.
-function runNovaByte() {
-  // Deprecated: runtime/nbosp is no longer bundled with Studio. Clone NBOSP
-  // yourself instead of relying on this button to launch a bundled copy.
-  showToast(
-    'Run NovaByte is deprecated \u2014 clone NBOSP yourself: github.com/NovaByteTeam/novabyte-os',
-    'info',
-    8000
-  );
 }
 
 // Keep the native input attached until NW.js has completed its picker event;
@@ -9999,7 +10293,6 @@ function _initGlobalShortcuts() {
     if (meta && e.key === 'n') { e.preventDefault(); openNewProjectModal(); }
     if (meta && e.key === 'o') { e.preventDefault(); pickFolder(loadProject); }
     if (meta && e.key === 'b') { e.preventDefault(); if (state.projectDir) { switchTab('build'); runBuild(); } }
-    if (meta && e.key === 'r') { e.preventDefault(); runNovaByte(); }
     if (meta && e.shiftKey && (e.key === 'F' || e.key === 'f')) { e.preventDefault(); openGlobalSearch(); }
     if (meta && e.shiftKey && (e.key === 'D' || e.key === 'd')) { e.preventDefault(); openDiffVsSaved(); }
     if (meta && !e.shiftKey && (e.key === 'p' || e.key === 'P')) { e.preventDefault(); openQuickOpen(); }
@@ -10162,7 +10455,6 @@ function init() {
     _sc('sc-new', `${MOD_KEY}+N`);
     _sc('sc-open', `${MOD_KEY}+O`);
     _sc('sc-build', `${MOD_KEY}+B`);
-    _sc('sc-run', `${MOD_KEY}+R`);
     _sc('sc-quick-open', `${MOD_KEY}+P`);
     _sc('sc-qo-icon', IS_MAC ? '\u2318' : '');
     _sc('sc-quickopen', `${MOD_KEY}+P`);
@@ -10197,16 +10489,6 @@ function init() {
     $('btn-new-project')?.addEventListener('click', openNewProjectModal);
     $('btn-open-project')?.addEventListener('click', () => pickFolder(loadProject));
     $('btn-inspect')?.addEventListener('click', showInspector);
-    const runNovaByteBtn = $('btn-run-novabyte');
-    if (runNovaByteBtn) {
-      // runtime/nbosp is no longer bundled with Studio -- deprecated in
-      // place. Visually disabled, but still clickable so the toast can
-      // actually explain why, rather than just going dead with no feedback.
-      runNovaByteBtn.classList.add('is-deprecated');
-      runNovaByteBtn.setAttribute('aria-disabled', 'true');
-      runNovaByteBtn.title = 'Deprecated \u2014 NBOSP is no longer bundled. Clone it yourself: github.com/NovaByteTeam/novabyte-os';
-      runNovaByteBtn.addEventListener('click', runNovaByte);
-    }
     $('btn-editor-settings')?.addEventListener('click', showSettings);
     $('btn-about')?.addEventListener('click', openAboutModal);
   });
@@ -10226,6 +10508,8 @@ function init() {
     $('btn-save-manifest')?.addEventListener('click', saveManifest);
     $('btn-save-manifest-perms')?.addEventListener('click', saveManifest);
     $('design-window-popup-save')?.addEventListener('click', saveManifest);
+    $('btn-manifest-permissions')?.addEventListener('click', () => switchTab('permissions'));
+    $('btn-manifest-design')?.addEventListener('click', () => switchTab('design'));
     $('btn-view-json')?.addEventListener('click', () => {
       const windowError = _windowSettingsError();
       if (windowError) {
@@ -10345,6 +10629,9 @@ function init() {
     // point to when someone wants to fix an undeclared permission).
     $('sb-perm-live')?.addEventListener('click', () => switchTab('manifest'));
     $('btn-build')?.addEventListener('click', runBuild);
+    $('btn-copy-build-path')?.addEventListener('click', _copyBuildOutputPath);
+    $('btn-open-build-folder')?.addEventListener('click', _openBuildOutputFolder);
+    $('btn-clear-build-log')?.addEventListener('click', clearLog);
     $('btn-pick-outdir')?.addEventListener('click', () => {
       pickFolder((dir) => { $('build-outdir').value = dir; });
     });
@@ -10356,6 +10643,7 @@ function init() {
   _safeInit('sign tab', () => {
     $('btn-sign-generate-key')?.addEventListener('click', () => _generateDevKeypair());
     $('btn-sign-selfsign')?.addEventListener('click', _runSelfSign);
+    $('btn-sign-go-build')?.addEventListener('click', () => switchTab('build'));
     $('sign-dev-privkey')?.addEventListener('input', _updateSignActionAvailability);
     $('sign-dev-custom-key')?.addEventListener('input', _updateSignActionAvailability);
 
@@ -10473,6 +10761,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _isValidTheme,
     _gitBadge,
     _timeAgo,
+    _buildOutputContainsProject,
     // State + state mutators -- testable with localStorage mocked.
     state,
     tabs,
