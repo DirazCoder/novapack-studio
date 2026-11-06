@@ -90,14 +90,20 @@ async function loadEmsdkEnvironment(emsdkRoot) {
     ...process.env,
     EM_CONFIG: path.join(emsdkRoot, '.emscripten'),
   };
-  await runFile(path.join(emsdkRoot, windows ? 'emsdk.bat' : 'emsdk'), ['activate', 'latest'], {
-    cwd: emsdkRoot,
-    env,
-    shell: windows,
-  });
+  if (windows) {
+    await runFile('cmd.exe', ['/d', '/c', 'call emsdk.bat activate latest'], {
+      cwd: emsdkRoot,
+      env,
+    });
+  } else {
+    await runFile(path.join(emsdkRoot, 'emsdk'), ['activate', 'latest'], {
+      cwd: emsdkRoot,
+      env,
+    });
+  }
 
   const result = windows
-    ? await runFile('cmd.exe', ['/d', '/s', '/c', `call "${path.join(emsdkRoot, 'emsdk_env.bat')}" >nul && set`], { cwd: emsdkRoot, env })
+    ? await runFile('cmd.exe', ['/d', '/c', 'call emsdk_env.bat >nul && set'], { cwd: emsdkRoot, env })
     : await runFile('/bin/bash', ['-c', 'source "$1/emsdk_env.sh" >/dev/null && env -0', 'novapack-emsdk', emsdkRoot], { cwd: emsdkRoot, env });
 
   const parsed = {};
