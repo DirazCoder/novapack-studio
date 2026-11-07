@@ -1,14 +1,19 @@
-// [NOVAPACK_TEMPLATES_JS] -- from NovaPack Studio, not NBOSP
+// [NOVAPACK_TEMPLATES_JS] — NovaByte Studio app templates (not part of NBOSP).
 'use strict';
 
 /**
  * NovaByte Studio — App Templates
  *
  * Scaffolds new app project directories from a small set of starters.
- * Each template is a frozen spec: a display name, icon, and a map of
- * filename → generator function. The generator receives the manifest
- * and returns the file's string content, with manifest values escaped
- * for the context they land in (HTML text, JS string literal, URL).
+ * Each template is a frozen spec: a display name, optional permission
+ * declarations, and a map of filename → generator function. Generators
+ * receive the normalized manifest — the exact object create() writes to
+ * manifest.json, with defaults applied — and return the file's string
+ * content, with every manifest value escaped for the context it lands
+ * in (HTML text, JS string literal, URL).
+ *
+ * This module is CommonJS on purpose: NovaByte Studio consumes it with
+ * require(), and the generators are plain string builders.
  */
 
 const fs = require('fs');
@@ -17,9 +22,9 @@ const path = require('path');
 // Manifest fields end up interpolated straight into HTML or JS that becomes
 // a real file loaded in a webview. A name like `</script><script>…` or an id
 // containing a quote would break out of its context and run as injected
-// markup or code in every app built from these templates. The three helpers
-// below are the boundary between "user-supplied manifest field" and "bytes
-// we write to disk and load as a page."
+// markup or code in every app built from these templates. The helpers below
+// are the boundary between "user-supplied manifest field" and "bytes we
+// write to disk and load as a page."
 
 const HTML_ESCAPES = Object.freeze({
   '&': '&amp;',
@@ -38,7 +43,7 @@ function escapeHtml(value) {
 // can't terminate the string early, and replaces line/paragraph separators
 // — U+2028 and U+2029 are valid in JS strings but act as line terminators,
 // which would be a syntax error inside a single-quoted literal.
-const JS_STRING_REPLACEMENTS = Object.freeze({
+const JS_STRING_ESCAPES = Object.freeze({
   '\\': '\\\\',
   "'": "\\'",
   '\n': '\\n',
@@ -48,12 +53,14 @@ const JS_STRING_REPLACEMENTS = Object.freeze({
 });
 
 function escapeJsString(value) {
-  return String(value).replace(/[\\'\n\r\u2028\u2029]/g, (ch) => JS_STRING_REPLACEMENTS[ch]);
+  return String(value).replace(/[\\'\n\r\u2028\u2029]/g, (ch) => JS_STRING_ESCAPES[ch]);
 }
 
 // The webapp template pins its host-managed browser view to manifest.url.
 // Accept only HTTP(S) URLs so unsupported or executable schemes cannot be
-// used as the app's initial destination.
+// used as the app's initial destination. Normalizing through `new URL()`
+// means the value written into generated code is the exact string the
+// browser will act on, not just one that looks safe to a substring check.
 function sanitizeUrl(value) {
   if (typeof value !== 'string' || value.trim() === '') return null;
   try {
@@ -65,6 +72,10 @@ function sanitizeUrl(value) {
   }
 }
 
+// Key → [accent color, stroke artwork]. Every template icon goes through
+// makeTemplateIcon() so generated manifests stay small and the icon set
+// stays visually consistent. (native-cpp used to carry a ~3.4 KB base64
+// logo in every generated manifest.json; it now uses the same pipeline.)
 const TEMPLATE_ICON_ART = Object.freeze({
   blank: ['#6478f5', '<path d="M19 23h26v23H19z"/><path d="m25 17 26 0 0 23M13 29v23h26" />'],
   webapp: ['#19a58a', '<circle cx="32" cy="32" r="16"/><path d="M16 32h32M32 16c5 5 7 10 7 16s-2 11-7 16c-5-5-7-10-7-16s2-11 7-16z"/>'],
@@ -75,6 +86,7 @@ const TEMPLATE_ICON_ART = Object.freeze({
   form: ['#ed8e58', '<rect x="19" y="15" width="26" height="34" rx="4"/><path d="M26 24h13M26 32h13M26 40h8M22 24h.1M22 32h.1M22 40h.1"/>'],
   'markdown-viewer': ['#45a6d8', '<path d="M14 20a4 4 0 0 1 4-4h28a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4z"/><path d="M20 38V28l5 6 5-6v10M36 35l5-7 5 7M41 28v13"/>'],
   chat: ['#d46bb2', '<path d="M16 18h32a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H29l-9 5v-5h-4a4 4 0 0 1-4-4V22a4 4 0 0 1 4-4z"/><path d="M22 29h20M22 36h13"/>'],
+  'native-cpp': ['#3f7fc1', '<path d="m27 24-9 8 9 8M37 24l9 8-9 8"/>'],
   'notifications-api': ['#df5f78', '<path d="M19 42h26l-4-5V28a9 9 0 0 0-18 0v9zM28 47a4 4 0 0 0 8 0"/>'],
   'alarms-api': ['#e6a543', '<circle cx="32" cy="34" r="16"/><path d="M32 24v11l8 5M19 17l-5 6M45 17l5 6"/>'],
   'clipboard-api': ['#5b87ed', '<rect x="19" y="19" width="26" height="31" rx="4"/><path d="M26 19v-4h12v4M25 29h14M25 36h14M25 43h9"/>'],
@@ -95,6 +107,55 @@ function makeTemplateIcon(key) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+/* ------------------------------------------------------------------ *
+ * Shared fragments for generated stylesheets.
+ *
+ * Every generated style.css is standalone, but the reset layer, the
+ * reduced-motion block, and the visually-hidden utility are identical
+ * across templates. Keeping them in one place means they cannot drift
+ * apart between templates.
+ * ------------------------------------------------------------------ */
+
+const CSS_RESET_LAYER = `@layer reset {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+}`;
+
+const CSS_REDUCED_MOTION = `@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}`;
+
+const CSS_SR_ONLY = `  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+`;
+
+/* ------------------------------------------------------------------ *
+ * API starter factory
+ *
+ * Every `*-api` template below shares one scaffolding shape: a fixed
+ * index.html + style.css and an app.js that defines a handful of demo
+ * helpers (addButton/addField/show/setStatus/requestPermission) and
+ * then runs the template-specific `appJs` snippet inside main().
+ * ------------------------------------------------------------------ */
+
 function apiStarterTemplate({ name, description, icon, permissions = [], optionalPermissions = [], permissionReasons = {}, shareTarget, appJs }) {
   return {
     name,
@@ -106,7 +167,7 @@ function apiStarterTemplate({ name, description, icon, permissions = [], optiona
     ...(shareTarget ? { shareTarget } : {}),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -123,27 +184,28 @@ function apiStarterTemplate({ name, description, icon, permissions = [], optiona
       <p>${escapeHtml(description)}</p>
     </header>
     <section id="controls" aria-label="API demo controls"></section>
-    <p id="status" role="status" aria-live="polite">Ready. Choose an action to try this API.</p>
+    <p id="status" role="status">Ready. Choose an action to try this API.</p>
     <pre id="output" aria-live="polite"></pre>
   </main>
   <script src="app.js" defer></script>
 </body>
 </html>`,
+
       'app.js': (m) => `// ${escapeJsString(m.name)}
 // NovaApp v2 API starter: ${escapeJsString(description)}
 
 function main() {
   const controls = document.getElementById('controls');
-  const status = document.getElementById('status');
-  const output = document.getElementById('output');
+  const statusEl = document.getElementById('status');
+  const outputEl = document.getElementById('output');
 
   function show(value) {
-    output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    outputEl.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   }
 
   function setStatus(message, isError = false) {
-    status.textContent = message;
-    status.classList.toggle('error', isError);
+    statusEl.textContent = message;
+    statusEl.classList.toggle('error', isError);
   }
 
   async function run(action) {
@@ -180,84 +242,158 @@ function main() {
     return input;
   }
 
+  // Prefer the v2 facade; fall back to the frozen v1 wrapper, whose result
+  // object carries the granted boolean in its granted field.
   async function requestPermission(permission, reason) {
-    const granted = await window.novaOS.permissions.request(permission, reason);
-    if (!granted) throw new Error('Permission not granted: ' + permission);
+    const v2Permissions = window.novaOS?.permissions;
+    if (typeof v2Permissions?.request === 'function') {
+      const granted = await v2Permissions.request(permission, reason);
+      if (!granted) throw new Error('Permission not granted: ' + permission);
+      return;
+    }
+    const result = await window.nova.requestPermission(permission, reason);
+    if (!result?.granted) throw new Error('Permission not granted: ' + permission);
   }
 
   ${appJs}
 }
 
 main();`,
-      'style.css': () => `:root {
-  color-scheme: dark;
-  font-family: system-ui, sans-serif;
-  color: #eef2ff;
-  background: #111827;
+
+      'style.css': () => `@layer reset, tokens, base, components;
+
+${CSS_RESET_LAYER}
+
+@layer tokens {
+  :root {
+    color-scheme: dark;
+    --bg: oklch(18.3% 0.022 267.4);
+    --bg-glow: oklch(26.5% 0.048 268);
+    --fg: oklch(96% 0.014 267);
+    --fg-muted: oklch(77% 0.026 264);
+    --accent: oklch(72% 0.13 274);
+    --surface: oklch(25.4% 0.038 264);
+    --surface-hover: oklch(30.5% 0.045 264);
+    --border: oklch(100% 0 0 / 0.14);
+    --border-faint: oklch(100% 0 0 / 0.08);
+    --panel: oklch(12% 0.024 265 / 0.66);
+    --danger: oklch(78% 0.12 20);
+  }
 }
 
-* { box-sizing: border-box; }
+@layer base {
+  body {
+    font-family: system-ui, sans-serif;
+    min-height: 100dvh;
+    padding: clamp(20px, 5vw, 56px);
+    color: var(--fg);
+    background: radial-gradient(ellipse at top left, var(--bg-glow), var(--bg) 58%);
+  }
 
-body {
-  min-height: 100vh;
-  margin: 0;
-  padding: clamp(20px, 5vw, 56px);
-  background: radial-gradient(ellipse at top left, #23304b, #111827 58%);
+  button,
+  input,
+  textarea {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: inherit;
+    font: inherit;
+  }
+
+  button {
+    padding: 10px 14px;
+    cursor: pointer;
+
+    &:hover { background: var(--surface-hover); }
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 }
 
-.app { width: min(760px, 100%); margin: 0 auto; }
-header { margin-bottom: 28px; }
-.eyebrow { color: #8ea8ff; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
-h1 { margin: 8px 0; font-size: clamp(28px, 5vw, 40px); }
-header p { margin: 0; color: #aab5ca; line-height: 1.6; }
+@layer components {
+  .app { width: min(760px, 100%); margin-inline: auto; }
 
-#controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 10px;
-  padding: 16px;
-  border: 1px solid #ffffff1a;
-  border-radius: 14px;
-  background: #ffffff08;
+  header { margin-block-end: 28px; }
+
+  .eyebrow {
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+
+  h1 {
+    margin-block: 8px;
+    font-size: clamp(28px, 5vw, 40px);
+    text-wrap: balance;
+  }
+
+  header p {
+    margin: 0;
+    color: var(--fg-muted);
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  #controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 10px;
+    padding: 16px;
+    border: 1px solid var(--border-faint);
+    border-radius: 14px;
+    background: oklch(100% 0 0 / 0.03);
+  }
+
+  .field {
+    display: grid;
+    flex: 1 1 220px;
+    gap: 6px;
+    color: var(--fg-muted);
+    font-size: 12px;
+
+    & input,
+    & textarea {
+      width: 100%;
+      padding: 10px;
+    }
+
+    & textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+  }
+
+  #status {
+    min-height: 1.5em;
+    margin-block: 18px 8px;
+    color: var(--fg-muted);
+    font-size: 13px;
+
+    &.error { color: var(--danger); }
+  }
+
+  #output {
+    min-height: 80px;
+    overflow: auto;
+    padding: 14px;
+    border: 1px solid var(--border-faint);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--fg);
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 }
 
-button, input, textarea {
-  border: 1px solid #ffffff24;
-  border-radius: 8px;
-  background: #1c2638;
-  color: inherit;
-  font: inherit;
-}
-
-button { padding: 10px 14px; cursor: pointer; }
-button:hover { background: #293752; }
-button:focus-visible, input:focus-visible, textarea:focus-visible {
-  outline: 2px solid #8ea8ff;
-  outline-offset: 2px;
-}
-
-.field { display: grid; flex: 1 1 220px; gap: 6px; color: #aab5ca; font-size: 12px; }
-.field input, .field textarea { width: 100%; padding: 10px; }
-.field textarea { min-height: 110px; resize: vertical; }
-#status { min-height: 1.5em; margin: 18px 2px 8px; color: #aab5ca; font-size: 13px; }
-#status.error { color: #ff9a9a; }
-#output {
-  min-height: 80px;
-  overflow: auto;
-  padding: 14px;
-  border: 1px solid #ffffff14;
-  border-radius: 10px;
-  background: #080d16a8;
-  color: #c7d2e7;
-  font: 12px/1.6 ui-monospace, Consolas, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   };
 }
@@ -524,7 +660,8 @@ const API_STARTER_TEMPLATES = {
     stopThemeListener = null;
     return 'Unsubscribed.';
   });
-  window.addEventListener('visibilitychange', () => {
+  // visibilitychange fires on the document; listen there, not on window.
+  document.addEventListener('visibilitychange', () => {
     setStatus(document.visibilityState === 'visible' ? 'App became visible.' : 'App is hidden.');
   });
   window.addEventListener('pagehide', () => {
@@ -564,6 +701,7 @@ const API_STARTER_TEMPLATES = {
     };
   });
   addButton('Retrieve secret into password field', async () => {
+    if (!key.value.trim()) throw new Error('Enter the secret name to retrieve.');
     await requestPermission('secrets:store', 'Reads this app’s secret with your request.');
     const secretKey = key.value.trim();
     value.value = await window.novaOS.secrets.get(secretKey) || '';
@@ -582,6 +720,7 @@ const API_STARTER_TEMPLATES = {
     };
   });
   addButton('Delete secret', async () => {
+    if (!key.value.trim()) throw new Error('Enter the secret name to delete.');
     await requestPermission('secrets:store', 'Deletes the named secret from this app’s encrypted store.');
     await window.novaOS.secrets.delete(key.value.trim());
     value.value = '';
@@ -605,7 +744,10 @@ const API_STARTER_TEMPLATES = {
       'system:share-target',
       'Allows this app to appear in the share sheet and receive content you select for it.');
     if (!stopShareListener) {
-      stopShareListener = window.novaOS.share.onInbound((share) => {
+      // Awaited like the other push facades (alarms, events) so the starter
+      // behaves correctly whether onInbound resolves a function or a Promise
+      // of one.
+      stopShareListener = await window.novaOS.share.onInbound((share) => {
         show(share);
         setStatus('Received shared content.');
       });
@@ -613,25 +755,28 @@ const API_STARTER_TEMPLATES = {
     return 'Ready to receive shares selected by the user.';
   });
   window.addEventListener('pagehide', () => {
-    if (stopShareListener) stopShareListener();
+    if (stopShareListener) void stopShareListener();
   }, { once: true });`,
   }),
 };
 
-const TEMPLATES = Object.freeze({
+/* ------------------------------------------------------------------ *
+ * Project templates
+ * ------------------------------------------------------------------ */
+
+const TEMPLATES = {
   'native-cpp': {
     name: 'Native C++',
     description: 'C++ compiled to WebAssembly, UI in HTML/CSS/JS',
-    icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4PSIwcHgiIHk9IjBweCIgd2lkdGg9IjMwNnB4IiBoZWlnaHQ9IjM0NC4zNXB4IiB2aWV3Qm94PSIwIDAgMzA2IDM0NC4zNSIgZW5hYmxlLWJhY2tncm91bmQ9Im5ldyAwIDAgMzA2IDM0NC4zNSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+CjxwYXRoIGZpbGw9IiMwMDU5OUMiIGQ9Ik0zMDIuMTA3LDI1OC4yNjJjMi40MDEtNC4xNTksMy44OTMtOC44NDUsMy44OTMtMTMuMDUzVjk5LjE0YzAtNC4yMDgtMS40OS04Ljg5My0zLjg5Mi0xMy4wNTJMMTUzLDE3Mi4xNzUgIEwzMDIuMTA3LDI1OC4yNjJ6Ii8+CjxwYXRoIGZpbGw9IiMwMDQ0ODIiIGQ9Ik0xNjYuMjUsMzQxLjE5M2wxMjYuNS03My4wMzRjMy42NDQtMi4xMDQsNi45NTYtNS43MzcsOS4zNTctOS44OTdMMTUzLDE3Mi4xNzVMMy44OTMsMjU4LjI2MyAgYzIuNDAxLDQuMTU5LDUuNzE0LDcuNzkzLDkuMzU3LDkuODk2bDEyNi41LDczLjAzNEMxNDcuMDM3LDM0NS40MDEsMTU4Ljk2MywzNDUuNDAxLDE2Ni4yNSwzNDEuMTkzeiIvPgo8cGF0aCBmaWxsPSIjNjU5QUQyIiBkPSJNMzAyLjEwOCw4Ni4wODdjLTIuNDAyLTQuMTYtNS43MTUtNy43OTMtOS4zNTgtOS44OTdMMTY2LjI1LDMuMTU2Yy03LjI4Ny00LjIwOC0xOS4yMTMtNC4yMDgtMjYuNSwwICBMMTMuMjUsNzYuMTlDNS45NjIsODAuMzk3LDAsOTAuNzI1LDAsOTkuMTR2MTQ2LjA2OWMwLDQuMjA4LDEuNDkxLDguODk0LDMuODkzLDEzLjA1M0wxNTMsMTcyLjE3NUwzMDIuMTA4LDg2LjA4N3oiLz4KPGc+Cgk8cGF0aCBmaWxsPSIjRkZGRkZGIiBkPSJNMTUzLDI3NC4xNzVjLTU2LjI0MywwLTEwMi00NS43NTctMTAyLTEwMnM0NS43NTctMTAyLDEwMi0xMDJjMzYuMjkyLDAsNzAuMTM5LDE5LjUzLDg4LjMzMSw1MC45NjggICBsLTQ0LjE0MywyNS41NDRjLTkuMTA1LTE1LjczNi0yNi4wMzgtMjUuNTEyLTQ0LjE4OC0yNS41MTJjLTI4LjEyMiwwLTUxLDIyLjg3OC01MSw1MWMwLDI4LjEyMSwyMi44NzgsNTEsNTEsNTEgICBjMTguMTUyLDAsMzUuMDg1LTkuNzc2LDQ0LjE5MS0yNS41MTVsNDQuMTQzLDI1LjU0M0MyMjMuMTQyLDI1NC42NDQsMTg5LjI5NCwyNzQuMTc1LDE1MywyNzQuMTc1eiIvPgo8L2c+CjxnPgoJPHBvbHlnb24gZmlsbD0iI0ZGRkZGRiIgcG9pbnRzPSIyNTUsMTY2LjUwOCAyNDMuNjY2LDE2Ni41MDggMjQzLjY2NiwxNTUuMTc1IDIzMi4zMzQsMTU1LjE3NSAyMzIuMzM0LDE2Ni41MDggMjIxLDE2Ni41MDggICAgMjIxLDE3Ny44NDEgMjMyLjMzNCwxNzcuODQxIDIzMi4zMzQsMTg5LjE3NSAyNDMuNjY2LDE4OS4xNzUgMjQzLjY2NiwxNzcuODQxIDI1NSwxNzcuODQxICAiLz4KPC9nPgo8Zz4KCTxwb2x5Z29uIGZpbGw9IiNGRkZGRkYiIHBvaW50cz0iMjk3LjUsMTY2LjUwOCAyODYuMTY2LDE2Ni41MDggMjg2LjE2NiwxNTUuMTc1IDI3NC44MzQsMTU1LjE3NSAyNzQuODM0LDE2Ni41MDggMjYzLjUsMTY2LjUwOCAgICAyNjMuNSwxNzcuODQxIDI3NC44MzQsMTc3Ljg0MSAyNzQuODM0LDE4OS4xNzUgMjg2LjE2NiwxODkuMTc1IDI4Ni4xNjYsMTc3Ljg0MSAyOTcuNSwxNzcuODQxICAiLz4KPC9nPgo8L3N2Zz4=',
+    icon: makeTemplateIcon('native-cpp'),
     // No vendor/ entry here: vendor/ is for pre-built third-party JS/CSS/
     // wasm files the user drops in (see create()'s vendor/README.md). This
     // template's C++ is the project's OWN source, so it's a normal project
     // file like index.html/app.js, not a vendor asset.
     files: {
-      'module.cpp': () => `
-// minimal, working, end-to-end plumbing rather than a real feature.
-// EMSCRIPTEN_KEEPALIVE stops the compiler's dead-code elimination from
-// dropping functions that are only ever called from JS, not from C++.
+      'module.cpp': () => `// A minimal, working, end-to-end example: one exported function called
+// from JS. EMSCRIPTEN_KEEPALIVE stops the compiler's dead-code elimination
+// from dropping functions that are only ever called from JS, not from C++.
 #include <emscripten.h>
 
 extern "C" {
@@ -644,7 +789,7 @@ int add(int a, int b) {
 }`,
 
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -663,7 +808,7 @@ int add(int a, int b) {
        NOT committed as a template file itself; builder.js's C++ detection
        compiles module.cpp -> module.js + module.wasm at build time and
        those become normal bundled files, same as anything else here. -->
-  <script src="module.js"></script>
+  <script src="module.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>`,
@@ -688,20 +833,23 @@ if (typeof Module === 'undefined') {
   // only exists once builder.js has compiled module.cpp. Not an error.
   resultEl.textContent = 'module.js not found yet — run Build to compile module.cpp.';
 } else {
+  // Handle rejection: a failed .wasm load must not leave the page stuck on
+  // "Compiling / loading module..." with an unhandled promise rejection.
   Module().then((instance) => {
     // ccall('funcName', returnType, [argTypes], [args]) -- see module.cpp's
     // extern "C" add(int, int). Matches the EXPORTED_RUNTIME_METHODS flags
     // builder.js's compileCppSources() passes to emcc.
     const sum = instance.ccall('add', 'number', ['number', 'number'], [15, 30]);
-    resultEl.textContent = \`C++ add(15, 30) = \${sum}\`;
+    resultEl.textContent = 'C++ add(15, 30) = ' + sum;
+  }).catch((error) => {
+    resultEl.textContent = 'Could not load the WebAssembly module: ' + error.message;
+    console.error('Could not load the WebAssembly module:', error);
   });
 }`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -714,7 +862,7 @@ if (typeof Module === 'undefined') {
 
 @layer base {
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-family: system-ui, sans-serif;
     background: var(--bg);
     color: var(--fg);
     min-height: 100dvh;
@@ -730,13 +878,7 @@ if (typeof Module === 'undefined') {
   p { color: var(--fg-muted); font-size: 16px; text-wrap: pretty; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
 
       'README.md': () => `# Native C++ template
 
@@ -802,7 +944,7 @@ module.cpp is for your own C++ source that Build compiles for you.
     icon: makeTemplateIcon('blank'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -828,9 +970,7 @@ window.novaOS.ready.get()
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -843,7 +983,7 @@ window.novaOS.ready.get()
 
 @layer base {
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-family: system-ui, sans-serif;
     background: var(--bg);
     color: var(--fg);
     min-height: 100dvh;
@@ -859,13 +999,7 @@ window.novaOS.ready.get()
   p { color: var(--fg-muted); font-size: 16px; text-wrap: pretty; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -897,7 +1031,7 @@ window.novaOS.ready.get()
       // Produces a sandboxed .novaapp with a host-managed browser view pinned
       // to the configured URL. No address field or navigation controls.
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -907,9 +1041,9 @@ window.novaOS.ready.get()
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="url-bar" role="contentinfo"></div>
+  <p id="url-bar"></p>
   <main id="content"></main>
-  <p id="status" role="status" aria-live="polite"></p>
+  <p id="status" role="status"></p>
   <script src="app.js" defer></script>
 </body>
 </html>`,
@@ -918,8 +1052,9 @@ window.novaOS.ready.get()
 // Fixed-URL web app wrapper using Nova's host-managed browser view.
 
 const WRAPPED_URL = ${JSON.stringify(sanitizeUrl(m.url) || 'https://example.com')};
-let browserView = null;
 const lifecycle = new AbortController();
+const removeViewListeners = [];
+let browserView = null;
 
 async function requireBrowserApi() {
   let browser = window.nova?.browser;
@@ -940,7 +1075,9 @@ async function requireBrowserApi() {
 
 window.addEventListener('pagehide', () => {
   lifecycle.abort();
+  for (const removeListener of removeViewListeners) removeListener();
   browserView?.destroy();
+  browserView = null;
 }, { once: true });
 
 async function main() {
@@ -949,7 +1086,7 @@ async function main() {
   const status = document.getElementById('status');
 
   try {
-    urlBar.textContent = '\\uD83D\\uDD12 ' + new URL(WRAPPED_URL).host;
+    urlBar.textContent = new URL(WRAPPED_URL).host;
   } catch {
     urlBar.textContent = 'External Web App';
   }
@@ -957,6 +1094,7 @@ async function main() {
   content.classList.add('loading');
   try {
     const browser = await requireBrowserApi();
+    if (lifecycle.signal.aborted) return;
     browserView = await browser.createView({
       container: content,
       url: WRAPPED_URL,
@@ -967,18 +1105,23 @@ async function main() {
       browserView = null;
       return;
     }
-    browserView.addEventListener('navigation-start', () => {
-      content.classList.add('loading');
-      status.textContent = '';
-    });
-    browserView.addEventListener('navigation-complete', () => {
-      content.classList.remove('loading');
-      status.textContent = '';
-    });
-    browserView.addEventListener('navigation-error', (event) => {
-      content.classList.remove('loading');
-      status.textContent = event.detail.errorDescription || event.detail.reason || 'Navigation failed';
-    });
+    removeViewListeners.push(
+      browserView.on('navigation-start', () => {
+        // The ::after overlay only paints before the host view exists —
+        // app DOM cannot paint above a host-managed browser view — so the
+        // status line carries navigation feedback once the view is live.
+        content.classList.add('loading');
+        status.textContent = 'Loading…';
+      }),
+      browserView.on('navigation-complete', () => {
+        content.classList.remove('loading');
+        status.textContent = '';
+      }),
+      browserView.on('navigation-error', (event) => {
+        content.classList.remove('loading');
+        status.textContent = event.detail?.errorDescription || event.detail?.reason || 'Navigation failed';
+      }),
+    );
     const state = await browserView.getState();
     content.classList.remove('loading');
     if (state.loading) content.classList.add('loading');
@@ -995,9 +1138,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1012,6 +1153,7 @@ main();`,
 
 @layer base {
   html, body { height: 100%; }
+
   body {
     font-family: system-ui, sans-serif;
     display: flex;
@@ -1023,25 +1165,30 @@ main();`,
 
 @layer components {
   #url-bar {
-    background: oklch(0% 0 0 / 0.22);
-    border-block-end: 1px solid var(--border);
+    flex-shrink: 0;
     padding: 5px 12px;
-    font-size: 11px;
+    border-block-end: 1px solid var(--border);
+    background: oklch(0% 0 0 / 0.22);
     color: var(--fg-dim);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-family: monospace;
-    flex-shrink: 0;
   }
 
-  #content { flex: 1; position: relative; overflow: hidden; }
+  #content {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+  }
 
   #status {
     flex-shrink: 0;
     padding: 5px 12px;
     color: var(--loading-fg);
-    font: 11px monospace;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
   }
 
   #status:empty { display: none; }
@@ -1053,21 +1200,14 @@ main();`,
     display: flex;
     align-items: center;
     justify-content: center;
+    background: var(--loading-bg);
+    color: var(--loading-fg);
     font-family: system-ui, sans-serif;
     font-size: 13px;
-    color: var(--loading-fg);
-    background: var(--loading-bg);
   }
-
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -1077,7 +1217,7 @@ main();`,
     icon: makeTemplateIcon('utility'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1088,12 +1228,12 @@ main();`,
 </head>
 <body>
   <main class="app">
-    <div class="toolbar" role="toolbar" aria-label="File operations">
+    <div class="toolbar" role="group" aria-label="File operations">
       <button id="btn-list" type="button">List Files</button>
       <button id="btn-read" type="button">Read File</button>
       <button id="btn-write" type="button">Write File</button>
     </div>
-    <output id="output" aria-live="polite">Ready…</output>
+    <output id="output">Ready…</output>
   </main>
   <script src="app.js" defer></script>
 </body>
@@ -1104,12 +1244,13 @@ main();`,
 
 function main() {
   const lifecycle = new AbortController();
+  const outputEl = document.getElementById('output');
 
   // App-owned files need no filesystem permission.
   const APP_FILE_PATH = 'files/example.txt';
 
   function log(message) {
-    document.getElementById('output').textContent = message;
+    outputEl.textContent = message;
   }
 
   async function listFiles() {
@@ -1149,9 +1290,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1162,6 +1301,7 @@ main();`,
     --border-dark: oklch(84.5% 0 0);
     --hover: oklch(93.4% 0 0);
     --surface: oklch(100% 0 0);
+    --focus-ring: oklch(54.6% 0.12 244);
   }
 }
 
@@ -1182,12 +1322,16 @@ main();`,
     font-size: 13px;
 
     &:hover { background: var(--hover); }
-    &:focus-visible { outline: 2px solid oklch(54.6% 0.12 244); outline-offset: 2px; }
+    &:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   }
 }
 
 @layer components {
-  .toolbar { margin-block-end: 16px; display: flex; gap: 8px; }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-block-end: 16px;
+  }
 
   #output {
     display: block;
@@ -1196,19 +1340,13 @@ main();`,
     border-radius: 6px;
     padding: 16px;
     min-height: 200px;
-    font-family: monospace;
+    font-family: ui-monospace, Consolas, monospace;
     font-size: 13px;
     white-space: pre-wrap;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -1218,7 +1356,7 @@ main();`,
     icon: makeTemplateIcon('game'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1229,7 +1367,7 @@ main();`,
 </head>
 <body>
   <main id="stage">
-    <canvas id="canvas" width="800" height="600" aria-label="Game screen"></canvas>
+    <canvas id="canvas" width="800" height="600" role="img" aria-label="Game screen"></canvas>
   </main>
   <script src="app.js" defer></script>
 </body>
@@ -1241,8 +1379,7 @@ main();`,
 function main() {
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
-  canvas.width = 800;
-  canvas.height = 600;
+  const lifecycle = new AbortController();
 
   const state = {
     player: { x: 400, y: 300, size: 20, speed: 240 }, // speed in px/sec, not px/frame
@@ -1250,12 +1387,22 @@ function main() {
     score: 0,
   };
 
-  const lifecycle = new AbortController();
-
   // Keys tracked lowercased so held-key movement doesn't silently break under
-  // Caps Lock or Shift, where e.key would report 'A' instead of 'a'.
-  window.addEventListener('keydown', (e) => state.keys.add(e.key.toLowerCase()), { signal: lifecycle.signal });
-  window.addEventListener('keyup', (e) => state.keys.delete(e.key.toLowerCase()), { signal: lifecycle.signal });
+  // Caps Lock or Shift, where event.key would report 'A' instead of 'a'.
+  // Game keys are preventDefault-ed so they can't scroll the window.
+  const GAME_KEYS = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd']);
+
+  window.addEventListener('keydown', (event) => {
+    const key = event.key.toLowerCase();
+    if (GAME_KEYS.has(key) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+    }
+    state.keys.add(key);
+  }, { signal: lifecycle.signal });
+
+  window.addEventListener('keyup', (event) => {
+    state.keys.delete(event.key.toLowerCase());
+  }, { signal: lifecycle.signal });
 
   // Losing keyboard focus (alt-tab, devtools, etc.) without a matching keyup
   // would leave a key "stuck" down indefinitely.
@@ -1317,9 +1464,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1342,13 +1487,7 @@ main();`,
   canvas { display: block; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -1358,7 +1497,7 @@ main();`,
     icon: makeTemplateIcon('dashboard'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1371,7 +1510,7 @@ main();`,
   <main class="app">
     <header>
       <h1>${escapeHtml(m.name)}</h1>
-      <span id="last-updated" aria-live="polite"></span>
+      <span id="last-updated"></span>
     </header>
     <section class="grid" aria-label="Metrics">
       <article class="card" id="card-1"><div class="label">Metric A</div><div class="value" id="val-1">—</div></article>
@@ -1379,7 +1518,7 @@ main();`,
       <article class="card" id="card-3"><div class="label">Metric C</div><div class="value" id="val-3">—</div></article>
       <article class="card wide">
         <div class="label">Activity</div>
-        <canvas id="chart" width="600" height="120" aria-label="Activity over time"></canvas>
+        <canvas id="chart" role="img" aria-label="Activity over time"></canvas>
       </article>
     </section>
   </main>
@@ -1395,6 +1534,10 @@ function main() {
   const POLL_INTERVAL_MS = 5000;
   const history = [];
 
+  const chart = document.getElementById('chart');
+  const chartCtx = chart.getContext('2d');
+  const lifecycle = new AbortController();
+
   // Replace this with a real data source (fetch, websocket, etc.)
   function fetchData() {
     return {
@@ -1404,12 +1547,22 @@ function main() {
     };
   }
 
-  const chart = document.getElementById('chart');
-  const chartCtx = chart.getContext('2d');
-  const lifecycle = new AbortController();
+  // Size the canvas backing store to its rendered CSS box (at the device
+  // pixel ratio) so the line chart stays crisp instead of stretching the
+  // default bitmap to the layout width.
+  function fitChart() {
+    const dpr = window.devicePixelRatio || 1;
+    const width = chart.clientWidth;
+    const height = chart.clientHeight;
+    if (!width || !height) return;
+    chart.width = Math.round(width * dpr);
+    chart.height = Math.round(height * dpr);
+    chartCtx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+  }
 
   function drawChart() {
-    const { width, height } = chart;
+    const width = chart.clientWidth;
+    const height = chart.clientHeight;
     chartCtx.clearRect(0, 0, width, height);
     if (history.length < 2) return;
 
@@ -1419,10 +1572,10 @@ function main() {
     chartCtx.strokeStyle = '#22c55e';
     chartCtx.lineWidth = 2;
     chartCtx.beginPath();
-    history.forEach((value, i) => {
-      const x = i * stepX;
+    history.forEach((value, index) => {
+      const x = index * stepX;
       const y = height - (value / max) * (height - 8) - 4;
-      if (i === 0) chartCtx.moveTo(x, y);
+      if (index === 0) chartCtx.moveTo(x, y);
       else chartCtx.lineTo(x, y);
     });
     chartCtx.stroke();
@@ -1456,7 +1609,12 @@ function main() {
     }
   }
 
-  update();
+  function refresh() {
+    fitChart();
+    update();
+  }
+
+  refresh();
   startPolling();
 
   // Pause polling in a hidden tab so a background tab isn't burning cycles
@@ -1466,12 +1624,18 @@ function main() {
     if (document.hidden) {
       stopPolling();
     } else {
-      update();
+      refresh();
       startPolling();
     }
   }, { signal: lifecycle.signal });
 
-  // Tear down the timer and listener when the page is closed.
+  // Keep the canvas crisp across window resizes.
+  window.addEventListener('resize', () => {
+    fitChart();
+    drawChart();
+  }, { signal: lifecycle.signal });
+
+  // Tear down the timer and listeners when the page is closed.
   window.addEventListener('pagehide', () => {
     stopPolling();
     lifecycle.abort();
@@ -1481,9 +1645,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1516,11 +1678,16 @@ main();`,
     margin-block-end: 20px;
   }
 
-  #last-updated { font-size: 12px; color: var(--fg-muted); }
+  #last-updated {
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
 
+  /* auto-fit + minmax keeps the grid usable at any window width instead of
+     locking three columns in and crushing them on narrow windows. */
   .grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 12px;
   }
 
@@ -1543,16 +1710,15 @@ main();`,
 
   .value { font-size: 32px; font-weight: 700; color: var(--accent); }
 
-  #chart { display: block; width: 100%; height: 120px; margin-block-start: 8px; }
+  #chart {
+    display: block;
+    width: 100%;
+    height: 120px;
+    margin-block-start: 8px;
+  }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -1562,7 +1728,7 @@ main();`,
     icon: makeTemplateIcon('form'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1574,11 +1740,14 @@ main();`,
 <body>
   <main class="wrap">
     <h1>${escapeHtml(m.name)}</h1>
-    <form id="entry-form" autocomplete="on" novalidate>
+    <!-- Native "required" validation stays enabled (no novalidate): JS only
+         augments it. aria-required would duplicate what required already
+         conveys, so it is not set. -->
+    <form id="entry-form" autocomplete="on">
       <p class="field">
         <label for="f-title">Title</label>
         <input id="f-title" name="title" type="text" autocomplete="off" required
-               aria-required="true" aria-describedby="form-status">
+               aria-describedby="form-status">
       </p>
       <p class="field">
         <label for="f-notes">Notes</label>
@@ -1586,7 +1755,7 @@ main();`,
       </p>
       <button type="submit">Save Entry</button>
     </form>
-    <div id="form-status" role="status" aria-live="polite"></div>
+    <div id="form-status" role="status"></div>
     <ul id="entries" aria-label="Saved entries"></ul>
   </main>
   <script src="app.js" defer></script>
@@ -1599,11 +1768,15 @@ main();`,
 function main() {
   const STORE_PATH = 'files/entries.json';
   const lifecycle = new AbortController();
+  const titleInput = document.getElementById('f-title');
+  const notesInput = document.getElementById('f-notes');
+  const statusEl = document.getElementById('form-status');
+  const form = document.getElementById('entry-form');
+  const submitButton = form.querySelector('button[type="submit"]');
 
-  function setStatus(message, isError) {
-    const el = document.getElementById('form-status');
-    el.textContent = message;
-    el.className = isError ? 'error' : '';
+  function setStatus(message, isError = false) {
+    statusEl.textContent = message;
+    statusEl.classList.toggle('error', isError);
   }
 
   async function loadEntries() {
@@ -1611,10 +1784,16 @@ function main() {
     try {
       file = await window.novaOS.fs.appdata.read(STORE_PATH);
     } catch (error) {
-      if (error.code === 'NOT_FOUND') return [];
+      // A missing store is the first-run state, not an error.
+      if (error?.code === 'NOT_FOUND') return [];
       throw error;
     }
-    const parsed = JSON.parse(file.data);
+    let parsed;
+    try {
+      parsed = JSON.parse(file.data);
+    } catch {
+      throw new Error('files/entries.json is not valid JSON — fix or remove it, then try again.');
+    }
     if (!Array.isArray(parsed)) throw new Error('Saved entries must be a JSON array.');
     return parsed.filter((entry) => entry && typeof entry.title === 'string');
   }
@@ -1623,13 +1802,13 @@ function main() {
     const list = document.getElementById('entries');
     list.replaceChildren();
     for (const entry of entries) {
-      const li = document.createElement('li');
+      const item = document.createElement('li');
       const title = document.createElement('strong');
       title.textContent = entry.title;
       const notes = document.createElement('span');
       notes.textContent = entry.notes ? ' — ' + entry.notes : '';
-      li.append(title, notes);
-      list.append(li);
+      item.append(title, notes);
+      list.append(item);
     }
   }
 
@@ -1641,14 +1820,17 @@ function main() {
     }
   }
 
-  const form = document.getElementById('entry-form');
-  const submitButton = form.querySelector('button[type="submit"]');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const title = document.getElementById('f-title').value.trim();
-    const notes = document.getElementById('f-notes').value.trim();
-    if (!title) return;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const title = titleInput.value.trim();
+    const notes = notesInput.value.trim();
+    // Native "required" validation runs first; this is a backstop with
+    // visible feedback instead of a silent return.
+    if (!title) {
+      setStatus('Enter a title first.', true);
+      titleInput.focus();
+      return;
+    }
 
     // Disabling the button rules out a double-submit from this tab racing
     // itself. It does NOT protect against another tab or process writing to
@@ -1662,11 +1844,12 @@ function main() {
       await window.novaOS.fs.appdata.write(STORE_PATH, JSON.stringify(entries, null, 2));
 
       setStatus('Saved.');
-      document.getElementById('f-title').value = '';
-      document.getElementById('f-notes').value = '';
+      titleInput.value = '';
+      notesInput.value = '';
       renderEntries(entries);
-    } catch (err) {
-      setStatus('Save failed: ' + err.message, true);
+      titleInput.focus();
+    } catch (error) {
+      setStatus('Save failed: ' + error.message, true);
     } finally {
       submitButton.disabled = false;
     }
@@ -1680,9 +1863,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1709,7 +1890,8 @@ main();`,
 
   h1 { font-size: 20px; margin-block-end: 16px; text-wrap: balance; }
 
-  input, textarea {
+  input,
+  textarea {
     background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1743,7 +1925,7 @@ main();`,
 }
 
 @layer components {
-  .wrap { max-width: 480px; margin: 0 auto; }
+  .wrap { max-width: 480px; margin-inline: auto; }
 
   form {
     display: flex;
@@ -1765,8 +1947,9 @@ main();`,
     color: var(--accent);
     min-height: 16px;
     margin-block-end: 12px;
+
+    &.error { color: var(--danger); }
   }
-  #form-status.error { color: var(--danger); }
 
   #entries {
     list-style: none;
@@ -1785,13 +1968,7 @@ main();`,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -1801,7 +1978,7 @@ main();`,
     icon: makeTemplateIcon('markdown-viewer'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1812,16 +1989,18 @@ main();`,
 </head>
 <body>
   <main class="split">
-    <textarea id="source" placeholder="Type markdown here..." aria-label="Markdown source">## ${escapeHtml(m.name)}
+    <!-- No aria-live on the preview: re-announcing the whole rendered
+         document on every keystroke would drown screen-reader users. -->
+    <textarea id="source" placeholder="Type markdown here..." spellcheck="false" aria-label="Markdown source">## ${escapeHtml(m.name)}
 
 Start typing **markdown** on the left to see it rendered on the right.
 
 - supports lists
 - supports \`code\`
 - supports [links](https://example.com)</textarea>
-    <div id="preview" aria-label="Rendered preview" aria-live="polite"></div>
+    <div id="preview" aria-label="Rendered preview"></div>
   </main>
-  <script src="vendor/markdown-it.min.js" defer></script>
+  <script src="vendor/marked.min.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>`,
@@ -1834,15 +2013,16 @@ function main() {
   const preview = document.getElementById('preview');
   const lifecycle = new AbortController();
 
-  // Markdown output is untrusted even with raw HTML disabled. Sanitize the
-  // rendered HTML before adding it to the preview.
+  // marked converts markdown to HTML but does not sanitize it — markdown
+  // allows raw HTML passthrough by default, so unescaped input (or a
+  // malicious link/image) becomes live markup the moment it hits innerHTML.
   //
   // This rebuilds the output in a new fragment instead of pruning the parsed
   // tree in place. Parsing via template.innerHTML and then unwrapping nodes
   // afterward is the mutation-XSS pattern: an <svg> or <math> wrapper
-  // (neither in ALLOWED_TAGS, so it used to get unwrapped) switches the
-  // parser into foreign-content mode, and re-attaching its children to an
-  // HTML parent afterward can turn inert-looking markup into something that
+  // (neither in ALLOWED_TAGS, so it would get unwrapped) switches the parser
+  // into foreign-content mode, and re-attaching its children to an HTML
+  // parent afterward can turn inert-looking markup into something that
   // executes. Copying only text nodes and allowed elements into a fresh
   // fragment means a rejected element's subtree is read for its text and
   // discarded — never re-parented into HTML context at all.
@@ -1855,9 +2035,7 @@ function main() {
   // whatever scheme the page loaded under, which isn't guaranteed safe here,
   // so it's rejected rather than assumed http/https. Resolving through the
   // URL parser instead of a regex on the raw string checks the scheme the
-  // browser will actually navigate to, not just a substring match — closes
-  // the gap where a value reads as "starts with https:" to a regex but
-  // decodes to something else by the time the browser acts on it.
+  // browser will actually navigate to, not just a substring match.
   const SAFE_HREF_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
   function isSafeHref(value) {
@@ -1875,10 +2053,10 @@ function main() {
 
     const clean = document.createDocumentFragment();
 
-    function copyChildren(sourceParent, destParent) {
+    function copyChildren(sourceParent, destinationParent) {
       for (const child of sourceParent.childNodes) {
         if (child.nodeType === Node.TEXT_NODE) {
-          destParent.appendChild(child.cloneNode());
+          destinationParent.appendChild(child.cloneNode());
           continue;
         }
         if (child.nodeType !== Node.ELEMENT_NODE) continue;
@@ -1889,21 +2067,21 @@ function main() {
         if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
 
         if (ALLOWED_TAGS.has(child.tagName)) {
-          const el = document.createElement(child.tagName);
+          const element = document.createElement(child.tagName);
           if (child.tagName === 'A') {
             const href = child.getAttribute('href');
-            if (href && isSafeHref(href)) el.setAttribute('href', href);
+            if (href && isSafeHref(href)) element.setAttribute('href', href);
           }
-          destParent.appendChild(el);
-          copyChildren(child, el);
+          destinationParent.appendChild(element);
+          copyChildren(child, element);
         } else {
           // Not an allowed element (includes <svg>, <math>, and anything
           // else outside ALLOWED_TAGS): keep the text inside it, drop the
-          // element. Recursing straight into destParent — no wrapper of any
-          // kind — means this subtree is never attached to the output tree
-          // as an element, so there's nothing left for the parser to
+          // element. Recursing straight into destinationParent — no wrapper
+          // of any kind — means this subtree is never attached to the output
+          // tree as an element, so there's nothing left for the parser to
           // reinterpret.
-          copyChildren(child, destParent);
+          copyChildren(child, destinationParent);
         }
       }
     }
@@ -1912,20 +2090,31 @@ function main() {
     return clean;
   }
 
-  const md = typeof window.markdownit === 'function'
-    ? window.markdownit({ html: false, linkify: false, typographer: false })
-    : null;
-
   function render() {
-    if (!md) {
-      preview.textContent = 'vendor/markdown-it.min.js not found — drop the library file into vendor/ to enable rendering.';
+    if (typeof marked === 'undefined') {
+      preview.textContent = 'vendor/marked.min.js not found — drop the real library file into vendor/ to enable rendering.';
       return;
     }
-    preview.replaceChildren(sanitize(md.render(source.value)));
+    try {
+      preview.replaceChildren(sanitize(marked.parse(source.value)));
+    } catch (error) {
+      preview.textContent = 'Could not render markdown: ' + error.message;
+      console.error('Could not render markdown:', error);
+    }
   }
 
-  source.addEventListener('input', render, { signal: lifecycle.signal });
-  window.addEventListener('pagehide', () => lifecycle.abort(), { once: true });
+  // Debounce keystrokes so a long document doesn't re-parse on every
+  // character typed.
+  let renderTimer = null;
+  source.addEventListener('input', () => {
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(render, 120);
+  }, { signal: lifecycle.signal });
+
+  window.addEventListener('pagehide', () => {
+    clearTimeout(renderTimer);
+    lifecycle.abort();
+  }, { once: true });
 
   render();
 }
@@ -1933,9 +2122,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -1951,6 +2138,7 @@ main();`,
 
 @layer base {
   html, body { height: 100%; }
+
   body {
     font-family: system-ui, sans-serif;
     background: var(--bg);
@@ -1964,7 +2152,8 @@ main();`,
     height: 100dvh;
   }
 
-  #source, #preview {
+  #source,
+  #preview {
     flex: 1;
     height: 100%;
     padding: 20px;
@@ -1978,11 +2167,16 @@ main();`,
     border: none;
     border-inline-end: 1px solid var(--border);
     resize: none;
-    font-family: 'SF Mono', Consolas, monospace;
+    font-family: ui-monospace, Consolas, monospace;
     font-size: 14px;
     line-height: 1.6;
 
-    &:focus-visible { outline: none; }
+    /* Inset ring: the editor pane is edge-to-edge, so an outward outline
+       would clip — but focus must stay visible. */
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
   }
 
   #preview {
@@ -2002,13 +2196,7 @@ main();`,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -2018,7 +2206,7 @@ main();`,
     icon: makeTemplateIcon('chat'),
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2029,8 +2217,9 @@ main();`,
 </head>
 <body>
   <main class="chat">
-    <div id="messages" role="log" aria-label="Conversation" aria-live="polite"></div>
-    <form id="composer" role="search">
+    <div id="messages" role="log" aria-label="Conversation"></div>
+    <!-- A chat composer is a form, not a search landmark — no role="search". -->
+    <form id="composer">
       <label for="msg-input" class="sr-only">Message</label>
       <input id="msg-input" name="message" type="text"
              placeholder="Type a message..." autocomplete="off">
@@ -2045,34 +2234,32 @@ main();`,
 // This chat demo runs entirely in the browser and does not need platform APIs.
 
 function main() {
-  const state = {
-    messages: [
-      { from: 'them', text: 'Welcome to ${escapeJsString(m.name)}!' },
-    ],
-  };
+  const messages = [
+    { from: 'them', text: 'Welcome to ${escapeJsString(m.name)}!' },
+  ];
 
   const messagesEl = document.getElementById('messages');
+  const input = document.getElementById('msg-input');
   const lifecycle = new AbortController();
   let echoTimer = null;
 
   function renderMessages() {
     messagesEl.replaceChildren();
-    for (const msg of state.messages) {
+    for (const message of messages) {
       const bubble = document.createElement('div');
-      bubble.className = 'bubble ' + (msg.from === 'me' ? 'me' : 'them');
-      bubble.textContent = msg.text;
+      bubble.className = 'bubble ' + (message.from === 'me' ? 'me' : 'them');
+      bubble.textContent = message.text;
       messagesEl.append(bubble);
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  document.getElementById('composer').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const input = document.getElementById('msg-input');
+  document.getElementById('composer').addEventListener('submit', (event) => {
+    event.preventDefault();
     const text = input.value.trim();
     if (!text) return;
 
-    state.messages.push({ from: 'me', text });
+    messages.push({ from: 'me', text });
     input.value = '';
     renderMessages();
 
@@ -2081,7 +2268,7 @@ function main() {
     // reply per message instead of stacking up timers that all fire late.
     clearTimeout(echoTimer);
     echoTimer = setTimeout(() => {
-      state.messages.push({ from: 'them', text: 'Echo: ' + text });
+      messages.push({ from: 'them', text: 'Echo: ' + text });
       renderMessages();
     }, 400);
   }, { signal: lifecycle.signal });
@@ -2097,9 +2284,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -2116,6 +2301,7 @@ main();`,
 
 @layer base {
   html, body { height: 100%; }
+
   body {
     font-family: system-ui, sans-serif;
     background: var(--bg);
@@ -2146,16 +2332,18 @@ main();`,
     font-size: 14px;
     line-height: 1.4;
   }
+
   .bubble.them {
     background: var(--bubble-them);
     align-self: flex-start;
-    border-block-end-left-radius: 4px;
+    border-end-start-radius: 4px;
   }
+
   .bubble.me {
     background: var(--accent);
     color: var(--accent-fg);
     align-self: flex-end;
-    border-block-end-right-radius: 4px;
+    border-end-end-radius: 4px;
   }
 
   #composer {
@@ -2174,10 +2362,8 @@ main();`,
     padding: 10px 16px;
     font-size: 14px;
 
-    &:focus-visible {
-      outline: none;
-      border-color: var(--accent);
-    }
+    /* Accent border plus the UA focus ring — no outline removal. */
+    &:focus-visible { border-color: var(--accent); }
   }
 
   #composer button {
@@ -2193,27 +2379,9 @@ main();`,
     &:hover { opacity: 0.9; }
     &:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   }
+${CSS_SR_ONLY}}
 
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
 
@@ -2228,7 +2396,7 @@ main();`,
     },
     files: {
       'index.html': (m) => `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2248,7 +2416,7 @@ main();`,
            autocomplete="url" spellcheck="false">
     <button id="go" type="submit">Go</button>
   </form>
-  <div id="browser-status" role="status" aria-live="polite"></div>
+  <div id="browser-status" role="status"></div>
   <main id="browser-viewport"></main>
   <script src="app.js" defer></script>
 </body>
@@ -2259,7 +2427,6 @@ main();`,
 
 const HOME = 'https://example.com';
 const STORAGE_KEY = 'browser-last-url';
-let browserView = null;
 
 function addressToUrl(value) {
   const input = value.trim();
@@ -2269,6 +2436,29 @@ function addressToUrl(value) {
     return 'https://' + input;
   }
   return 'https://www.google.com/search?q=' + encodeURIComponent(input);
+}
+
+// Storage: prefer the v2 facade (feature-detected through capabilities, per
+// the platform compatibility rules) and fall back to the frozen v1 channels,
+// which every runtime keeps working.
+function hasV2Storage() {
+  return typeof window.novaOS?.capabilities?.has === 'function'
+    && window.novaOS.capabilities.has('storage.v2');
+}
+
+async function readStorage(key) {
+  if (hasV2Storage()) return window.novaOS.storage.get(key);
+  const result = await window.nova.ipc('nova:storage:get', { key });
+  return result?.value ?? null;
+}
+
+async function writeStorage(key, value) {
+  if (hasV2Storage()) {
+    await window.novaOS.storage.set(key, value);
+    return;
+  }
+  // v1 payloads are strings; store the JSON text form there.
+  await window.nova.ipc('nova:storage:set', { key, value: JSON.stringify(value) });
 }
 
 async function requireBrowserApi() {
@@ -2290,10 +2480,13 @@ async function requireBrowserApi() {
 
 async function readLastUrl() {
   try {
-    const value = await window.novaOS.storage.get(STORAGE_KEY);
-    const saved = value ? JSON.parse(value) : null;
-    if (saved && typeof saved.url === 'string') {
-      const parsed = new URL(saved.url);
+    const stored = await readStorage(STORAGE_KEY);
+    // Accept both the structured value this version writes and the JSON
+    // string written by v1 fallbacks or older builds of this starter.
+    const saved = typeof stored === 'string' ? JSON.parse(stored) : stored;
+    const url = saved?.url;
+    if (typeof url === 'string') {
+      const parsed = new URL(url);
       if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
     }
   } catch (error) {
@@ -2305,7 +2498,7 @@ async function readLastUrl() {
 async function saveLastUrl(url) {
   if (!url) return;
   try {
-    await window.novaOS.storage.set(STORAGE_KEY, JSON.stringify({ url }));
+    await writeStorage(STORAGE_KEY, { url });
   } catch (error) {
     console.warn('Could not save the last browser URL:', error);
   }
@@ -2322,17 +2515,21 @@ function main() {
     viewport: document.getElementById('browser-viewport'),
   };
   const lifecycle = new AbortController();
+  const removeViewListeners = [];
+  let browserView = null;
+  let browserApi = null;
 
-  function setStatus(message) {
+  function setStatus(message, isError = false) {
     els.status.textContent = message || '';
+    els.status.classList.toggle('error', isError);
   }
 
   function updateState(state) {
+    if (!state) return;
     if (state.url && document.activeElement !== els.address) els.address.value = state.url;
     els.back.disabled = !state.canGoBack;
     els.forward.disabled = !state.canGoForward;
     els.reload.disabled = !state.url;
-    if (state.url) void saveLastUrl(state.url);
   }
 
   async function runAction(action) {
@@ -2343,8 +2540,27 @@ function main() {
     try {
       await action();
     } catch (error) {
-      setStatus(error.message || 'Browser action failed');
+      setStatus(error.message || 'Browser action failed', true);
       console.error('Browser action failed:', error);
+    }
+  }
+
+  async function handleDownload(event) {
+    const url = event.detail?.url;
+    if (!url || !browserApi) return;
+    let filename = 'download';
+    try {
+      const lastSegment = new URL(url).pathname.split('/').filter(Boolean).pop();
+      if (lastSegment) filename = decodeURIComponent(lastSegment);
+    } catch {
+      // Keep the default filename when the URL cannot be parsed.
+    }
+    try {
+      const result = await browserApi.download({ url, filename });
+      if (!result?.cancelled) setStatus('Download saved.');
+    } catch (error) {
+      setStatus('Download failed: ' + error.message, true);
+      console.error('Download failed:', error);
     }
   }
 
@@ -2365,15 +2581,17 @@ function main() {
 
   window.addEventListener('pagehide', () => {
     lifecycle.abort();
+    for (const removeListener of removeViewListeners) removeListener();
     browserView?.destroy();
+    browserView = null;
   }, { once: true });
 
-  void (async () => {
+  void (async function startBrowser() {
     try {
       setStatus('Starting browser…');
       const initialUrl = await readLastUrl();
-      const browser = await requireBrowserApi();
-      browserView = await browser.createView({
+      browserApi = await requireBrowserApi();
+      browserView = await browserApi.createView({
         container: els.viewport,
         url: initialUrl,
         pollingInterval: 1000,
@@ -2383,46 +2601,39 @@ function main() {
         browserView = null;
         return;
       }
-      browserView.addEventListener('url-change', (event) => {
-        const url = event.detail?.url;
-        if (typeof url !== 'string') return;
-        if (document.activeElement !== els.address) els.address.value = url;
-        void saveLastUrl(url);
-      });
-      browserView.addEventListener('title-change', (event) => {
-        document.title = event.detail?.title || ${JSON.stringify(m.name)};
-      });
-      browserView.addEventListener('navigation-start', () => setStatus('Loading…'));
-      browserView.addEventListener('navigation-complete', () => setStatus(''));
-      browserView.addEventListener('navigation-error', (event) => {
-        setStatus(event.detail?.errorDescription || event.detail?.reason || 'Navigation failed');
-      });
-      browserView.addEventListener('state-change', (event) => updateState(event.detail || {}));
-      browserView.addEventListener('state-error', (event) => {
-        const error = event.detail?.error || 'Unknown state error';
-        setStatus('Could not refresh browser state: ' + error);
-        console.error('Could not refresh browser state:', error);
-      });
-      browserView.addEventListener('new-window', (event) => {
-        setStatus('Popup blocked: ' + (event.detail?.url || 'unknown URL'));
-      });
-      browserView.addEventListener('download-request', async (event) => {
-        try {
-          const result = await browser.download({
-            url: event.detail?.url,
-            filename: 'download',
-          });
-          if (!result.cancelled) setStatus('Download saved.');
-        } catch (error) {
-          setStatus('Download failed: ' + error.message);
-          console.error('Download failed:', error);
-        }
-      });
+      removeViewListeners.push(
+        browserView.on('url-change', (event) => {
+          const url = event.detail?.url;
+          if (typeof url !== 'string') return;
+          if (document.activeElement !== els.address) els.address.value = url;
+          // The single save path for the last URL — state-change does not
+          // also write, so one navigation produces one storage write.
+          void saveLastUrl(url);
+        }),
+        browserView.on('title-change', (event) => {
+          document.title = event.detail?.title || ${JSON.stringify(m.name)};
+        }),
+        browserView.on('navigation-start', () => setStatus('Loading…')),
+        browserView.on('navigation-complete', () => setStatus('')),
+        browserView.on('navigation-error', (event) => {
+          setStatus(event.detail?.errorDescription || event.detail?.reason || 'Navigation failed', true);
+        }),
+        browserView.on('state-change', (event) => updateState(event.detail)),
+        browserView.on('state-error', (event) => {
+          const error = event.detail?.error || 'Unknown state error';
+          setStatus('Could not refresh browser state: ' + error, true);
+          console.error('Could not refresh browser state:', error);
+        }),
+        browserView.on('new-window', (event) => {
+          setStatus('Popup blocked: ' + (event.detail?.url || 'unknown URL'));
+        }),
+        browserView.on('download-request', (event) => void handleDownload(event)),
+      );
       updateState(await browserView.getState());
     } catch (error) {
       browserView?.destroy();
       browserView = null;
-      setStatus('Could not start browser: ' + error.message);
+      setStatus('Could not start browser: ' + error.message, true);
       console.error('Could not start browser:', error);
     }
   })();
@@ -2432,9 +2643,7 @@ main();`,
 
       'style.css': () => `@layer reset, tokens, base, components;
 
-@layer reset {
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-}
+${CSS_RESET_LAYER}
 
 @layer tokens {
   :root {
@@ -2451,12 +2660,12 @@ main();`,
     --accent-fg: oklch(22.1% 0.048 152);
     --danger: oklch(71.1% 0.166 22);
     --content-bg: oklch(100% 0 0);
-    --content-fg: oklch(18.3% 0.022 267.4);
   }
 }
 
 @layer base {
   html, body { height: 100%; }
+
   body {
     font-family: system-ui, sans-serif;
     background: var(--bg);
@@ -2523,19 +2732,17 @@ main();`,
     padding: 0 12px;
     height: 32px;
     font-size: 13px;
-    font-family: monospace;
+    font-family: ui-monospace, Consolas, monospace;
 
-    &:focus-visible {
-      outline: none;
-      border-color: var(--accent);
-    }
+    /* Accent border plus the UA focus ring — no outline removal. */
+    &:focus-visible { border-color: var(--accent); }
   }
 
   #browser-status {
     padding: 4px 14px;
     font-size: 11px;
     color: var(--fg-muted);
-    font-family: monospace;
+    font-family: ui-monospace, Consolas, monospace;
     min-height: 20px;
     border-block-end: 1px solid var(--border-faint);
 
@@ -2549,31 +2756,38 @@ main();`,
     overflow: hidden;
     background: var(--content-bg);
   }
+${CSS_SR_ONLY}}
 
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}`,
+${CSS_REDUCED_MOTION}`,
     },
   },
+
   ...API_STARTER_TEMPLATES,
-});
+};
+
+/* ------------------------------------------------------------------ *
+ * Freezing
+ *
+ * The header documents each template as a "frozen spec" — enforce it.
+ * Without a deep freeze, only the outer TEMPLATES object was frozen and
+ * any code holding a reference could still mutate a generator, a
+ * permissions array, or placeholderFields for every later caller.
+ * ------------------------------------------------------------------ */
+
+// Recursively freezes plain objects/arrays so no caller can mutate a
+// template spec after this module has loaded. Functions are left alone:
+// they hold no per-caller state worth protecting.
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object') return value;
+  for (const key of Object.getOwnPropertyNames(value)) deepFreeze(value[key]);
+  return Object.freeze(value);
+}
+
+deepFreeze(TEMPLATES);
+
+/* ------------------------------------------------------------------ *
+ * Scaffolding — filesystem safety guards + create()
+ * ------------------------------------------------------------------ */
 
 // Windows reserves these names (case-insensitively, with or without an
 // extension) at the filesystem level — CON, PRN, AUX, NUL, COM1-9, LPT1-9.
@@ -2584,19 +2798,22 @@ main();`,
 // to create a file on any Windows host."
 const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
 
-// Confines a filename to a single path segment inside targetDir. Rejects
-// anything containing a path separator, a leading dot-dot, or a null byte —
-// the standard building blocks of a traversal attempt (../../etc/passwd,
-// or an absolute path that would make path.join ignore targetDir entirely).
+// Confines a filename to a backslash-free, POSIX-style relative path.
+// All checks run against the posix form so behavior is identical on every
+// platform — path.normalize would rewrite 'vendor/README.md' to
+// 'vendor\README.md' on Windows and wrongly reject legitimate nested names.
+// Rejects: empty values, null bytes, backslashes, absolute paths, any '',
+// '.', or '..' segment, anything posix.normalize would rewrite, and
+// Windows-reserved base names.
 function isSafeFilename(filename) {
   if (typeof filename !== 'string' || filename === '') return false;
   if (filename.includes('\0')) return false;
-  if (filename !== path.normalize(filename)) return false;
-  if (path.isAbsolute(filename)) return false;
-  if (filename.split(/[/\\]/).includes('..')) return false;
-  const base = filename.split(/[/\\]/).pop();
-  if (WINDOWS_RESERVED_NAMES.test(base)) return false;
-  return true;
+  if (filename.includes('\\')) return false;
+  if (path.posix.normalize(filename) !== filename) return false;
+  if (path.posix.isAbsolute(filename)) return false;
+  const segments = filename.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return false;
+  return !WINDOWS_RESERVED_NAMES.test(segments[segments.length - 1]);
 }
 
 // Same idea for targetDir itself: it has to resolve to somewhere inside
@@ -2605,7 +2822,7 @@ function isSafeFilename(filename) {
 // apps directory entirely.
 //
 // path.relative() alone isn't quite enough on Windows: across two different
-// drive letters (C:\\apps vs D:\\apps) it returns the target path unchanged —
+// drive letters (C:\apps vs D:\apps) it returns the target path unchanged —
 // no leading '..', and not flagged absolute either, since it's relative to
 // nothing in particular. That slips past the startsWith('..')/isAbsolute
 // checks below. The prefix check on resolvedTarget catches that case too,
@@ -2625,7 +2842,9 @@ function isSafeTargetDir(targetDir, appsRoot) {
  * @param {object} opts
  * @param {string} opts.targetDir - Directory to create the app in. Must resolve inside appsRoot.
  * @param {string} [opts.template] - Template key (defaults to 'blank').
- * @param {object} opts.manifest - Manifest values to interpolate.
+ * @param {object} opts.manifest - Manifest values to interpolate. Generators
+ *   receive the normalized manifest (defaults applied) — the same object
+ *   written to manifest.json — never the raw caller input.
  * @param {string} [opts.appsRoot] - Root directory targetDir must stay within (defaults to targetDir's parent).
  * @returns {{ success: boolean, files: string[], error?: string }}
  */
@@ -2638,8 +2857,11 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
   }
 
   // Prevent prototype pollution or looking up built-in object properties.
-  if (!Object.prototype.hasOwnProperty.call(TEMPLATES, template)) {
-    return { success: false, error: `Unknown template "${template}". Available: ${Object.keys(TEMPLATES).join(', ')}` };
+  if (typeof template !== 'string' || !Object.prototype.hasOwnProperty.call(TEMPLATES, template)) {
+    return {
+      success: false,
+      error: `Unknown template "${String(template)}". Available: ${Object.keys(TEMPLATES).join(', ')}`,
+    };
   }
 
   const tpl = TEMPLATES[template];
@@ -2655,10 +2877,14 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
   }
 
   const created = [];
+  const createdDirs = [];
 
   // If we fail partway through, remove exactly the files this call created —
   // not anything that already existed in targetDir before we started, and not
-  // the whole directory if the caller is scaffolding into a pre-existing folder.
+  // the whole directory if the caller is scaffolding into a pre-existing
+  // folder. Directories this call created are removed afterwards, deepest
+  // first, and only while they are empty — a pre-existing or still-populated
+  // directory is left in place.
   const rollback = () => {
     for (const file of created) {
       try {
@@ -2667,14 +2893,25 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
         // Best-effort cleanup; a failure here shouldn't mask the original error.
       }
     }
+    for (const dir of createdDirs.reverse()) {
+      try {
+        fs.rmdirSync(dir);
+      } catch {
+        // Directory missing or still has contents — leave it alone.
+      }
+    }
   };
 
   try {
     // mkdirSync with recursive:true is a no-op if the directory already
-    // exists, so the existsSync check would be a redundant TOCTOU race.
+    // exists, so an existsSync check would be a redundant TOCTOU race.
     fs.mkdirSync(targetDir, { recursive: true });
 
-    const manifestObj = {
+    // The normalized manifest drives both manifest.json and every generated
+    // file, so generators see exactly the values the packaged app will
+    // declare — with defaults applied instead of raw `undefined` leaking
+    // into generated titles, headings, and string literals.
+    const normalizedManifest = {
       id: manifest.id || 'com.example.myapp',
       name: manifest.name || 'My App',
       version: manifest.version || '1.0.0',
@@ -2690,43 +2927,55 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
     // Store the sanitized site URL in the manifest as well as the generated
     // wrapper code, so it remains available to tools that inspect the app.
     if (template === 'webapp') {
-      manifestObj.url = sanitizeUrl(manifest.url) || 'https://example.com';
-      manifestObj.allowNestedWebview = true;
+      normalizedManifest.url = sanitizeUrl(manifest.url) || 'https://example.com';
+      normalizedManifest.allowNestedWebview = true;
     }
 
     // Browser views require both the nested-view and external-network grants.
     // These declarations request the grants; they do not auto-approve them.
     if (template === 'browser') {
-      manifestObj.allowNestedWebview = true;
+      normalizedManifest.allowNestedWebview = true;
     }
     if (tpl.shareTarget) {
-      manifestObj.shareTarget = { ...tpl.shareTarget };
+      normalizedManifest.shareTarget = { ...tpl.shareTarget };
     }
 
-    fs.writeFileSync(path.join(targetDir, 'manifest.json'), JSON.stringify(manifestObj, null, 2));
+    fs.writeFileSync(path.join(targetDir, 'manifest.json'), JSON.stringify(normalizedManifest, null, 2));
     created.push('manifest.json');
 
     for (const [filename, contentFn] of Object.entries(tpl.files)) {
       if (!isSafeFilename(filename)) {
         throw new Error(`Refusing to write unsafe filename "${filename}"`);
       }
-      const content = typeof contentFn === 'function' ? contentFn(manifest) : contentFn;
+
+      let content;
+      try {
+        content = typeof contentFn === 'function' ? contentFn(normalizedManifest) : contentFn;
+      } catch (error) {
+        throw new Error(
+          `Template "${template}" failed generating "${filename}": ${error.message}`,
+          { cause: error },
+        );
+      }
 
       const filePath = path.join(targetDir, filename);
       // Ensure sub-directory layout exists for templates whose filenames
       // are nested (future-proofing — current templates are all flat).
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const fileDir = path.dirname(filePath);
+      if (fileDir !== targetDir) createdDirs.push(fileDir);
+      fs.mkdirSync(fileDir, { recursive: true });
       fs.writeFileSync(filePath, content);
       created.push(filename);
     }
 
     // vendor/ holds bundled third-party libraries the user drops in
-    // themselves (e.g. vendor/markdown-it.min.js for the markdown-viewer template).
+    // themselves (e.g. vendor/marked.min.js for the markdown-viewer template).
     // Files placed here are base64-encoded and included in the package
     // automatically at build time — reference them in HTML as
     // <script src="vendor/library.min.js">. Don't put node_modules here;
     // copy only the built/minified file you need.
     const vendorDir = path.join(targetDir, 'vendor');
+    createdDirs.push(vendorDir);
     fs.mkdirSync(vendorDir, { recursive: true });
     fs.writeFileSync(
       path.join(vendorDir, 'README.md'),
@@ -2737,11 +2986,11 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
         'They are bundled automatically when you build — no CDN needed.',
         '',
         'Example:',
-        '  vendor/markdown-it.min.js',
+        '  vendor/marked.min.js',
         '  vendor/chart.min.js',
         '',
         'Then reference them in your HTML:',
-        '  <script src="vendor/markdown-it.min.js" defer></script>',
+        '  <script src="vendor/marked.min.js" defer></script>',
         '',
         'Do not put node_modules here — copy only the built/minified file you need.',
       ].join('\n'),
@@ -2749,9 +2998,9 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
     created.push('vendor/README.md');
 
     return { success: true, files: created };
-  } catch (err) {
+  } catch (error) {
     rollback();
-    return { success: false, error: err.message };
+    return { success: false, error: error.message };
   }
 }
 
