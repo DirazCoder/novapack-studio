@@ -1,6 +1,6 @@
 {
   "name": "NovaByte Studio",
-  "version": "1.2.30",
+  "version": "1.2.31",
   "description": "NovaByte App Development Studio",
   "author": "DirazCoder",
   "license": "Apache-2.0",
@@ -55,8 +55,10 @@
     "js-beautify": "^2.0.3",
     "markdown-it": "^15.0.3",
     "parse5": "^8.1.0",
+    "semver": "^7.8.5",
     "stylelint": "^18.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "yauzl-promise": "^4.0.0"
   },
   "devDependencies": {
     "nw": "^0.119.2-sdk",

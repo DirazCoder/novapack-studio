@@ -2188,6 +2188,16 @@
               Recent projects, workspaces, and build history are machine-specific and are not included.
             </div>
           </div>
+          <div class="settings-section" data-section="plugins">
+            <div class="settings-section-title"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-grid" /></svg><span>Plugins</span></div>
+            <div class="settings-row">
+              <label class="settings-label">Extend Studio</label>
+              <div class="settings-control">
+                <span class="settings-hint" id="plugin-settings-summary">Manage installed plugins and browse community plugins.</span>
+                <button class="action-btn action-btn--ghost" id="btn-manage-plugins" type="button">Manage plugins</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2195,6 +2205,32 @@
   </div>
 
   <!-- ── Modals ─────────────────────────────────────────────────── -->
+
+  <!-- Studio plugins manager -->
+  <div class="modal-overlay hidden" id="modal-plugins">
+    <div class="modal modal--wide modal--plugins" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
+      <div class="modal-header">
+        <div>
+          <span class="about-modal-eyebrow">EXTEND YOUR WORKFLOW</span>
+          <h2 class="modal-title" id="plugins-title">Studio Plugins</h2>
+        </div>
+        <button class="modal-close" data-close="modal-plugins" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
+      </div>
+      <div class="modal-body plugins-modal-body">
+        <div class="plugin-trust-notice" role="note">
+          <strong>Plugins have full access to your computer.</strong>
+          <span>They can read and modify files, run programs, and access the network. Only install plugins from publishers you trust. A NovaByte signature confirms package integrity and publisher—not that the code is risk-free.</span>
+        </div>
+        <div class="plugin-manager-actions">
+          <button class="action-btn action-btn--primary" id="btn-plugin-install-file" type="button">Install .nbplugin</button>
+          <button class="action-btn action-btn--ghost" id="btn-plugin-install-folder" type="button">Install from folder</button>
+          <button class="action-btn action-btn--ghost" id="btn-plugin-marketplace" type="button">Browse marketplace</button>
+        </div>
+        <p class="plugin-manager-notice" id="plugin-manager-notice" role="status" aria-live="polite"></p>
+        <div class="plugin-list" id="plugin-list" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- New Project modal -->
   <div class="modal-overlay hidden" id="modal-new-project">
@@ -2521,7 +2557,7 @@
           <div class="about-identity">
             <div class="about-name">NovaByte Studio</div>
             <p class="about-tagline">Build, package, and ship apps for NovaByte OS.</p>
-            <div class="about-version" id="about-version">Version 1.2.30</div>
+            <div class="about-version" id="about-version">Version 1.2.31</div>
           </div>
         </section>
         <div class="about-details">

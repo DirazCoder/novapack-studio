@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execFile, spawn } = require('child_process');
 const { fileURLToPath, pathToFileURL } = require('url');
 const { PERMISSIONS, PERMISSION_IDS, LEGACY_PERMISSION_ALIASES } = require('./src/sdk/permissions.js');
@@ -41,9 +42,70 @@ const IS_MAC = (typeof process !== 'undefined' && process.platform
 ).toLowerCase().includes('darwin');
 const MOD_KEY = IS_MAC ? '\u2318' : 'Ctrl';
 
-const { build, inspect, verify, loadPackage, detectCppSources, previewProjectFiles, walkProjectFiles } = require('./src/sdk/builder.js');
+const {
+  build,
+  inspect,
+  verify,
+  listActions,
+  loadPackage,
+  detectCppSources,
+  previewProjectFiles,
+  walkProjectFiles,
+} = require('./src/sdk/builder.js');
 const { TEMPLATES, create } = require('./src/sdk/templates.js');
 const AppPackage = require('./src/sdk/app-package.js');
+const {
+  activatePlugins,
+  createPluginManager,
+  deactivatePlugins,
+  isPluginDomNode,
+  listProjectFiles,
+  resolveProjectPath,
+} = require('./src/sdk/plugins.js');
+
+let _studioPluginManager = null;
+let _activeStudioPlugins = [];
+const _studioPluginCommands = new Map();
+const _studioPluginViews = new Map();
+const _studioPluginActivationErrors = new Map();
+const _studioPluginEventTarget = new EventTarget();
+const _studioPluginDisposers = new Map();
+
+function _emitStudioPluginEvent(name, detail) {
+  _studioPluginEventTarget.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function _ownStudioPluginResource(pluginId, dispose) {
+  if (!_studioPluginDisposers.has(pluginId)) _studioPluginDisposers.set(pluginId, new Set());
+  const resources = _studioPluginDisposers.get(pluginId);
+  resources.add(dispose);
+  return () => {
+    if (!resources.delete(dispose)) return;
+    dispose();
+  };
+}
+
+function _refreshStudioPluginCommands() {
+  _cpRegistry = _buildCommandRegistry();
+  const overlay = $('modal-command-palette');
+  if (overlay && !overlay.classList.contains('hidden')) {
+    _renderCpCategories();
+    _runCpFilter($('cp-input')?.value || '');
+  }
+}
+
+function _disposeStudioPluginResources(pluginId) {
+  const resources = _studioPluginDisposers.get(pluginId);
+  if (!resources) return;
+  for (const dispose of [...resources].reverse()) {
+    try {
+      dispose();
+    } catch (error) {
+      console.error(`[plugins] Could not dispose a resource from ${pluginId}:`, error);
+    }
+  }
+  _studioPluginDisposers.delete(pluginId);
+}
 
 // nw is a global provided by NW.js -- no require needed.
 
@@ -1083,7 +1145,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.30';
+const STUDIO_VERSION = '1.2.31';
 const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme
@@ -1849,6 +1911,7 @@ function _initStudioTutorial() {
 }
 
 function setTheme(themeId) {
+  const previous = state.theme;
   // Remember the preset the user was on before going custom, so the reset
   // button can revert to something coherent.
   if (state.theme !== CUSTOM_THEME_ID && themeId === CUSTOM_THEME_ID) {
@@ -1861,6 +1924,7 @@ function setTheme(themeId) {
   const settingsMenu = $('theme-picker-menu-settings');
   if (settingsList && settingsMenu) _renderSettingsThemeList(settingsList, settingsMenu);
   _renderCustomThemeSection();
+  if (previous !== state.theme) _emitStudioPluginEvent('theme:change', { previous, current: state.theme });
 }
 
 const CUSTOM_THEME_SWATCH_GRADIENT =
@@ -2189,6 +2253,7 @@ async function loadProject(dir) {
   _updateEditorToolbar();
   window._nbproOnProjectLoaded?.(dir);
   switchTab('editor');
+  _emitStudioPluginEvent('project:open', { directory: dir, name: state.projectName });
 }
 
 // Drag-and-drop wiring for the file-tree container. Lives outside
@@ -8334,15 +8399,20 @@ function _switchToTab(index) {
 
 async function _closeTab(index) {
   const tab = tabs[index];
-  if (!tab) return;
+  if (!tab) return false;
   if (tab.isDirty) {
     const ok = await studioConfirm(`Discard unsaved changes to "${path.basename(tab.filePath)}"?`, {
       title: 'Discard unsaved changes',
       confirmLabel: 'Discard changes',
       danger: true,
     });
-    if (!ok) return;
+    if (!ok) return false;
   }
+  _emitStudioPluginEvent('file:close', {
+    path: state.projectDir
+      ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+      : tab.filePath,
+  });
   tabs.splice(index, 1);
 
   if (!tabs.length) {
@@ -8351,7 +8421,7 @@ async function _closeTab(index) {
     _renderTabs();
     _highlightActiveFile();
     _setLivePermStatus(null); // no file open -- nothing to scan
-    return;
+    return true;
   }
 
   // If we removed a tab to the left of the active one, every later tab's
@@ -8365,6 +8435,7 @@ async function _closeTab(index) {
   }
   _renderTabs();
   _highlightActiveFile();
+  return true;
 }
 
 function _loadTabIntoEditor(tab) {
@@ -8431,6 +8502,13 @@ function openFileEditor(filePath) {
     switchTab('editor');
     _highlightActiveFile();
     _qoRecordRecentFile(filePath);
+    _emitStudioPluginEvent('file:open', {
+      path: state.projectDir
+        ? path.relative(state.projectDir, filePath).split(path.sep).join('/')
+        : filePath,
+      isImage: IMAGE_EXTS.has(ext),
+      reusedTab: true,
+    });
     return;
   }
 
@@ -8457,6 +8535,13 @@ function openFileEditor(filePath) {
   switchTab('editor');
   _highlightActiveFile();
   _qoRecordRecentFile(filePath);
+  _emitStudioPluginEvent('file:open', {
+    path: state.projectDir
+      ? path.relative(state.projectDir, filePath).split(path.sep).join('/')
+      : filePath,
+    isImage: IMAGE_EXTS.has(ext),
+    reusedTab: false,
+  });
 }
 
 // CM change callback
@@ -8472,6 +8557,13 @@ function _onCmChange() {
   _refreshPreviewIfVisible();
   _updateStatusBar();
   _updateTreeFileSize(tab.filePath, window.CM.getValue());
+  _emitStudioPluginEvent('editor:change', {
+    path: state.projectDir
+      ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+      : tab.filePath,
+    isDirty: dirty,
+    length: window.CM.getValue().length,
+  });
   _onEditorContentChanged();
   _scheduleLivePermissionScan();
 }
@@ -8621,6 +8713,11 @@ function saveOpenFile() {
     tab.originalContent = content;
     tab.liveContent = undefined;
     tab.isDirty = false;
+    _emitStudioPluginEvent('file:save', {
+      path: state.projectDir
+        ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+        : tab.filePath,
+    });
     _renderTabs();
     showToast('Saved ' + path.basename(tab.filePath));
     _refreshPreviewIfVisible();
@@ -8655,6 +8752,11 @@ function saveAllOpenFiles() {
       tab.originalContent = content;
       tab.liveContent = undefined;
       tab.isDirty = false;
+      _emitStudioPluginEvent('file:save', {
+        path: state.projectDir
+          ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+          : tab.filePath,
+      });
       saved++;
       if (state.projectDir) {
         if (_designIsEntryAsset(tab.filePath)) _designInvalidate();
@@ -8976,6 +9078,626 @@ function _initSettingsPage() {
       });
     };
   }
+}
+
+function _pluginDataDirectory() {
+  if (typeof nw !== 'undefined' && nw.App?.dataPath) return nw.App.dataPath;
+  return path.join(os.homedir(), '.novabyte-studio');
+}
+
+function _setPluginManagerNotice(message, type = '') {
+  const notice = $('plugin-manager-notice');
+  if (!notice) return;
+  notice.textContent = message;
+  notice.classList.toggle('is-error', type === 'error');
+  notice.classList.toggle('is-success', type === 'success');
+}
+
+function _pluginManagerButton(label, action, className = 'action-btn action-btn--ghost') {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener('click', action);
+  return button;
+}
+
+function _renderStudioPlugins() {
+  const list = $('plugin-list');
+  if (!list || !_studioPluginManager) return;
+  list.replaceChildren();
+  let plugins;
+  try {
+    plugins = _studioPluginManager.list();
+  } catch (error) {
+    _setPluginManagerNotice(error.message, 'error');
+    const empty = document.createElement('div');
+    empty.className = 'plugin-empty';
+    empty.textContent = 'Plugin settings could not be loaded.';
+    list.append(empty);
+    return;
+  }
+  $('plugin-settings-summary').textContent = plugins.length
+    ? `${plugins.length} installed plugin${plugins.length === 1 ? '' : 's'}`
+    : 'Manage installed plugins and browse community plugins.';
+  if (!plugins.length) {
+    const empty = document.createElement('div');
+    empty.className = 'plugin-empty';
+    empty.textContent = 'No plugins installed yet. Install a .nbplugin package or a local plugin folder.';
+    list.append(empty);
+    return;
+  }
+
+  for (const plugin of plugins) {
+    const activationError = _studioPluginActivationErrors.get(plugin.id);
+    const card = document.createElement('article');
+    card.className = 'plugin-card';
+    const main = document.createElement('div');
+    main.className = 'plugin-card-main';
+    const heading = document.createElement('div');
+    heading.className = 'plugin-card-heading';
+    const title = document.createElement('span');
+    title.textContent = plugin.name || plugin.id;
+    heading.append(title);
+    const badge = document.createElement('span');
+    badge.className = `plugin-badge${plugin.signature === 'verified' ? ' plugin-badge--verified' : plugin.signature !== 'unsigned' ? ' plugin-badge--warning' : ''}`;
+    badge.textContent = plugin.signature === 'verified'
+      ? 'Verified signature'
+      : plugin.signature === 'invalid' ? 'Invalid package' : 'Unverified';
+    heading.append(badge);
+    const meta = document.createElement('div');
+    meta.className = 'plugin-card-meta';
+    meta.textContent = [
+      plugin.version ? `v${plugin.version}` : '',
+      plugin.publisher ? `by ${plugin.publisher}` : '',
+      plugin.enabled && plugin.trusted
+        ? activationError ? 'Activation failed' : 'Enabled'
+        : 'Disabled',
+    ].filter(Boolean).join(' · ');
+    main.append(heading, meta);
+    if (plugin.description) {
+      const description = document.createElement('div');
+      description.className = 'plugin-card-description';
+      description.textContent = plugin.description;
+      main.append(description);
+    }
+    if (plugin.error) {
+      const error = document.createElement('div');
+      error.className = 'plugin-card-description';
+      error.textContent = `Plugin cannot be loaded: ${plugin.error}`;
+      main.append(error);
+    }
+    if (activationError) {
+      const error = document.createElement('div');
+      error.className = 'plugin-card-description plugin-card-description--error';
+      error.textContent = `Plugin activation failed: ${activationError.message || activationError}`;
+      main.append(error);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'plugin-card-actions';
+    if (!plugin.error) {
+      actions.append(_pluginManagerButton(plugin.enabled ? 'Disable' : 'Enable', async () => {
+        try {
+          if (!plugin.enabled) {
+            const unsigned = plugin.signature !== 'verified';
+            const needsTrust = !plugin.trusted;
+            if ((unsigned || needsTrust) && !await studioConfirm(
+              unsigned
+                ? `“${plugin.name}” is not digitally signed by NovaByte Trusted Signing. Its publisher and package integrity could not be verified. If enabled, it will have full access to your files, programs, and network.`
+                : `“${plugin.name}” will run with full access to your files, programs, and network. Only enable it if you trust its publisher.`,
+              {
+                title: unsigned ? 'Plugin is not digitally signed' : 'Trust this plugin?',
+                confirmLabel: unsigned ? 'Enable anyway' : 'Trust and enable',
+              },
+            )) {
+              return;
+            }
+          }
+          _studioPluginManager.setEnabled(plugin.id, {
+            enabled: !plugin.enabled,
+            trusted: !plugin.enabled,
+          });
+          await _reloadStudioPlugins();
+          _setPluginManagerNotice(`${plugin.name} ${plugin.enabled ? 'disabled' : 'enabled'}.`, 'success');
+          _renderStudioPlugins();
+        } catch (error) {
+          _setPluginManagerNotice(`Could not update ${plugin.name}: ${error.message}`, 'error');
+        }
+      }, plugin.enabled ? 'action-btn action-btn--ghost' : 'action-btn action-btn--primary'));
+    }
+    actions.append(_pluginManagerButton('Uninstall', async () => {
+      if (!await studioConfirm(
+        `Uninstall “${plugin.name}”? Its installed plugin files will be removed.`,
+        { title: 'Uninstall plugin?', confirmLabel: 'Uninstall', danger: true },
+      )) return;
+      try {
+        await _studioPluginManager.uninstall(plugin.id);
+        await _reloadStudioPlugins();
+        _setPluginManagerNotice(`${plugin.name} was uninstalled.`, 'success');
+        _renderStudioPlugins();
+      } catch (error) {
+        _setPluginManagerNotice(`Could not uninstall ${plugin.name}: ${error.message}`, 'error');
+      }
+    }));
+    card.append(main, actions);
+    list.append(card);
+  }
+}
+
+function _createStudioPluginApi(plugin) {
+  const commands = {
+    registerCommand(id, label, action, options = {}) {
+      if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+        || typeof label !== 'string' || !label.trim() || label.length > 100
+        || typeof action !== 'function') {
+        throw new TypeError('registerCommand requires a valid ID, label, and action function');
+      }
+      const key = `${plugin.id}:${id}`;
+      if (_studioPluginCommands.has(key)) throw new Error(`Plugin command already registered: ${id}`);
+      const entry = {
+        id: `plugin:${key}`,
+        label,
+        aliases: [id, plugin.id, plugin.name],
+        description: typeof options.description === 'string' ? options.description : '',
+        category: typeof options.category === 'string' && options.category.trim()
+          ? `Plugins · ${options.category.trim().slice(0, 40)}`
+          : 'Plugins',
+        action: () => {
+          try {
+            Promise.resolve(action(api)).catch((error) => {
+              console.error(`[plugins] Command failed in ${plugin.id} (${id}):`, error);
+              showToast(`${plugin.name}: command failed. See the developer console for details.`);
+            });
+          } catch (error) {
+            console.error(`[plugins] Command failed in ${plugin.id} (${id}):`, error);
+            showToast(`${plugin.name}: command failed. See the developer console for details.`);
+          }
+        },
+        when: typeof options.when === 'function' ? () => {
+          try {
+            const result = options.when();
+            if (result && typeof result.then === 'function') {
+              throw new TypeError('Command visibility predicates must be synchronous');
+            }
+            return result;
+          } catch (error) {
+            console.error(`[plugins] Command visibility check failed in ${plugin.id} (${id}):`, error);
+            return false;
+          }
+        } : undefined,
+      };
+      _studioPluginCommands.set(key, entry);
+      _refreshStudioPluginCommands();
+      return _ownStudioPluginResource(plugin.id, () => {
+        _studioPluginCommands.delete(key);
+        _refreshStudioPluginCommands();
+      });
+    },
+  };
+  const events = {
+    on(name, listener) {
+      const supported = new Set([
+        'project:open',
+        'tab:change',
+        'view:change',
+        'file:open',
+        'file:save',
+        'file:close',
+        'editor:change',
+        'theme:change',
+        'build:start',
+        'build:log',
+        'build:complete',
+        'build:error',
+      ]);
+      if (!supported.has(name) || typeof listener !== 'function') {
+        throw new TypeError('events.on requires a supported Studio event and listener function');
+      }
+      const wrapped = (event) => {
+        try {
+          const result = listener(event.detail);
+          if (result && typeof result.then === 'function') {
+            result.catch((error) => console.error(`[plugins] Event listener failed in ${plugin.id} (${name}):`, error));
+          }
+        } catch (error) {
+          console.error(`[plugins] Event listener failed in ${plugin.id} (${name}):`, error);
+        }
+      };
+      _studioPluginEventTarget.addEventListener(name, wrapped);
+      return _ownStudioPluginResource(plugin.id, () => _studioPluginEventTarget.removeEventListener(name, wrapped));
+    },
+  };
+  const views = {
+    registerView({ id, title, content, onShow, onHide } = {}) {
+      if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+        || typeof title !== 'string' || !title.trim() || title.length > 100
+        || !isPluginDomNode(content)
+        || (onShow !== undefined && typeof onShow !== 'function')
+        || (onHide !== undefined && typeof onHide !== 'function')) {
+        throw new TypeError('views.registerView requires a valid ID, title, DOM content node, and optional lifecycle functions');
+      }
+      const key = `plugin:${plugin.id}:${id}`;
+      if (_studioPluginViews.has(key) || document.querySelector(`.tab[data-tab="${CSS.escape(key)}"]`)) {
+        throw new Error(`Plugin view already exists: ${id}`);
+      }
+
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'tab plugin-tab';
+      tab.dataset.tab = key;
+      tab.setAttribute('aria-label', title);
+      const label = document.createElement('span');
+      label.textContent = title;
+      tab.append(label);
+      tab.addEventListener('click', () => switchTab(key));
+
+      const panel = document.createElement('section');
+      panel.id = `panel-${key}`;
+      panel.className = 'tab-panel plugin-view-panel hidden';
+      panel.dataset.pluginId = plugin.id;
+      panel.setAttribute('aria-label', title);
+      const body = document.createElement('div');
+      body.className = 'plugin-view-content';
+      body.append(content);
+      panel.append(body);
+
+      const tabsElement = $('tabs');
+      const projectMain = $('project-main');
+      if (!tabsElement || !projectMain) throw new Error('Studio workspace is not available');
+      tabsElement.append(tab);
+      projectMain.append(panel);
+
+      const registeredView = { pluginId: plugin.id, id, key, tab, panel, api, onShow, onHide };
+      _studioPluginViews.set(key, registeredView);
+      const dispose = _ownStudioPluginResource(plugin.id, () => {
+        if (state.activeTab === key) switchTab('editor');
+        tab.remove();
+        panel.remove();
+        _studioPluginViews.delete(key);
+        _refreshStudioPluginCommands();
+      });
+      _refreshStudioPluginCommands();
+
+      return {
+        id: key,
+        element: panel,
+        show() { switchTab(key); },
+        hide() {
+          if (state.activeTab === key) switchTab('editor');
+          else panel.classList.add('hidden');
+        },
+        dispose,
+      };
+    },
+    getRegisteredViews() {
+      return [..._studioPluginViews.values()]
+        .filter((view) => view.pluginId === plugin.id)
+        .map(({ id, key, panel }) => ({ id, key, element: panel }));
+    },
+  };
+  const panels = {
+    create({ id, title, content } = {}) {
+      if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+        || typeof title !== 'string' || !title.trim() || title.length > 100
+        || !isPluginDomNode(content)) {
+        throw new TypeError('panels.create requires a valid ID, title, and DOM content node');
+      }
+      const panelId = `studio-plugin-${plugin.id}-${id}`;
+      if (document.getElementById(panelId)) throw new Error(`Plugin panel already exists: ${id}`);
+      const root = document.createElement('div');
+      root.className = 'studio-plugin-panel-overlay';
+      root.id = panelId;
+      root.dataset.pluginId = plugin.id;
+      const dialog = document.createElement('section');
+      dialog.className = 'studio-plugin-panel';
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-label', title);
+      const header = document.createElement('header');
+      header.className = 'studio-plugin-panel__header';
+      const heading = document.createElement('h2');
+      heading.textContent = title;
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'studio-plugin-panel__close';
+      close.setAttribute('aria-label', 'Close panel');
+      close.textContent = '×';
+      close.addEventListener('click', () => panel.hide());
+      const body = document.createElement('div');
+      body.className = 'studio-plugin-panel__body';
+      body.append(content);
+      header.append(heading, close);
+      dialog.append(header, body);
+      root.append(dialog);
+      root.addEventListener('click', (event) => {
+        if (event.target === root) panel.hide();
+      });
+      document.body.append(root);
+      const panel = {
+        element: dialog,
+        show() { root.hidden = false; close.focus(); },
+        hide() { root.hidden = true; },
+        dispose() { root.remove(); },
+      };
+      root.hidden = true;
+      return Object.assign(panel, {
+        dispose: _ownStudioPluginResource(plugin.id, panel.dispose),
+      });
+    },
+  };
+  const api = {
+    version: 1,
+    studio: { version: STUDIO_VERSION, plugin: { id: plugin.id, name: plugin.name, version: plugin.version } },
+    notify(message) {
+      showToast(`${plugin.name}: ${String(message).slice(0, 500)}`);
+    },
+    commands,
+    menus: {
+      registerItem(menu, id, label, action, options = {}) {
+        if (typeof menu !== 'string' || !menu.trim() || menu.length > 40) {
+          throw new TypeError('menus.registerItem requires a menu label of 1-40 characters');
+        }
+        return commands.registerCommand(id, label, action, { ...options, category: menu });
+      },
+    },
+    events,
+    views,
+    panels,
+    project: {
+      getDirectory: () => state.projectDir,
+      getName: () => state.projectName,
+      getManifest() {
+        if (!state.projectDir) throw new Error('No project is open');
+        return _readManifest(state.projectDir);
+      },
+      listFiles() {
+        if (!state.projectDir) throw new Error('No project is open');
+        return listProjectFiles(state.projectDir);
+      },
+      exists(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        try {
+          fs.accessSync(target);
+          return true;
+        } catch (error) {
+          if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+          throw error;
+        }
+      },
+      stat(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const stat = fs.statSync(resolveProjectPath(state.projectDir, relativePath));
+        return {
+          isFile: stat.isFile(),
+          isDirectory: stat.isDirectory(),
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+        };
+      },
+      readFile(relativePath, encoding = 'utf8') {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        return fs.readFileSync(target, encoding);
+      },
+      writeFile(relativePath, contents, encoding = 'utf8') {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, contents, encoding);
+      },
+      createDirectory(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        fs.mkdirSync(resolveProjectPath(state.projectDir, relativePath), { recursive: true });
+      },
+      remove(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = path.resolve(state.projectDir, relativePath);
+        resolveProjectPath(state.projectDir, relativePath);
+        if (target === path.resolve(state.projectDir)) throw new Error('Cannot remove the open project root');
+        fs.rmSync(target, { recursive: true });
+      },
+      openFile(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        if (!fs.statSync(target).isFile()) throw new Error('Project path is not a file');
+        openFileEditor(target);
+        const tab = tabs.find((item) => item.filePath === target);
+        return tab ? {
+          path: path.relative(state.projectDir, tab.filePath).split(path.sep).join('/'),
+          isDirty: tab.isDirty,
+          isPreview: tab.preview,
+        } : null;
+      },
+    },
+    files: {
+      getOpenFiles() {
+        return tabs.map((tab) => ({
+          path: state.projectDir
+            ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+            : tab.filePath,
+          isActive: tab === _getActiveTab(),
+          isDirty: tab.isDirty,
+          isPreview: tab.preview,
+        }));
+      },
+      getActiveFile() {
+        const tab = _getActiveTab();
+        if (!tab) return null;
+        return {
+          path: state.projectDir
+            ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+            : tab.filePath,
+          isDirty: tab.isDirty,
+          isPreview: tab.preview,
+        };
+      },
+      saveCurrent() {
+        const tab = _getActiveTab();
+        if (!tab) return false;
+        saveOpenFile();
+        return !tab.isDirty;
+      },
+      saveAll() {
+        saveAllOpenFiles();
+        return tabs.every((tab) => !tab.isDirty);
+      },
+      close(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        const index = tabs.findIndex((tab) => path.resolve(tab.filePath) === target);
+        if (index < 0) return false;
+        return _closeTab(index).then(() => !tabs.some((tab) => path.resolve(tab.filePath) === target));
+      },
+    },
+    app: {
+      getState() {
+        return {
+          screen: state.screen,
+          projectDirectory: state.projectDir,
+          projectName: state.projectName,
+          activeView: state.activeTab,
+          theme: state.theme,
+          building: state.building,
+        };
+      },
+      async openProject(directory) {
+        if (typeof directory !== 'string' || !fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
+          throw new Error('Project directory does not exist');
+        }
+        await loadProject(directory);
+        return typeof directory === 'string' && !!state.projectDir
+          && path.resolve(state.projectDir) === path.resolve(directory);
+      },
+    },
+    ui: {
+      notify: (message) => api.notify(message),
+      getTheme: () => state.theme,
+      getThemes: () => [...THEMES, { id: CUSTOM_THEME_ID, label: 'Custom' }]
+        .map(({ id, label }) => ({ id, label })),
+      setTheme(themeId) {
+        if (!_isValidTheme(themeId)) throw new TypeError(`Unsupported Studio theme: ${themeId}`);
+        setTheme(themeId);
+        return state.theme;
+      },
+      getDensity: () => state.uiDensity,
+      setDensity(density) {
+        if (!['comfortable', 'compact'].includes(density)) {
+          throw new TypeError(`Unsupported Studio density: ${density}`);
+        }
+        state.uiDensity = density;
+        _applyUiDensity();
+        saveStorage();
+        return state.uiDensity;
+      },
+      getViews: () => [
+        'editor', 'manifest', 'design', 'permissions', 'build', 'sign', 'git', 'review',
+        ..._studioPluginViews.keys(),
+      ],
+      switchView(name) {
+        const allowed = new Set([
+          'editor', 'manifest', 'design', 'permissions', 'build', 'sign', 'git', 'review',
+          ..._studioPluginViews.keys(),
+        ]);
+        if (!allowed.has(name)) throw new TypeError(`Unsupported Studio view: ${name}`);
+        switchTab(name);
+        return state.activeTab === name;
+      },
+    },
+    build: {
+      run: () => runBuild(),
+    },
+    templates: {
+      list: () => Object.entries(TEMPLATES).map(([id, template]) => ({
+        id,
+        name: template.name,
+        description: template.description,
+      })),
+      create: (options) => create(options),
+    },
+    permissions: {
+      list: () => PERMISSIONS.map((permission) => ({ ...permission })),
+      get: (id) => {
+        const permission = PERMISSIONS.find((item) => item.id === id);
+        return permission ? { ...permission } : null;
+      },
+      forAction: (action) => _permissionsForChannel(action),
+    },
+    packages: {
+      inspect: (packagePath) => inspect(packagePath),
+      verify: (packagePath, trustStore = []) => verify(packagePath, trustStore),
+      listActions: (packagePath) => listActions(packagePath),
+    },
+    get editor() { return window.CM; },
+    get design() { return window.NBPro; },
+    node: { fs, path, os, process, require },
+  };
+  return api;
+}
+
+async function _reloadStudioPlugins() {
+  await deactivatePlugins(_activeStudioPlugins);
+  for (const plugin of _activeStudioPlugins) _disposeStudioPluginResources(plugin.id);
+  _activeStudioPlugins = [];
+  _studioPluginCommands.clear();
+  _studioPluginActivationErrors.clear();
+  _refreshStudioPluginCommands();
+  if (!_studioPluginManager) return;
+  const result = await activatePlugins(_studioPluginManager, _createStudioPluginApi);
+  _activeStudioPlugins = result.active;
+  _refreshStudioPluginCommands();
+  for (const { id, error } of result.errors) {
+    _studioPluginActivationErrors.set(id, error);
+    _disposeStudioPluginResources(id);
+  }
+  if ($('modal-plugins') && !$('modal-plugins').classList.contains('hidden')) {
+    _renderStudioPlugins();
+  }
+  if (result.errors.length) {
+    const failed = result.errors.map(({ id }) => id).join(', ');
+    _setPluginManagerNotice(`${result.errors.length} plugin${result.errors.length === 1 ? '' : 's'} failed to activate: ${failed}. See each plugin card and the developer console for details.`, 'error');
+  }
+}
+
+async function _initStudioPlugins() {
+  _studioPluginManager = createPluginManager({
+    rootDirectory: _pluginDataDirectory(),
+    studioVersion: STUDIO_VERSION,
+  });
+  $('btn-manage-plugins')?.addEventListener('click', () => {
+    _renderStudioPlugins();
+    $('modal-plugins')?.classList.remove('hidden');
+  });
+  $('btn-plugin-install-file')?.addEventListener('click', () => {
+    pickFile('.nbplugin,.zip', async (filePath) => {
+      try {
+        const plugin = await _studioPluginManager.installArchive(filePath);
+        _setPluginManagerNotice(`Installed ${plugin.name}. Review its publisher and trust prompt before enabling.`, 'success');
+        _renderStudioPlugins();
+      } catch (error) {
+        _setPluginManagerNotice(`Plugin installation failed: ${error.message}`, 'error');
+      }
+    });
+  });
+  $('btn-plugin-install-folder')?.addEventListener('click', () => {
+    pickFolder(async (folderPath) => {
+      try {
+        const plugin = await _studioPluginManager.installFolder(folderPath);
+        _setPluginManagerNotice(`Installed ${plugin.name}. Review its publisher and trust prompt before enabling.`, 'success');
+        _renderStudioPlugins();
+      } catch (error) {
+        _setPluginManagerNotice(`Plugin installation failed: ${error.message}`, 'error');
+      }
+    });
+  });
+  $('btn-plugin-marketplace')?.addEventListener('click', () => {
+    try {
+      nw.Shell.openExternal('https://novabyteteam.github.io/novabyte-os/?view=plugins');
+    } catch (error) {
+      _setPluginManagerNotice(`Could not open marketplace: ${error.message}`, 'error');
+    }
+  });
+  await _reloadStudioPlugins();
 }
 
 function _isHexColor(v) {
@@ -9673,21 +10395,23 @@ function _readProjectVersion() {
 }
 
 async function runBuild() {
-  if (state.building || !state.projectDir) return;
+  if (state.building) return { success: false, error: 'A build is already in progress.' };
+  if (!state.projectDir) return { success: false, error: 'No project is open.' };
   const outDir = _getBuildOutDir();
   if ($('build-clean')?.checked && _buildOutputContainsProject(outDir)) {
     const message = 'Refusing to clean this output directory because it contains the project folder.';
     clearLog();
     appendLog('error', message);
     showToast(message);
-    return;
+    return { success: false, error: message };
   }
   const btn = $('btn-build');
   const fill = $('build-btn-fill');
   const label = btn.querySelector('.build-btn-label');
 
-  if (!await saveManifest()) return;
+  if (!await saveManifest()) return { success: false, error: 'Could not save the project manifest.' };
   state.building = true;
+  _emitStudioPluginEvent('build:start', { projectDirectory: state.projectDir, outputDirectory: outDir });
   clearLog();
 
   btn.disabled = false;
@@ -9756,6 +10480,11 @@ async function runBuild() {
           label.textContent = 'Building...';
         }
         appendLog(type, msg);
+        _emitStudioPluginEvent('build:log', {
+          projectDirectory: state.projectDir,
+          type,
+          message: msg,
+        });
       },
       integrityMethod,
       signingMethod: signingMethod === 'none' ? undefined : signingMethod,
@@ -9771,6 +10500,10 @@ async function runBuild() {
   }
 
   if (result.success) {
+    _emitStudioPluginEvent('build:complete', {
+      projectDirectory: state.projectDir,
+      outputFile: result.outFile || null,
+    });
     fill.style.width = '100%';
     btn.className = 'build-btn success';
     label.innerHTML = `${_uiIcon('check')} Build Complete`;
@@ -9790,7 +10523,12 @@ async function runBuild() {
       label.textContent = 'Build Package';
       btn.disabled = false;
     }, 3000);
+    return { success: true, outputFile: result.outFile || null };
   } else {
+    _emitStudioPluginEvent('build:error', {
+      projectDirectory: state.projectDir,
+      error: result.error?.message || 'Build failed',
+    });
     fill.style.width = '0%';
     btn.className = 'build-btn error';
     label.innerHTML = `${_uiIcon('close')} Build Failed`;
@@ -9805,6 +10543,7 @@ async function runBuild() {
       label.textContent = 'Build Package';
       btn.disabled = false;
     }, 3000);
+    return { success: false, error: result.error?.message || 'Build failed' };
   }
 }
 
@@ -10819,6 +11558,7 @@ function _buildCommandRegistry() {
     { id: 'help', label: 'Help', category: 'Help', action: () => openHelp() },
     { id: 'about', label: 'About NovaByte Studio', category: 'Help', action: openAboutModal },
     { id: 'check-updates', label: 'Check for Updates', category: 'Help', action: () => checkForUpdates(false) },
+    ..._studioPluginCommands.values(),
   ];
 }
 
@@ -11056,7 +11796,7 @@ function initHelp() {
 }
 
 function openCommandPalette() {
-  if (!_cpRegistry) _cpRegistry = _buildCommandRegistry();
+  _refreshStudioPluginCommands();
   _cpEnsureFavorites();
   _cpCategory = 'All';
 
@@ -12562,6 +13302,7 @@ function _updateSidebarQuickAccess() {
 }
 
 function switchTab(name) {
+  const previousTab = state.activeTab;
   if (name !== 'review' && document.fullscreenElement === $('panel-review')) {
     document.exitFullscreen().catch((error) => {
       console.error('Could not exit Preview fullscreen:', error);
@@ -12569,13 +13310,41 @@ function switchTab(name) {
     });
   }
   state.activeTab = name;
+  if (previousTab !== name) {
+    const detail = { previous: previousTab, current: name };
+    _emitStudioPluginEvent('tab:change', detail);
+    _emitStudioPluginEvent('view:change', detail);
+  }
   _updateSidebarQuickAccess();
   document.querySelectorAll('.tab').forEach((t) => {
     t.classList.toggle('tab--active', t.dataset.tab === name);
   });
   document.querySelectorAll('.tab-panel:not(.tab-panel--editor)').forEach((p) => p.classList.add('hidden'));
   if (name !== 'editor') {
-    document.getElementById('panel-' + name)?.classList.remove('hidden');
+    const pluginView = _studioPluginViews.get(name);
+    (pluginView?.panel || document.getElementById('panel-' + name))?.classList.remove('hidden');
+  }
+  const previousPluginView = _studioPluginViews.get(previousTab);
+  if (previousTab !== name && previousPluginView) {
+    try {
+      const result = previousPluginView.onHide?.(previousPluginView.api);
+      if (result && typeof result.then === 'function') {
+        result.catch((error) => console.error(`[plugins] View hide failed in ${previousPluginView.pluginId}:`, error));
+      }
+    } catch (error) {
+      console.error(`[plugins] View hide failed in ${previousPluginView.pluginId}:`, error);
+    }
+  }
+  const currentPluginView = _studioPluginViews.get(name);
+  if (currentPluginView && previousTab !== name) {
+    try {
+      const result = currentPluginView.onShow?.(currentPluginView.api);
+      if (result && typeof result.then === 'function') {
+        result.catch((error) => console.error(`[plugins] View show failed in ${currentPluginView.pluginId}:`, error));
+      }
+    } catch (error) {
+      console.error(`[plugins] View show failed in ${currentPluginView.pluginId}:`, error);
+    }
   }
   if (name === 'git') refreshGitPanel();
   if (name === 'sign') _updateSignStatusStrip();
@@ -15598,6 +16367,12 @@ function init() {
   _safeInit('custom select controls', _initCustomSelects);
   _safeInit('_initEditorPermissionHover', _initEditorPermissionHover);
   _safeInit('first-run setup', initFirstRunSetup);
+  _safeInit('Studio plugins', () => {
+    void _initStudioPlugins().catch((error) => {
+      console.error('[plugins] Could not initialize plugin support:', error);
+      _setPluginManagerNotice(`Could not initialize plugins: ${error.message}`, 'error');
+    });
+  });
 }
 
 // Boot. Only runs in a real browser/script context -- when this file is
