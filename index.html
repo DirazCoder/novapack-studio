@@ -5,6 +5,25 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    (function () {
+      document.addEventListener('wheel', function (event) {
+        if (event.ctrlKey || event.metaKey) event.preventDefault();
+      }, { capture: true, passive: false });
+      document.addEventListener('keydown', function (event) {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        if (['+', '-', '=', '_', '0'].includes(event.key)
+          || ['NumpadAdd', 'NumpadSubtract', 'Numpad0'].includes(event.code)) {
+          event.preventDefault();
+        }
+      }, true);
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (type) {
+        document.addEventListener(type, function (event) {
+          event.preventDefault();
+        }, { passive: false });
+      });
+    })();
+  </script>
   <title>NovaByte Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
@@ -12,38 +31,245 @@
   <link rel="stylesheet" href="node_modules/devicon/devicon.min.css">
   <link rel="stylesheet" href="src/ui/style.css">
   <script>
-    // Set data-theme (and, for the custom theme, its CSS var overrides)
-    // before first paint so there's no flash of default colors before
-    // app.js runs. Mirrors loadStorage()/applyTheme()/_applyCustomColors()
-    // in app.js — kept in sync manually since this has to run standalone,
-    // before any other script, and can't import from app.js.
+    // Apply persisted visual preferences before first paint. Keep the
+    // validation and defaults aligned with loadStorage() in app.js.
     (function () {
+      var root = document.documentElement;
+      var defaultTheme = 'nb-dark';
       try {
-        var raw = localStorage.getItem('novapack_studio_data');
-        var data = raw ? JSON.parse(raw) : null;
-        var theme = data && data.theme;
-        if (theme === 'midnight-blue') theme = 'legacy-green';
-        if (!theme) {
-          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'nb-dark' : 'nb-light';
-        }
-        document.documentElement.setAttribute('data-theme', theme);
+        defaultTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'nb-dark' : 'nb-light';
+      } catch (e) {}
 
-        if (theme === 'custom' && data && data.customColors && typeof data.customColors === 'object') {
-          var style = document.documentElement.style;
-          for (var key in data.customColors) {
-            if (Object.prototype.hasOwnProperty.call(data.customColors, key) && key.indexOf('--') === 0) {
-              style.setProperty(key, data.customColors[key]);
-            }
+      var data = null;
+      var raw = null;
+      try {
+        raw = localStorage.getItem('novapack_studio_data');
+        data = raw ? JSON.parse(raw) : null;
+      } catch (e) {}
+      if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+      root.setAttribute('data-first-run-setup', String(!raw || data.firstRunSetupComplete === false));
+      root.setAttribute('data-quick-access-collapsed', String(data.quickAccessCollapsed !== false));
+
+      var theme = data.theme === 'midnight-blue' ? 'legacy-green' : data.theme;
+      var validThemes = ['nb-dark', 'nb-light', 'legacy-green', 'amber', 'nightshade', 'high-contrast', 'forest', 'custom'];
+      if (validThemes.indexOf(theme) === -1) theme = defaultTheme;
+      root.setAttribute('data-theme', theme);
+      root.setAttribute('data-density', data.uiDensity === 'compact' ? 'compact' : 'comfortable');
+
+      var sidebarWidth = typeof data.sidebarWidth === 'number' && data.sidebarWidth >= 190 && data.sidebarWidth <= 360
+        ? data.sidebarWidth : 238;
+      var railWidth = typeof data.railWidth === 'number' && data.railWidth >= 160 && data.railWidth <= 320
+        ? data.railWidth : 220;
+      root.style.setProperty('--sidebar-w', sidebarWidth + 'px');
+      root.style.setProperty('--rail-w', railWidth + 'px');
+      root.setAttribute('data-sidebar-dock', data.sidebarDock === 'right' ? 'right' : 'left');
+      root.setAttribute('data-rail-dock', data.railDock === 'right' ? 'right' : 'left');
+      root.setAttribute('data-sidebar-collapsed', String(!!data.sidebarCollapsed));
+      root.setAttribute('data-rail-collapsed', String(!!data.railCollapsed));
+
+      if (theme === 'custom' && data.customColors && typeof data.customColors === 'object' && !Array.isArray(data.customColors)) {
+        var customKeys = [
+          '--bg-base', '--bg-panel', '--bg-raised', '--bg-hover', '--bg-active', '--bg-overlay',
+          '--border', '--border-mid', '--accent', '--accent-dim', '--accent-hover', '--on-accent',
+          '--text-primary', '--text-mid', '--text-muted', '--text-faint',
+          '--red', '--yellow', '--orange', '--blue', '--hover-wash', '--hover-wash-strong'
+        ];
+        var style = root.style;
+        for (var key in data.customColors) {
+          if (Object.prototype.hasOwnProperty.call(data.customColors, key) &&
+              customKeys.indexOf(key) !== -1 && data.customColors[key]) {
+            style.setProperty(key, data.customColors[key]);
           }
         }
-      } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'nb-dark');
       }
     })();
   </script>
 </head>
 
 <body>
+
+  <div class="first-run-overlay hidden" id="first-run-setup" role="dialog" aria-modal="true"
+    aria-labelledby="setup-intro-title">
+    <div class="setup-backdrop" aria-hidden="true"></div>
+    <section class="setup-intro" id="setup-intro">
+      <button class="setup-skip-intro" id="setup-skip-intro" type="button">Skip intro</button>
+      <div class="setup-intro-content">
+        <div class="setup-logo-wrap" aria-hidden="true">
+          <div class="setup-logo-aura"></div>
+          <svg class="setup-logo app-brand-logo" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon class="setup-logo-outer" points="44,24 44,35 24,45 4,35 4,13 24,3 44,13"
+              stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none" />
+            <polygon class="setup-logo-middle" points="37,24 37,31 24,38 11,31 11,17 24,10 37,17"
+              stroke="currentColor" stroke-width="0.8" stroke-linejoin="round" fill="none" opacity="0.4" />
+            <text class="setup-logo-initials" x="24" y="28" fill="currentColor" font-size="11" font-weight="400"
+              text-anchor="middle" font-family="system-ui">NB</text>
+          </svg>
+        </div>
+        <span class="setup-intro-kicker">WELCOME TO</span>
+        <h1 class="setup-intro-title" id="setup-intro-title">NovaByte Studio</h1>
+        <p class="setup-intro-subtitle">A better workspace for your next big idea.</p>
+        <div class="setup-intro-signal" aria-hidden="true"><span></span><span></span><span></span></div>
+      </div>
+    </section>
+
+    <section class="setup-wizard hidden" id="setup-wizard" aria-labelledby="setup-wizard-title">
+      <header class="setup-wizard-header">
+        <div class="setup-wizard-brand">
+          <svg class="app-brand-logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none" />
+            <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="0.8" fill="none"
+              stroke-linejoin="round" opacity="0.4" />
+            <text x="24" y="28" fill="currentColor" font-size="11" font-weight="400" text-anchor="middle"
+              font-family="system-ui">NB</text>
+          </svg>
+          <div><span>FIRST-RUN SETUP</span><h2 id="setup-wizard-title">Make Studio yours</h2></div>
+        </div>
+        <button class="setup-skip" id="setup-skip" type="button">Skip setup</button>
+      </header>
+
+      <div class="setup-progress" aria-live="polite">
+        <span id="setup-progress-label">STEP 1 OF 4</span>
+        <div class="setup-progress-track"><span id="setup-progress-fill"></span></div>
+        <span class="setup-progress-caption">Your preferences stay on this device</span>
+      </div>
+
+      <div class="setup-step-list" id="setup-step-list">
+        <section class="setup-step" data-setup-step="0">
+          <h3>Set the tone</h3>
+          <p>Choose the look and density that feel right. You can change these any time in Settings.</p>
+          <div class="setup-field-grid">
+            <div class="setup-field">
+              <label for="setup-theme">Studio theme</label>
+              <select id="setup-theme">
+                <option value="nb-dark">NovaByte Dark</option>
+                <option value="nb-light">NovaByte Light</option>
+                <option value="legacy-green">Legacy Green</option>
+                <option value="amber">Amber</option>
+                <option value="nightshade">Nightshade</option>
+                <option value="high-contrast">High Contrast</option>
+                <option value="forest">Forest</option>
+              </select>
+            </div>
+            <div class="setup-field">
+              <label for="setup-density">Interface density</label>
+              <select id="setup-density">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section class="setup-step hidden" data-setup-step="1">
+          <h3>Tune your editor</h3>
+          <p>Set comfortable defaults for every code file you open.</p>
+          <div class="setup-field">
+            <label for="setup-font-size">Editor font size <output id="setup-font-size-value">13 px</output></label>
+            <input id="setup-font-size" type="range" min="10" max="24" step="1" value="13">
+          </div>
+          <div class="setup-field-grid">
+            <div class="setup-field">
+              <label for="setup-tab-size">Indentation</label>
+              <select id="setup-tab-size">
+                <option value="2">2 spaces</option>
+                <option value="4">4 spaces</option>
+                <option value="8">8 spaces</option>
+              </select>
+            </div>
+            <label class="setup-check"><input id="setup-word-wrap" type="checkbox"><span>Wrap long lines</span></label>
+          </div>
+        </section>
+
+        <section class="setup-step hidden" data-setup-step="2">
+          <h3>Choose how Studio saves</h3>
+          <p>Autosave is optional. Pick a cadence and choose what Studio should save for you.</p>
+          <div class="setup-field-grid">
+            <div class="setup-field">
+              <label for="setup-autosave-mode">Autosave mode</label>
+              <select id="setup-autosave-mode">
+                <option value="off">Off — save manually</option>
+                <option value="realtime">On change</option>
+                <option value="5">Every 5 seconds</option>
+                <option value="15">Every 15 seconds</option>
+                <option value="30">Every 30 seconds</option>
+                <option value="60">Every minute</option>
+                <option value="custom">Custom interval</option>
+              </select>
+            </div>
+            <div class="setup-field hidden" id="setup-autosave-custom-field">
+              <label for="setup-autosave-custom">Custom interval (seconds)</label>
+              <input id="setup-autosave-custom" type="number" min="1" max="3600" value="30">
+            </div>
+          </div>
+          <div class="setup-check-list">
+            <label class="setup-check"><input id="setup-autosave-manifest" type="checkbox" checked><span>Save manifest.json automatically</span></label>
+            <label class="setup-check"><input id="setup-autosave-editor" type="checkbox" checked><span>Save open editor files automatically</span></label>
+          </div>
+        </section>
+
+        <section class="setup-step hidden" data-setup-step="3">
+          <h3>Shape your workspace</h3>
+          <p>Choose where your navigation and project file tree live, then set their starting widths.</p>
+          <div class="setup-field-grid">
+            <div class="setup-field">
+              <label for="setup-sidebar-dock">Studio sidebar</label>
+              <select id="setup-sidebar-dock"><option value="left">Dock left</option><option value="right">Dock right</option></select>
+            </div>
+            <div class="setup-field">
+              <label for="setup-rail-dock">Project file tree</label>
+              <select id="setup-rail-dock"><option value="left">Dock left</option><option value="right">Dock right</option></select>
+            </div>
+          </div>
+          <div class="setup-field">
+            <label for="setup-sidebar-width">Sidebar width <output id="setup-sidebar-width-value">238 px</output></label>
+            <input id="setup-sidebar-width" type="range" min="190" max="360" step="1" value="238">
+          </div>
+          <div class="setup-field">
+            <label for="setup-rail-width">Project tree width <output id="setup-rail-width-value">220 px</output></label>
+            <input id="setup-rail-width" type="range" min="160" max="320" step="1" value="220">
+          </div>
+        </section>
+      </div>
+
+      <footer class="setup-wizard-footer">
+        <button class="setup-back hidden" id="setup-back" type="button">Back</button>
+        <span class="setup-footer-spacer"></span>
+        <button class="setup-next" id="setup-next" type="button">Continue</button>
+      </footer>
+    </section>
+  </div>
+
+  <div class="studio-tutorial hidden" id="studio-tutorial" data-mode="offer"
+    role="dialog" aria-modal="true" aria-labelledby="tutorial-offer-title" aria-hidden="true" inert>
+    <div class="tutorial-spotlight" id="tutorial-spotlight" aria-hidden="true"></div>
+    <section class="tutorial-card" id="tutorial-card">
+      <div class="tutorial-offer-content" id="tutorial-offer">
+        <span class="tutorial-kicker">YOUR FIRST NOVABYTE PACKAGE</span>
+        <h2 id="tutorial-offer-title">Let’s make your first package together</h2>
+        <p>Take a visual tour of the Studio, or walk through the path from a starter project to a NovaByte package. The tutorial highlights each area without editing or building anything for you.</p>
+        <div class="tutorial-actions">
+          <button type="button" class="tutorial-btn tutorial-btn--quiet" id="tutorial-skip">Skip tutorial</button>
+          <button type="button" class="tutorial-btn tutorial-btn--secondary" id="tutorial-start">Tour the Studio</button>
+          <button type="button" class="tutorial-btn tutorial-btn--primary" id="tutorial-package-start">Make my first package</button>
+        </div>
+      </div>
+      <div class="tutorial-step-content hidden" id="tutorial-step-content">
+        <div class="tutorial-step-meta">
+          <span class="tutorial-kicker">STUDIO WALKTHROUGH</span>
+          <span id="tutorial-step-count"></span>
+        </div>
+        <h2 id="tutorial-step-title"></h2>
+        <p id="tutorial-step-description"></p>
+        <div class="tutorial-progress" aria-hidden="true"><span id="tutorial-progress-fill"></span></div>
+        <div class="tutorial-actions">
+          <button type="button" class="tutorial-btn tutorial-btn--quiet" id="tutorial-exit">Exit tutorial</button>
+          <span class="tutorial-actions-spacer"></span>
+          <button type="button" class="tutorial-btn tutorial-btn--secondary" id="tutorial-back">Back</button>
+          <button type="button" class="tutorial-btn tutorial-btn--primary" id="tutorial-next">Next</button>
+        </div>
+      </div>
+    </section>
+  </div>
 
   <svg class="ui-icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="ui-icon-help" viewBox="0 0 24 24">
@@ -255,10 +481,10 @@
   <div class="titlebar" id="titlebar">
     <div class="titlebar-left">
       <svg class="titlebar-logo app-brand-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" stroke="currentColor" stroke-width="1.5" fill="none" />
-        <polygon points="12,6 18,9 18,15 12,18 6,15 6,9" stroke="currentColor" stroke-width="0.75" fill="none"
+        <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" stroke="currentColor" stroke-width="1.15" fill="none" />
+        <polygon points="12,6 18,9 18,15 12,18 6,15 6,9" stroke="currentColor" stroke-width="0.6" fill="none"
           opacity="0.5" />
-        <text x="12" y="14.5" fill="currentColor" font-size="6" font-weight="700" text-anchor="middle"
+        <text x="12" y="14.5" fill="currentColor" font-size="6" font-weight="300" text-anchor="middle"
           font-family="system-ui">NB</text>
       </svg>
       <span class="titlebar-name">NovaByte Studio</span>
@@ -281,7 +507,7 @@
   </div>
 
   <!-- ── Main Layout ───────────────────────────────────────────── -->
-  <div class="layout">
+  <div class="layout" id="main-layout">
 
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
@@ -325,33 +551,41 @@
       </div>
 
       <div class="sidebar-section sidebar-section--quick">
-        <div class="sidebar-label">Quick Access</div>
-        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-command" title="Command Palette (Ctrl/Cmd+Shift+P)">
-          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg>
-          <span class="sidebar-quick-label">Command Palette</span>
-          <kbd id="sidebar-sc-command">Ctrl+Shift+P</kbd>
+        <button class="sidebar-label sidebar-label--toggle" id="btn-toggle-quick-access"
+          type="button" aria-expanded="false" aria-controls="sidebar-quick-actions">
+          <span>Quick Access</span>
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron" /></svg>
         </button>
-        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-search" title="Search Project (Ctrl/Cmd+Shift+F)">
-          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
-          <span class="sidebar-quick-label">Search Project</span>
-          <kbd id="sidebar-sc-search">Ctrl+Shift+F</kbd>
-        </button>
-        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-workspaces" title="Manage Workspaces (Ctrl/Cmd+Shift+W)">
-          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-workspaces" /></svg>
-          <span class="sidebar-quick-label">Workspaces</span>
-          <kbd id="sidebar-sc-workspaces">Ctrl+Shift+W</kbd>
-        </button>
-        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-source-control"
-          data-sidebar-tab="git" title="Open Source Control">
-          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-branch" /></svg>
-          <span class="sidebar-quick-label">Source Control</span>
-          <span class="sidebar-quick-badge hidden" id="sidebar-git-count" aria-label="Changed files">0</span>
-        </button>
-        <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-build"
-          data-sidebar-tab="build" title="Open Build">
-          <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-package" /></svg>
-          <span class="sidebar-quick-label">Build</span>
-        </button>
+        <div id="sidebar-quick-actions" aria-hidden="true" inert>
+          <div class="sidebar-quick-actions-inner">
+            <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-command" title="Command Palette (Ctrl/Cmd+Shift+P)">
+              <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-palette" /></svg>
+              <span class="sidebar-quick-label">Command Palette</span>
+              <kbd id="sidebar-sc-command">Ctrl+Shift+P</kbd>
+            </button>
+            <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-search" title="Search Project (Ctrl/Cmd+Shift+F)">
+              <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+              <span class="sidebar-quick-label">Search Project</span>
+              <kbd id="sidebar-sc-search">Ctrl+Shift+F</kbd>
+            </button>
+            <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-workspaces" title="Manage Workspaces (Ctrl/Cmd+Shift+W)">
+              <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-workspaces" /></svg>
+              <span class="sidebar-quick-label">Workspaces</span>
+              <kbd id="sidebar-sc-workspaces">Ctrl+Shift+W</kbd>
+            </button>
+            <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-source-control"
+              data-sidebar-tab="git" title="Open Source Control">
+              <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-branch" /></svg>
+              <span class="sidebar-quick-label">Source Control</span>
+              <span class="sidebar-quick-badge hidden" id="sidebar-git-count" aria-label="Changed files">0</span>
+            </button>
+            <button class="sidebar-btn sidebar-quick-btn" id="btn-sidebar-build"
+              data-sidebar-tab="build" title="Open Build">
+              <svg class="sidebar-btn-icon" aria-hidden="true"><use href="#ui-icon-package" /></svg>
+              <span class="sidebar-quick-label">Build</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="sidebar-section hidden" id="pinned-section">
@@ -383,10 +617,9 @@
         <button class="sidebar-btn" id="btn-editor-settings">
           <svg class="sidebar-btn-icon sidebar-btn-icon--settings" viewBox="0 0 24 24" fill="none"
             xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z"
-              stroke="currentColor" stroke-width="1.7" />
-            <path d="m19.4 15 .05.04a1.8 1.8 0 0 1-2.55 2.55l-.04-.05a1.8 1.8 0 0 0-3.06 1.27v.14a1.8 1.8 0 0 1-3.6 0v-.07a1.8 1.8 0 0 0-3.06-1.27l-.05.04a1.8 1.8 0 0 1-2.55-2.55l.05-.04a1.8 1.8 0 0 0-1.27-3.06h-.14a1.8 1.8 0 0 1 0-3.6h.07a1.8 1.8 0 0 0 1.27-3.06l-.04-.05a1.8 1.8 0 0 1 2.55-2.55l.04.05a1.8 1.8 0 0 0 3.06-1.27v-.14a1.8 1.8 0 0 1 3.6 0v.07a1.8 1.8 0 0 0 3.06 1.27l.05-.04a1.8 1.8 0 0 1 2.55 2.55l-.05.04a1.8 1.8 0 0 0 1.27 3.06h.14a1.8 1.8 0 0 1 0 3.6h-.07A1.8 1.8 0 0 0 19.4 15Z"
-              stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" />
+            <path d="M12.22 2h-.44a2 2 0 0 0-1.99 1.77l-.07.61a2 2 0 0 1-1 1.49 2 2 0 0 1-1.82.08l-.55-.26a2 2 0 0 0-2.51.7l-.22.38a2 2 0 0 0 .53 2.55l.48.38a2 2 0 0 1 .75 1.67 2 2 0 0 1-.75 1.67l-.48.38a2 2 0 0 0-.53 2.55l.22.38a2 2 0 0 0 2.51.7l.55-.26a2 2 0 0 1 1.82.08 2 2 0 0 1 1 1.49l.07.61A2 2 0 0 0 11.78 22h.44a2 2 0 0 0 1.99-1.77l.07-.61a2 2 0 0 1 1-1.49 2 2 0 0 1 1.82-.08l.55.26a2 2 0 0 0 2.51-.7l.22-.38a2 2 0 0 0-.53-2.55l-.48-.38a2 2 0 0 1-.75-1.67 2 2 0 0 1 .75-1.67l.48-.38a2 2 0 0 0 .53-2.55l-.22-.38a2 2 0 0 0-2.51-.7l-.55.26a2 2 0 0 1-1.82-.08 2 2 0 0 1-1-1.49l-.07-.61A2 2 0 0 0 12.22 2Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+            <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5" />
           </svg>
           Settings
         </button>
@@ -401,6 +634,9 @@
         </button>
       </div>
     </aside>
+    <div class="sidebar-resize-handle hidden" id="sidebar-resize-handle" role="separator" aria-orientation="vertical"
+      aria-label="Resize Studio sidebar" aria-controls="sidebar" aria-valuemin="190" aria-valuemax="360"
+      aria-valuenow="238" tabindex="0" title="Drag to resize Studio sidebar"></div>
 
     <button class="panel-reopen-tab hidden" id="btn-reopen-sidebar" title="Show sidebar" aria-label="Show sidebar">
       <svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg>
@@ -438,10 +674,10 @@
         </div>
       </div>
 
-      <!-- Project screen — 3-column IDE layout -->
+      <!-- Project screen — dockable file tree and editor workspace -->
       <div class="project-screen hidden" id="screen-project">
 
-        <!-- Left: file tree rail (always visible when project open) -->
+        <!-- File tree rail (always visible when project open) -->
         <div class="project-rail" id="project-rail">
           <div class="file-tree-header">
             <span id="file-tree-path" class="file-tree-path"></span>
@@ -478,7 +714,9 @@
           <div class="file-tree" id="file-tree"></div>
           <button class="rail-collapse-btn" id="btn-collapse-rail" title="Collapse file tree" aria-label="Collapse file tree"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-chevron-left" /></svg></button>
         </div>
-        <div class="rail-resize-handle" id="rail-resize-handle"></div>
+        <div class="rail-resize-handle" id="rail-resize-handle" role="separator" aria-orientation="vertical"
+          aria-label="Resize project file tree" aria-controls="project-rail" aria-valuemin="160" aria-valuemax="320"
+          aria-valuenow="220" tabindex="0" title="Drag to resize project file tree"></div>
         <button class="panel-reopen-tab panel-reopen-tab--rail hidden" id="btn-reopen-rail"
           title="Show file tree" aria-label="Show file tree"><svg class="ui-icon ui-icon--small" aria-hidden="true"><use href="#ui-icon-chevron" /></svg></button>
 
@@ -1063,9 +1301,14 @@
             <div class="design-window-popup hidden" id="design-window-popup">
               <button class="nbpro-popup-close" id="design-window-popup-close" title="Close" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
               <div class="manifest-section manifest-section--window">
-                <div class="manifest-section-title">Window</div>
+                <div class="window-popup-heading">
+                  <span class="window-popup-eyebrow">WINDOW DESIGN</span>
+                  <div class="manifest-section-title">App window</div>
+                  <p class="window-popup-description">Set the opening size and behavior for your app.</p>
+                </div>
 
                 <div class="window-designer">
+                  <div class="window-preview-label">LIVE PREVIEW</div>
                   <div class="window-preview-stage" id="window-preview-stage">
                     <div class="window-preview-box" id="window-preview-box">
                       <div class="window-preview-chrome" id="window-preview-chrome">
@@ -1082,59 +1325,76 @@
                   </div>
                 </div>
 
-                <div class="window-fields-grid">
-                  <div class="field-group">
-                    <label class="field-label">Default Width</label>
-                    <input class="field-input field-input--sm" id="mf-width" placeholder="800" type="number">
+                <div class="window-settings-group">
+                  <div class="window-settings-group-heading">
+                    <span>Window size</span>
+                    <button class="window-size-reset" id="window-size-reset" type="button">Reset</button>
                   </div>
-                  <div class="field-group">
-                    <label class="field-label">Default Height</label>
-                    <input class="field-input field-input--sm" id="mf-height" placeholder="560" type="number">
+                  <div class="window-size-presets" aria-label="Window size presets">
+                    <button class="window-size-preset" type="button" data-width="640" data-height="480">Compact <span>640 × 480</span></button>
+                    <button class="window-size-preset" type="button" data-width="800" data-height="560">Standard <span>800 × 560</span></button>
+                    <button class="window-size-preset" type="button" data-width="1280" data-height="800">Wide <span>1280 × 800</span></button>
                   </div>
-                  <div class="field-group">
-                    <label class="field-label">Min Width</label>
-                    <input class="field-input field-input--sm" id="mf-min-width" placeholder="400" type="number">
+                  <div class="window-fields-grid">
+                    <div class="field-group">
+                      <label class="field-label" for="mf-width">Default width</label>
+                      <input class="field-input field-input--sm" id="mf-width" placeholder="800" type="number">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="mf-height">Default height</label>
+                      <input class="field-input field-input--sm" id="mf-height" placeholder="560" type="number">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="mf-min-width">Minimum width</label>
+                      <input class="field-input field-input--sm" id="mf-min-width" placeholder="400" type="number">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="mf-min-height">Minimum height</label>
+                      <input class="field-input field-input--sm" id="mf-min-height" placeholder="300" type="number">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="mf-max-width">Maximum width <span class="field-hint">optional</span></label>
+                      <input class="field-input field-input--sm" id="mf-max-width" placeholder="No limit" type="number">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="mf-max-height">Maximum height <span class="field-hint">optional</span></label>
+                      <input class="field-input field-input--sm" id="mf-max-height" placeholder="No limit" type="number">
+                    </div>
                   </div>
-                  <div class="field-group">
-                    <label class="field-label">Min Height</label>
-                    <input class="field-input field-input--sm" id="mf-min-height" placeholder="300" type="number">
-                  </div>
-                  <div class="field-group">
-                    <label class="field-label">Max Width <span class="field-hint">optional — set both</span></label>
-                    <input class="field-input field-input--sm" id="mf-max-width" placeholder="none" type="number">
-                  </div>
-                  <div class="field-group">
-                    <label class="field-label">Max Height <span class="field-hint">optional — set both</span></label>
-                    <input class="field-input field-input--sm" id="mf-max-height" placeholder="none" type="number">
-                  </div>
+                  <p class="window-dimension-feedback" id="window-dimension-feedback" role="status" aria-live="polite"></p>
                 </div>
 
-                <div class="window-toggle-grid">
-                  <label class="window-toggle" id="mf-toggle-resizable" for="mf-resizable">
-                    <input type="checkbox" id="mf-resizable" checked>
-                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-up" /></svg></span>
-                    <span class="window-toggle-label">Resizable</span>
-                  </label>
-                  <label class="window-toggle" id="mf-toggle-frame" for="mf-frame">
-                    <input type="checkbox" id="mf-frame" checked>
-                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-rectangle" /></svg></span>
-                    <span class="window-toggle-label">Title bar</span>
-                  </label>
-                  <label class="window-toggle" id="mf-toggle-always-on-top" for="mf-always-on-top">
-                    <input type="checkbox" id="mf-always-on-top">
-                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-upload" /></svg></span>
-                    <span class="window-toggle-label">Always on top</span>
-                  </label>
-                  <label class="window-toggle" id="mf-toggle-start-minimized" for="mf-start-minimized">
-                    <input type="checkbox" id="mf-start-minimized">
-                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg></span>
-                    <span class="window-toggle-label">Start minimized</span>
-                  </label>
-                  <label class="window-toggle" id="mf-toggle-transparent" for="mf-transparent">
-                    <input type="checkbox" id="mf-transparent">
-                    <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg></span>
-                    <span class="window-toggle-label">Transparent</span>
-                  </label>
+                <div class="window-settings-group">
+                  <div class="window-settings-group-heading">
+                    <span>Window behavior</span><span class="window-settings-unit">OPTIONS</span>
+                  </div>
+                  <div class="window-toggle-grid">
+                    <label class="window-toggle" id="mf-toggle-resizable" for="mf-resizable">
+                      <input type="checkbox" id="mf-resizable" checked>
+                      <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-arrow-up" /></svg></span>
+                      <span class="window-toggle-label">Resizable</span>
+                    </label>
+                    <label class="window-toggle" id="mf-toggle-frame" for="mf-frame">
+                      <input type="checkbox" id="mf-frame" checked>
+                      <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-rectangle" /></svg></span>
+                      <span class="window-toggle-label">Title bar</span>
+                    </label>
+                    <label class="window-toggle" id="mf-toggle-always-on-top" for="mf-always-on-top">
+                      <input type="checkbox" id="mf-always-on-top">
+                      <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-upload" /></svg></span>
+                      <span class="window-toggle-label">Always on top</span>
+                    </label>
+                    <label class="window-toggle" id="mf-toggle-start-minimized" for="mf-start-minimized">
+                      <input type="checkbox" id="mf-start-minimized">
+                      <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-minus" /></svg></span>
+                      <span class="window-toggle-label">Start minimized</span>
+                    </label>
+                    <label class="window-toggle" id="mf-toggle-transparent" for="mf-transparent">
+                      <input type="checkbox" id="mf-transparent">
+                      <span class="window-toggle-icon"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-modal" /></svg></span>
+                      <span class="window-toggle-label">Transparent</span>
+                    </label>
+                  </div>
                 </div>
 
                 <div class="manifest-actions">
@@ -2035,6 +2295,19 @@
     <button class="context-menu-item context-menu-item--danger" id="rctx-remove"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg> Remove from Recents</button>
   </div>
 
+  <!-- Editor context menu -->
+  <div class="context-menu hidden" id="editor-context-menu">
+    <button class="context-menu-item" id="editorctx-undo">Undo <span class="context-menu-shortcut" id="editorctx-undo-shortcut">Ctrl+Z</span></button>
+    <button class="context-menu-item" id="editorctx-redo">Redo <span class="context-menu-shortcut" id="editorctx-redo-shortcut">Ctrl+Shift+Z</span></button>
+    <div class="context-menu-sep"></div>
+    <button class="context-menu-item" id="editorctx-cut">Cut <span class="context-menu-shortcut" id="editorctx-cut-shortcut">Ctrl+X</span></button>
+    <button class="context-menu-item" id="editorctx-copy">Copy <span class="context-menu-shortcut" id="editorctx-copy-shortcut">Ctrl+C</span></button>
+    <button class="context-menu-item" id="editorctx-paste">Paste <span class="context-menu-shortcut" id="editorctx-paste-shortcut">Ctrl+V</span></button>
+    <button class="context-menu-item" id="editorctx-select-all">Select All <span class="context-menu-shortcut" id="editorctx-select-all-shortcut">Ctrl+A</span></button>
+    <div class="context-menu-sep"></div>
+    <button class="context-menu-item" id="editorctx-format" disabled>Format File</button>
+  </div>
+
   <!-- JSON viewer modal -->
   <div class="modal-overlay hidden" id="modal-json">
     <div class="modal modal--wide">
@@ -2050,26 +2323,79 @@
 
   <!-- Global project search modal -->
   <div class="modal-overlay hidden" id="modal-command-palette">
-    <div class="modal modal--palette">
-      <div class="modal-search-row">
-        <span class="modal-search-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-search" /></svg></span>
-        <input class="modal-search-input" id="cp-input" placeholder="Type a command…" spellcheck="false"
-          autocomplete="off">
+    <div class="modal modal--palette modal--command-palette" role="dialog" aria-modal="true" aria-labelledby="cp-title">
+      <div class="cp-header">
+        <div class="cp-brand-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-palette" /></svg></div>
+        <div class="cp-heading">
+          <span class="cp-eyebrow">COMMAND CENTER</span>
+          <h2 class="cp-title" id="cp-title">What do you want to do?</h2>
+        </div>
+        <button class="cp-close" id="cp-close" type="button" aria-label="Close command palette" title="Close">
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg>
+        </button>
+      </div>
+      <div class="cp-search-wrap">
+        <svg class="ui-icon cp-search-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+        <input class="modal-search-input cp-input" id="cp-input" placeholder="Search commands, tools, and settings…"
+          spellcheck="false" autocomplete="off" aria-label="Search commands">
+        <kbd class="cp-search-shortcut">ESC</kbd>
+      </div>
+      <nav class="cp-category-list" id="cp-categories" aria-label="Filter commands"></nav>
+      <div class="cp-results-heading">
+        <span id="cp-results-label">ALL COMMANDS</span>
+        <span class="cp-results-count" id="cp-results-count" aria-live="polite"></span>
       </div>
       <div class="cp-results-wrap">
-        <div class="modal-results" id="cp-results"></div>
+        <div class="modal-results" id="cp-results" role="list" aria-label="Commands"></div>
+      </div>
+      <div class="cp-footer" aria-label="Keyboard shortcuts">
+        <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+        <span><kbd>↵</kbd> Run command</span>
+        <span><kbd id="cp-mod-key">Ctrl</kbd><kbd>S</kbd> Star command</span>
+        <span><kbd>Esc</kbd> Close</span>
       </div>
     </div>
   </div>
 
   <div class="modal-overlay hidden" id="modal-quick-open">
-    <div class="modal modal--palette">
-      <div class="modal-search-row">
-        <span class="modal-search-icon" id="sc-qo-icon">P</span>
-        <input class="modal-search-input" id="qo-input" placeholder="Jump to file…" spellcheck="false"
-          autocomplete="off">
+    <div class="modal modal--palette modal--quick-open" role="dialog" aria-modal="true" aria-labelledby="qo-title">
+      <div class="qo-header">
+        <div class="qo-header-mark" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-open" /></svg></div>
+        <div class="qo-heading">
+          <span class="qo-eyebrow">PROJECT NAVIGATOR</span>
+          <h2 class="qo-title" id="qo-title">Quick Open</h2>
+          <span class="qo-project" id="qo-project-name"></span>
+        </div>
+        <button class="cp-close" id="qo-close" type="button" aria-label="Close Quick Open" title="Close">
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg>
+        </button>
       </div>
-      <div class="modal-results" id="qo-results"></div>
+      <div class="qo-search-wrap">
+        <svg class="ui-icon qo-search-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+        <input class="modal-search-input qo-input" id="qo-input" placeholder="Type a file name or path…"
+          spellcheck="false" autocomplete="off" aria-label="Search project files">
+        <button class="qo-clear hidden" id="qo-clear" type="button" aria-label="Clear search" title="Clear search">
+          <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg>
+        </button>
+      </div>
+      <nav class="qo-filters" id="qo-filters" aria-label="Filter project files">
+        <button class="qo-filter is-active" type="button" data-qo-mode="All" aria-pressed="true">All files</button>
+        <button class="qo-filter" type="button" data-qo-mode="Open" aria-pressed="false">Open <span id="qo-open-count">0</span></button>
+        <button class="qo-filter" type="button" data-qo-mode="Recent" aria-pressed="false">Recent <span id="qo-recent-count">0</span></button>
+      </nav>
+      <div class="qo-results-heading">
+        <span id="qo-results-label">PROJECT FILES</span>
+        <span id="qo-results-count"></span>
+      </div>
+      <div class="qo-results-wrap">
+        <div class="modal-results qo-results" id="qo-results" role="listbox" aria-label="Project files"></div>
+      </div>
+      <div class="qo-footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+        <span><kbd>↵</kbd> Open file</span>
+        <span><kbd>Esc</kbd> Close</span>
+        <span class="qo-footer-tip">Search matches file names and paths</span>
+      </div>
     </div>
   </div>
 
@@ -2195,7 +2521,7 @@
           <div class="about-identity">
             <div class="about-name">NovaByte Studio</div>
             <p class="about-tagline">Build, package, and ship apps for NovaByte OS.</p>
-            <div class="about-version" id="about-version">Version 1.2.20</div>
+            <div class="about-version" id="about-version">Version 1.2.30</div>
           </div>
         </section>
         <div class="about-details">
@@ -2208,11 +2534,19 @@
             <strong>DirazCoder</strong>
           </div>
         </div>
-        <a class="about-link" id="about-releases-link" href="#"
-          onclick="nw.Shell.openExternal('https://github.com/DirazCoder/novapack-studio/releases'); return false;">View releases on GitHub</a>
+        <nav class="about-links" aria-label="GitHub links">
+          <a class="about-link" id="about-releases-link" href="#"
+            onclick="nw.Shell.openExternal('https://github.com/DirazCoder/novapack-studio/releases'); return false;">View releases on GitHub</a>
+          <a class="about-link" id="about-issues-link" href="#"
+            onclick="nw.Shell.openExternal('https://github.com/NovaByteOfficial/novapack-studio/issues'); return false;">Report an issue?</a>
+        </nav>
       </div>
       <div class="modal-footer">
-        <span class="about-copyright">© 2026 DirazCoder</span>
+        <div class="about-footer-meta">
+          <span class="about-copyright">© 2026 DirazCoder</span>
+          <a class="about-license-link" href="#"
+            onclick="nw.Shell.openExternal('https://www.apache.org/licenses/LICENSE-2.0'); return false;">Apache License 2.0</a>
+        </div>
         <button class="modal-btn" data-close="modal-about">Done</button>
       </div>
     </div>
@@ -2220,33 +2554,70 @@
 
   <!-- Update available modal -->
   <div class="modal-overlay hidden" id="modal-update">
-    <div class="modal modal--wide">
-      <div class="modal-header">
-        <span class="modal-title">Update Available</span>
-        <button class="modal-close" data-close="modal-update" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
-      </div>
-      <div class="modal-body modal-body--update">
+    <div class="modal modal--wide update-modal">
+      <div class="update-modal-header">
         <div class="update-heading-row">
           <div class="about-logo">
             <svg class="app-brand-logo" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
               <polygon points="24,3 44,13 44,35 24,45 4,35 4,13" stroke="currentColor" stroke-width="2" fill="none" />
-              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none"
-                opacity="0.4" />
-              <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle"
-                font-family="system-ui">NB</text>
+              <polygon points="24,10 37,17 37,31 24,38 11,31 11,17" stroke="currentColor" stroke-width="1" fill="none" opacity="0.4" />
+              <text x="24" y="28" fill="currentColor" font-size="11" font-weight="700" text-anchor="middle" font-family="system-ui">NB</text>
             </svg>
           </div>
           <div class="update-heading-text">
-            <div class="about-name">NovaByte Studio</div>
-            <div class="about-version" id="update-new-version"></div>
-            <div class="about-copy update-current-version" id="update-current-version"></div>
+            <div class="update-eyebrow">NOVABYTE STUDIO · RELEASE</div>
+            <div class="update-heading-title" id="update-title">Update available</div>
+            <div class="update-current-version" id="update-current-version"></div>
           </div>
         </div>
-        <div class="update-changelog" id="update-changelog"></div>
+        <button class="modal-close" data-close="modal-update" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
+      </div>
+      <div class="modal-body modal-body--update">
+        <section class="update-release-card" aria-label="Release details">
+          <div class="update-release-status">
+            <span class="update-status-dot"></span>
+            <span id="update-status">A newer version is ready</span>
+          </div>
+          <div class="update-version-line">
+            <span id="update-new-version"></span>
+            <button type="button" class="update-copy-version" id="btn-copy-update-version" title="Copy version number">
+              <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-copy" /></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div class="update-release-meta">
+            <span id="update-release-channel">Stable release</span>
+            <span id="update-release-date"></span>
+            <span id="update-release-assets-count"></span>
+          </div>
+        </section>
+        <section class="update-assets-section hidden" id="update-assets-section" aria-label="Release downloads">
+          <div class="update-section-heading">
+            <div>
+              <h3>Downloads</h3>
+              <p>Choose an attached release file, or open the release page for all options.</p>
+            </div>
+          </div>
+          <div class="update-assets-list" id="update-assets-list"></div>
+        </section>
+        <section class="update-notes-section" aria-label="Release notes">
+          <div class="update-section-heading">
+            <div>
+              <h3>What’s new</h3>
+              <p>Release notes from the NovaByte Studio team.</p>
+            </div>
+            <button type="button" class="update-notes-toggle" id="btn-toggle-update-notes" aria-expanded="true">Collapse</button>
+          </div>
+          <div class="update-changelog" id="update-changelog"></div>
+        </section>
       </div>
       <div class="modal-footer">
-        <button class="modal-btn modal-btn--primary" id="btn-download-update">Download</button>
-        <button class="modal-btn" data-close="modal-update">Later</button>
+        <div class="update-footer-status" id="update-footer-status">You’re currently on NovaByte Studio.</div>
+        <div class="update-footer-actions">
+          <button type="button" class="modal-btn" id="btn-check-updates">Check again</button>
+          <button type="button" class="modal-btn" data-close="modal-update">Later</button>
+          <button type="button" class="modal-btn modal-btn--primary" id="btn-download-update">View release</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2271,33 +2642,73 @@
           </svg>
         </div>
         <div class="help-logo-copy">
-          <span class="help-logo-kicker">QUICK REFERENCE</span>
+          <span class="help-logo-kicker">PRACTICAL WORKFLOWS</span>
           <div class="about-name">Build with confidence</div>
-          <div class="about-copy">Browse the guides for projects, manifests, permissions, builds, and shortcuts.</div>
+          <div class="about-copy">Follow a project from its first template to a reviewed, installable package.</div>
+        </div>
+        <div class="help-actions" aria-label="Quick actions">
+          <button type="button" class="help-action-btn" data-help-action="tutorial">Replay tutorial</button>
+          <button type="button" class="help-action-btn help-action-btn--primary" data-help-action="new-project">New project</button>
+          <button type="button" class="help-action-btn" data-help-action="open-project">Open folder</button>
+          <button type="button" class="help-action-btn" data-help-action="tab-build">Go to Build</button>
         </div>
       </div>
       <div class="modal-body modal-body--help">
         <nav class="help-nav" id="help-nav" aria-label="Help topics">
+          <label class="help-search">
+            <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+            <input id="help-search" type="search" placeholder="Search the guide…" autocomplete="off"
+              aria-label="Search Help topics">
+          </label>
+          <span class="help-search-status" id="help-search-status" aria-live="polite"></span>
           <button class="help-nav-btn active" data-help-section="how-to-use">How to Use</button>
+          <button class="help-nav-btn" data-help-section="editor-design">Editor &amp; Design</button>
           <button class="help-nav-btn" data-help-section="manifest">Manifest</button>
           <button class="help-nav-btn" data-help-section="permissions">Permissions</button>
           <button class="help-nav-btn" data-help-section="signing">Building &amp; Signing</button>
+          <button class="help-nav-btn" data-help-section="source-control">Source Control</button>
           <button class="help-nav-btn" data-help-section="shortcuts">Keyboard Shortcuts</button>
           <button class="help-nav-btn" data-help-section="faq">FAQ</button>
         </nav>
         <div class="help-panes" id="help-panes">
+          <div class="help-no-results hidden" id="help-no-results">
+            <strong>No matching help found</strong>
+            <span>Try a different word, like “manifest”, “build”, or “permission”.</span>
+          </div>
 
           <div class="help-pane active" data-help-pane="how-to-use">
-            <h3>Getting started</h3>
-            <p>NovaByte Studio is a desktop IDE for creating, building, and packaging <code>.novaapp</code> applications for NovaByte OS and compatible NBOSP systems. You get a GUI for everything — no CLI required.</p>
+            <h3>Your first project, start to finish</h3>
+            <p>NovaByte Studio is a desktop IDE for building and packaging <code>.novaapp</code> apps for NovaByte OS and compatible NBOSP systems. Use the left sidebar to create or open a project; once it is open, the project tabs contain the editor, manifest, permissions, design, build, and review tools.</p>
             <ol class="help-steps">
-              <li><strong>Create a project</strong> from a template — <code>blank</code>, <code>webapp</code>, <code>browser</code>, <code>utility</code>, <code>game</code>, <code>dashboard</code>, <code>form</code>, <code>markdown-viewer</code>, or <code>chat</code>.</li>
-              <li><strong>Edit your code</strong> in the built-in CodeMirror 6 editor — multi-tab, syntax highlighting, TypeScript intellisense, and a live HTML preview pane.</li>
-              <li><strong>Fill in your manifest</strong> (name, id, permissions, window size) in the Manifest tab.</li>
-              <li><strong>Build</strong> from the Build tab — this validates your manifest, bundles every file, and writes a <code>.novaapp</code> to your output directory.</li>
-              <li><strong>Inspect</strong> any <code>.novaapp</code> by dragging it into the Package Inspector to check its manifest, files, and signature.</li>
+              <li><strong>Create or open a project.</strong> Choose <em>New Project</em> and a starter that is close to your app, or use <em>Open Folder</em> for an existing project. Templates provide example files you can change or remove.</li>
+              <li><strong>Explore the project tree.</strong> Open the HTML entry page and its related CSS/JavaScript files. Create, rename, and organize files from the tree; save edits with <kbd>Ctrl+S</kbd> / <kbd>Cmd+S</kbd> or turn on autosave in Settings.</li>
+              <li><strong>Set the app identity.</strong> In Manifest, choose a readable name, a unique lowercase reverse-domain ID such as <code>io.example.notes</code>, a version, and the correct entry HTML path. Save the manifest before building.</li>
+              <li><strong>Declare only needed permissions.</strong> In Permissions, add each capability the app actually uses and write a clear reason. Optional permissions are for sensitive features requested only when the user chooses to use them.</li>
+              <li><strong>Preview and validate.</strong> Use the HTML preview or Design tools to catch layout issues, then inspect the Build contents preview and resolve any manifest or permission validation messages.</li>
+              <li><strong>Build and verify.</strong> Open Build, choose the output location and options, then build. Use Package Inspector on the resulting <code>.novaapp</code> to review the packaged manifest, included files, integrity, and signature information.</li>
             </ol>
-            <p class="help-note"><svg class="ui-icon help-note-icon" aria-hidden="true"><use href="#ui-icon-alert" /></svg> Reference external scripts such as <code>app.js</code> instead of putting code in an inline script block. The host defers packaged entry-page scripts until HTML parsing is complete, so DOM-ready wrappers are not needed. See the FAQ for details.</p>
+            <h4>Pick a starting point</h4>
+            <p>Use a focused template such as <code>blank</code>, <code>webapp</code>, <code>browser</code>, <code>utility</code>, <code>game</code>, <code>dashboard</code>, <code>form</code>, <code>markdown-viewer</code>, or <code>chat</code>. If none fits, start blank and add only the files and permissions your app needs. Open an existing project by selecting its project folder, not the generated <code>dist</code> folder.</p>
+            <p>Studio remembers your theme, compact/comfortable density, autosave choice, pane widths, dock sides, and collapsed panes on this device. Change them in Settings or by resizing the pane handles; they are applied as the window opens.</p>
+            <p class="help-note"><svg class="ui-icon help-note-icon" aria-hidden="true"><use href="#ui-icon-alert" /></svg> Keep working files in the project folder. Before sharing a project or exporting a starter, check it for credentials and private data; build filters are not a substitute for reviewing what you ship.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="editor-design">
+            <h3>Editing and visual design</h3>
+            <h4>Work with project files</h4>
+            <ol class="help-steps">
+              <li>Select a file in the project tree to open it in the editor. Use <kbd>Ctrl+P</kbd> when you know the filename, or the Command Palette with <kbd>Ctrl+Shift+P</kbd> to find an action.</li>
+              <li>Use editor tabs to move between files. The dirty marker means a file has unsaved changes; save with <kbd>Ctrl+S</kbd> / <kbd>Cmd+S</kbd>, or enable real-time or interval autosave in Settings.</li>
+              <li>For HTML, open the preview pane to check the page while you work. Relative images, stylesheets, and scripts should be stored in the project and referenced with paths relative to the HTML file.</li>
+              <li>Use project search to find text across files and Find / Replace for the current file. Review results before applying a replace-all operation.</li>
+            </ol>
+            <h4>Use the Design tab</h4>
+            <ol class="help-steps">
+              <li>Open the app's HTML entry file first, then select <strong>Design</strong>. The preview represents that page; if it is blank, confirm the manifest entry path and that the file exists.</li>
+              <li>Select an element in the preview to inspect it. Use the element tree and inspector to adjust supported content, attributes, and styles, then check the preview again.</li>
+              <li>Return to the editor to review the generated source changes. Keep complex behavior in your own CSS and JavaScript files, then use preview to verify the result.</li>
+            </ol>
+            <p class="help-note">Studio's preview is a development aid, not the NovaByte OS runtime. Test OS APIs, permission prompts, and final window behavior on the target system too.</p>
           </div>
 
           <div class="help-pane" data-help-pane="manifest">
@@ -2310,12 +2721,15 @@
               <tr><td><code>version</code></td><td>Semantic version <code>x.y.z</code></td></tr>
               <tr><td><code>entry</code></td><td>Main HTML file to load</td></tr>
             </table>
+            <p>Edit these fields in the Manifest form, then use <strong>View JSON</strong> to review the generated document and <strong>Save manifest.json</strong> to write it into the project. Set the entry to a real HTML file relative to the project root; if you move or rename that file, update the entry too.</p>
+            <p>Use the window controls to choose a sensible default size and, when needed, minimum/maximum sizes and whether the app can be resized. Test the app at its default size and near its minimum size so controls remain usable.</p>
             <p>Optional fields include <code>description</code>, <code>author</code>, <code>email</code>, <code>website</code>, <code>icon</code>, <code>type</code>, <code>permissions</code>, <code>optionalPermissions</code>, <code>permissionReasons</code>, <code>unrestrictedEntry</code>, <code>defaultSize</code>, <code>minSize</code>/<code>maxSize</code>, <code>resizable</code>, <code>frame</code>, <code>transparent</code>, <code>categories</code>, <code>handles</code>, <code>ipc</code>, <code>notifications</code>, <code>shareTarget</code>, <code>registryScopes</code>, <code>allowNestedWebview</code>, <code>allowPopupsToEscapeSandbox</code>, and <code>sandbox</code>. Studio preserves manifest properties that are not edited in its form.</p>
             <p class="help-note">App IDs must be lowercase reverse-domain (<code>io.github.you.app</code>) — <code>MyApp</code> or <code>myapp</code> with no dot will fail validation at Build time. Web-app shortcuts use the <code>webapp_</code> prefix instead.</p>
           </div>
 
           <div class="help-pane" data-help-pane="permissions">
             <h3>Permissions</h3>
+            <p>For each capability, ask: does this feature really need access, and can it wait until the user chooses the feature? Prefer an optional grant for sensitive, on-demand actions; remove permissions left over from a template.</p>
             <p>Studio lists all 52 current permission strings. Declare required grants in <code>permissions</code>; missing medium-or-higher-risk grants may be requested at launch, but denial does not block the app. Optional sensitive grants in <code>optionalPermissions</code> are not prompted at launch and can be requested at runtime or granted from Settings → Apps. Low-risk grants are auto-granted unless previously denied. App-owned <code>/data/</code> files and user-selected files do not need broad filesystem permissions.</p>
             <p>Use <strong>Permission reasons</strong> in this tab to explain each grant. Studio saves the text in <code>permissionReasons</code>; NovaByte OS displays it in permission prompts. Reasons must be non-empty and at most 500 characters. A reason for an undeclared permission is preserved but unused.</p>
             <table class="help-table">
@@ -2337,20 +2751,52 @@
           </div>
 
           <div class="help-pane" data-help-pane="signing">
-            <h3>Building</h3>
-            <p>Hitting <strong>Build</strong> validates your manifest and declared permissions, compiles detected C/C++ sources with <code>emcc</code> into WebAssembly (when present), Base64-encodes project files, optionally signs the package, and writes <code>&lt;app.id&gt;.novaapp</code> to your output directory. Packaged Studio releases include Emscripten; source or development runs need Emscripten on your PATH.</p>
+            <h3>Build a package you can verify</h3>
+            <ol class="help-steps">
+              <li><strong>Check the manifest.</strong> Resolve required-field, version, entry-file, and permission errors before building. The app ID is used in the output filename.</li>
+              <li><strong>Review package contents.</strong> In Build, inspect the contents preview and any <code>.studioignore</code> exclusions. Make sure required files are included and local tests, logs, or secrets are not.</li>
+              <li><strong>Choose output and build options.</strong> Set the output directory and whether to clean the last build. Named build profiles can save these choices, but do not store private signing keys.</li>
+              <li><strong>Build, then read the result.</strong> Check the build status and history. The package is written as <code>&lt;app.id&gt;.novaapp</code>; use the Package Inspector to inspect it or compare it with another package.</li>
+              <li><strong>Test on the target OS.</strong> A successful package build checks packaging, not every runtime behavior. Install and exercise the app on NovaByte OS / NBOSP, including permission-denial and empty-data cases.</li>
+            </ol>
+            <h4>Signatures and integrity</h4>
+            <p>Signing creates a signature associated with a key; an integrity hash detects package changes. They are separate settings. A self-signature or local-development signature does <strong>not</strong> establish publisher trust or make a package verified. Keep private keys out of project files, templates, and source control. Use the local development signing controls only for testing the last package built in Studio.</p>
+            <p>Builds that include detected C/C++ sources compile them to WebAssembly with <code>emcc</code>. Packaged Studio releases include Emscripten; source/development runs need Emscripten installed and available on <code>PATH</code>.</p>
+            <p class="help-note">The Package Inspector reports signature validity separately from publisher trust. A valid signature means the package matches that signing key; it does not mean the key is trusted by the operating system.</p>
+          </div>
+
+          <div class="help-pane" data-help-pane="source-control">
+            <h3>Review changes with Source Control</h3>
+            <ol class="help-steps">
+              <li>Open the Source Control view for the current project to review changed, added, deleted, and untracked files. File-tree badges are a quick signal, not a substitute for reviewing the diff.</li>
+              <li>Open each important change and inspect the diff before committing. Exclude generated output, local test data, credentials, and private keys from the repository.</li>
+              <li>Stage only the files that belong together, enter a message that explains the change, and create the commit. Keep unrelated work in separate commits when possible.</li>
+              <li>Use the branch controls to switch branches when needed. After switching, check the project tree and status again before continuing.</li>
+            </ol>
+            <h4>Useful review tools</h4>
+            <p>Use the diff / merge view to compare files, Build history to revisit a package build, and Package comparison to inspect changes between two <code>.novaapp</code> files. A clean Git status does not guarantee that the package contents are correct—review the Build contents preview separately.</p>
+            <p class="help-note">If Source Control does not show a repository, open the actual project root and confirm it is a Git repository. Avoid committing signing keys, credentials, or files that should only exist on your machine.</p>
           </div>
 
           <div class="help-pane" data-help-pane="shortcuts">
             <h3>Keyboard shortcuts</h3>
             <table class="help-table help-table--shortcuts">
+              <tr><td><kbd id="help-kbd-new">Ctrl+N</kbd></td><td>New project</td></tr>
+              <tr><td><kbd id="help-kbd-open">Ctrl+O</kbd></td><td>Open folder</td></tr>
+              <tr><td><kbd id="help-kbd-build">Ctrl+B</kbd></td><td>Build package</td></tr>
               <tr><td><kbd id="help-kbd-palette">Ctrl+Shift+P</kbd></td><td>Command palette — jump to any action</td></tr>
               <tr><td><kbd id="help-kbd-quickopen">Ctrl+P</kbd></td><td>Quick open — jump to any file</td></tr>
               <tr><td><kbd id="help-kbd-save">Ctrl+S</kbd></td><td>Save current file</td></tr>
-              <tr><td><kbd>Ctrl+F</kbd></td><td>Find / replace in current file</td></tr>
+              <tr><td><kbd id="help-kbd-undo">Ctrl+Z</kbd></td><td>Undo in the editor or Design view</td></tr>
+              <tr><td><kbd id="help-kbd-redo">Ctrl+Shift+Z</kbd></td><td>Redo in the editor or Design view</td></tr>
+              <tr><td><kbd id="help-kbd-find">Ctrl+F</kbd></td><td>Find / replace in current file</td></tr>
+              <tr><td><kbd id="help-kbd-search">Ctrl+Shift+F</kbd></td><td>Search project files</td></tr>
+              <tr><td><kbd id="help-kbd-diff">Ctrl+Shift+D</kbd></td><td>Compare current file with its saved version</td></tr>
+              <tr><td><kbd id="help-kbd-save-all">Ctrl+Alt+S</kbd></td><td>Save all open files</td></tr>
+              <tr><td><kbd id="help-kbd-workspaces">Ctrl+Shift+W</kbd></td><td>Manage workspaces</td></tr>
               <tr><td><kbd>Esc</kbd></td><td>Close any open modal or menu</td></tr>
             </table>
-            <p class="help-note">Shortcuts shown use <span id="help-mod-key">Ctrl</span> — substitute <kbd>⌘</kbd> on macOS.</p>
+            <p class="help-note">Shortcuts use <span id="help-mod-key">Ctrl</span> on this platform. On macOS, use <kbd>⌘</kbd> for the modifier and Option where Alt is shown.</p>
           </div>
 
           <div class="help-pane" data-help-pane="faq">
@@ -2410,7 +2856,7 @@
     // If the bundle properly set window.CM directly (non-IIFE approach), those are already available
     // This block is just a fallback for IIFE bundles.
   </script>
-  <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <script src="node_modules/markdown-it/dist/browser/markdown-it.umd.min.js"></script>
   <script src="node_modules/dompurify/dist/purify.min.js"></script>
   <script src="./src/ui/design-pro.js"></script>
   <script src="./src/ui/app.js"></script>

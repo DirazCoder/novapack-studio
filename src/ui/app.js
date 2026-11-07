@@ -11,6 +11,22 @@ const path = require('path');
 const { execFile, spawn } = require('child_process');
 const { fileURLToPath, pathToFileURL } = require('url');
 const { PERMISSIONS, PERMISSION_IDS, LEGACY_PERMISSION_ALIASES } = require('./src/sdk/permissions.js');
+const cssTreeValidator = require('csstree-validator');
+let beautify = null;
+
+async function _ensureFormatter() {
+  if (beautify === false) return null;
+  if (beautify) return beautify;
+  if (typeof require !== 'function') return null;
+  try {
+    beautify = require('js-beautify');
+    return beautify;
+  } catch (error) {
+    console.warn('[app] js-beautify is unavailable; format actions are disabled.', error);
+    beautify = false;
+    return null;
+  }
+}
 // Used by the Design tab for source-accurate HTML/CSS patching (surgical
 // edits instead of whole-file overwrites) -- see the Design tab module
 // below for why. Requires `npm install parse5 css` in this project.
@@ -25,7 +41,7 @@ const IS_MAC = (typeof process !== 'undefined' && process.platform
 ).toLowerCase().includes('darwin');
 const MOD_KEY = IS_MAC ? '\u2318' : 'Ctrl';
 
-const { build, inspect, verify, listActions, loadPackage, detectCppSources, previewProjectFiles, walkProjectFiles } = require('./src/sdk/builder.js');
+const { build, inspect, verify, loadPackage, detectCppSources, previewProjectFiles, walkProjectFiles } = require('./src/sdk/builder.js');
 const { TEMPLATES, create } = require('./src/sdk/templates.js');
 const AppPackage = require('./src/sdk/app-package.js');
 
@@ -77,9 +93,14 @@ const state = {
   gitNumstat: null,             // Map<absolutePath, {add, del}> -- best-effort +/- counts
   gitActiveSection: 'changes',  // 'changes' | 'history' | 'stash' | 'branches'
   gitBranches: [],              // cached branch list incl. ahead/behind, refreshed on demand
+  sidebarWidth: 238,
   railWidth: 220,
+  sidebarDock: 'left',
+  railDock: 'left',
   railCollapsed: false,
   sidebarCollapsed: false,
+  quickAccessCollapsed: true,
+  firstRunSetupComplete: true,
   autosaveMode: 'off',
   autosaveManifest: true,
   autosaveEditor: true,
@@ -407,7 +428,15 @@ function _permissionsForChannel(channel) {
     'app:uninstall': ['system:apps'],
     'app:launch': ['system:app-launch'],
     'app:openDefaultAppsSettings': ['system:apps'],
+    'admin:auditQuery': ['admin:audit'],
+    'admin:systemGet': ['admin:system'],
+    'admin:systemSet': ['admin:system'],
+    'admin:usersList': ['admin:users'],
+    'admin:usersRevoke': ['admin:users'],
+    'admin:appsList': ['admin:apps'],
+    'browser:createView': ['sandbox:nested-webview'],
     'settings:get': ['system:info'],
+    'net:websocket': ['net:websocket'],
     'system:info': ['system:info'],
   };
   if (fixedPermissions[action]) return fixedPermissions[action];
@@ -434,6 +463,81 @@ function _permissionsForChannel(channel) {
   }
   return [];
 }
+
+function _permissionsForEvent(eventName) {
+  const permissions = {
+    'system:notification': ['system:events'],
+    'app:installed': ['system:events'],
+    'app:uninstalled': ['system:events'],
+    'app:launched': ['system:events'],
+    'mail:new': ['system:events', 'mail:read'],
+    'mail:updated': ['system:events', 'mail:read'],
+    'calendar:reminder': ['system:events', 'calendar:read'],
+    'calendar:updated': ['system:events', 'calendar:read'],
+    'contacts:updated': ['system:events', 'contacts:read'],
+    'nova:net:ws:message': ['net:websocket'],
+    'nova:net:ws:error': ['net:websocket'],
+    'nova:net:ws:close': ['net:websocket'],
+    'nova:reg:changed': ['registry.read'],
+  };
+  return permissions[eventName] || [];
+}
+
+function _conditionalPermissionForChannel(channel) {
+  if (/^nova:fs:(?:read|write|list|stat|mkdir|remove|copy|move|rename)$/.test(channel)) {
+    return 'Filesystem IPC action (path-dependent)';
+  }
+  if (channel === 'nova:media:query') return 'Media query (type-dependent)';
+  if (channel === 'nova:net:fetch') return 'Network fetch (URL-dependent)';
+  if (channel === 'nova:events:subscribe') return 'Event subscription (event-dependent)';
+  if (channel === 'nova:settings:set') return 'Settings update (key-dependent)';
+  return '';
+}
+
+function _isKnownPermissionlessChannel(channel) {
+  return /^nova:(?:dialog:(?:open|save)|sysdialog:(?:open|save)|window:(?:close|minimize|maximize|setTitle|resize|getState)|app:(?:info|share)|locale:get|ready|events:unsubscribe|request-permission|files:(?:open|save)|appearance:set|wallpaper:set)$/.test(channel);
+}
+
+const _PERMISSION_API_RULES = [
+  [/window\.novaOS\.notifications\./, ['device:notifications']],
+  [/window\.novaOS\.alarms\./, ['system:schedule']],
+  [/window\.novaOS\.fs\.watch\b/, ['fs:watch']],
+  [/window\.novaOS\.clipboard\.readText\b/, ['clipboard:read']],
+  [/window\.novaOS\.clipboard\.writeText\b/, ['clipboard:write']],
+  [/window\.novaOS\.app\.list\b|window\.nova\.apps\.(?:list|install|uninstall|openDefaultAppsSettings)\b/, ['system:apps']],
+  [/window\.nova(?:OS)?\.app\.launch\b|window\.nova\.apps\.launch\b/, ['system:app-launch']],
+  [/window\.novaOS\.settings\.set\b/, ['system:settings']],
+  [/window\.novaOS\.push\./, ['push:receive']],
+  [/window\.novaOS\.settings\.get\b/, ['system:info']],
+  [/window\.novaOS\.geolocation\./, ['device:geolocation']],
+  [/window\.novaOS\.net\.websocket\b/, ['net:websocket']],
+  [/window\.nova\.websocket\b/, ['net:websocket']],
+  [/window\.nova(?:OS)?\.calendar\.list\b/, ['calendar:read']],
+  [/window\.nova(?:OS)?\.calendar\.save\b/, ['calendar:write']],
+  [/window\.nova(?:OS)?\.calendar\.remove\b/, ['calendar:delete']],
+  [/window\.nova(?:OS)?\.contacts\.list\b/, ['contacts:read']],
+  [/window\.nova(?:OS)?\.contacts\.save\b/, ['contacts:write']],
+  [/window\.nova(?:OS)?\.contacts\.remove\b/, ['contacts:delete']],
+  [/window\.nova(?:OS)?\.data\.(?:backup|restore)\b/, ['data:backup']],
+  [/window\.nova(?:OS)?\.data\.(?:export|import)\b/, ['data:export']],
+  [/window\.novaOS\.badge\./, ['system:badge']],
+  [/window\.novaOS\.registry\.(?:get|list|stat|export|watch)\b/, ['registry.read']],
+  [/window\.novaOS\.registry\.(?:set|remove|import)\b/, ['registry.write']],
+  [/window\.novaOS\.secrets\./, ['secrets:store']],
+  [/window\.novaOS\.share\.onInbound\b/, ['system:share-target']],
+  [/window\.novaOS\.background\.(?:onWake|wakeDone)\b|window\.nova\.(?:onBackgroundWake|backgroundWakeDone)\b/, ['system:background']],
+  [/window\.novaOS\.background\.stayAlive\b|window\.nova\.stayAliveInBackground\b/, ['system:background:live']],
+  [/window\.nova(?:OS)?\.admin\.auditQuery\b/, ['admin:audit']],
+  [/window\.nova(?:OS)?\.admin\.system(?:Get|Set)\b/, ['admin:system']],
+  [/window\.nova(?:OS)?\.admin\.users(?:List|Revoke)\b/, ['admin:users']],
+  [/window\.nova(?:OS)?\.admin\.appsList\b/, ['admin:apps']],
+  [/window\.novaOS\.browser\.createView\b|window\.nova\.browser\.createView\b/, ['sandbox:nested-webview']],
+  [/window\.nova\.ipc\.(?:call|provide|broadcast)\b/, ['apps:communicate']],
+  [/window\.nova\.mail\.(?:folders|messages|message|search|account)\b/, ['mail:read']],
+  [/window\.nova\.mail\.(?:connect|disconnect|restore|preview|markRead|move)\b/, ['mail:write']],
+  [/window\.nova\.mail\.send\b/, ['mail:send']],
+  [/window\.nova\.mail\.remove\b/, ['mail:delete']],
+];
 
 function _canonicalPermission(permission) {
   return LEGACY_PERMISSION_ALIASES[permission] || permission;
@@ -622,11 +726,16 @@ function loadStorage() {
   }
 
   if (!raw) {
+    state.firstRunSetupComplete = false;
     state.theme = getDefaultTheme();
     state.lastNonCustomTheme = getDefaultTheme();
+    state.sidebarWidth = 238;
     state.railWidth = 220;
+    state.sidebarDock = 'left';
+    state.railDock = 'left';
     state.railCollapsed = false;
     state.sidebarCollapsed = false;
+    state.quickAccessCollapsed = true;
     return;
   }
 
@@ -636,11 +745,16 @@ function loadStorage() {
   } catch (err) {
     // Corrupted blob -- reset to defaults and let the next saveStorage()
     // overwrite the bad value so the user isn't stuck.
+    state.firstRunSetupComplete = true;
     state.theme = getDefaultTheme();
     state.lastNonCustomTheme = getDefaultTheme();
+    state.sidebarWidth = 238;
     state.railWidth = 220;
+    state.sidebarDock = 'left';
+    state.railDock = 'left';
     state.railCollapsed = false;
     state.sidebarCollapsed = false;
+    state.quickAccessCollapsed = true;
     return;
   }
 
@@ -648,6 +762,7 @@ function loadStorage() {
   // array or string in the slot can't crash the field reads below.
   if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
 
+  state.firstRunSetupComplete = data.firstRunSetupComplete !== false;
   state.recentProjects = Array.isArray(data.recentProjects) ? data.recentProjects : [];
   const savedTheme = _migrateThemeId(data.theme);
   state.theme = _isValidTheme(savedTheme) ? savedTheme : getDefaultTheme();
@@ -658,11 +773,17 @@ function loadStorage() {
   state.lastNonCustomTheme = THEMES.some((t) => t.id === savedLastTheme)
     ? savedLastTheme
     : DEFAULT_THEME;
+  state.sidebarWidth = (typeof data.sidebarWidth === 'number' && data.sidebarWidth >= 190 && data.sidebarWidth <= 360)
+    ? data.sidebarWidth
+    : 238;
   state.railWidth = (typeof data.railWidth === 'number' && data.railWidth >= 160 && data.railWidth <= 320)
     ? data.railWidth
     : 220;
+  state.sidebarDock = data.sidebarDock === 'right' ? 'right' : 'left';
+  state.railDock = data.railDock === 'right' ? 'right' : 'left';
   state.railCollapsed = !!data.railCollapsed;
   state.sidebarCollapsed = !!data.sidebarCollapsed;
+  state.quickAccessCollapsed = data.quickAccessCollapsed !== false;
   state.autosaveMode = data.autosaveMode === 'realtime' || (typeof data.autosaveMode === 'number' && data.autosaveMode > 0)
     ? data.autosaveMode
     : 'off';
@@ -679,9 +800,14 @@ function saveStorage() {
       theme: state.theme,
       customColors: state.customColors,
       lastNonCustomTheme: state.lastNonCustomTheme,
+      sidebarWidth: state.sidebarWidth,
       railWidth: state.railWidth,
+      sidebarDock: state.sidebarDock,
+      railDock: state.railDock,
       railCollapsed: state.railCollapsed,
       sidebarCollapsed: state.sidebarCollapsed,
+      quickAccessCollapsed: state.quickAccessCollapsed,
+      firstRunSetupComplete: state.firstRunSetupComplete,
       autosaveMode: state.autosaveMode,
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
@@ -740,9 +866,13 @@ function exportStudioSettings() {
       theme: state.theme,
       customColors: state.customColors,
       lastNonCustomTheme: state.lastNonCustomTheme,
+      sidebarWidth: state.sidebarWidth,
       railWidth: state.railWidth,
+      sidebarDock: state.sidebarDock,
+      railDock: state.railDock,
       railCollapsed: state.railCollapsed,
       sidebarCollapsed: state.sidebarCollapsed,
+      quickAccessCollapsed: state.quickAccessCollapsed,
       autosaveMode: state.autosaveMode,
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
@@ -798,9 +928,14 @@ function importStudioSettings(jsonText) {
   if (THEMES.some((t) => t.id === importedLastTheme)) {
     state.lastNonCustomTheme = importedLastTheme;
   }
+  if (typeof data.sidebarWidth === 'number' && data.sidebarWidth >= 190 && data.sidebarWidth <= 360) {
+    state.sidebarWidth = data.sidebarWidth;
+  }
   if (typeof data.railWidth === 'number' && data.railWidth >= 160 && data.railWidth <= 320) {
     state.railWidth = data.railWidth;
   }
+  if (data.sidebarDock === 'left' || data.sidebarDock === 'right') state.sidebarDock = data.sidebarDock;
+  if (data.railDock === 'left' || data.railDock === 'right') state.railDock = data.railDock;
   state.railCollapsed = !!data.railCollapsed;
   state.sidebarCollapsed = !!data.sidebarCollapsed;
   if (data.autosaveMode === 'realtime' || (typeof data.autosaveMode === 'number' && data.autosaveMode > 0)) {
@@ -810,6 +945,7 @@ function importStudioSettings(jsonText) {
   if (typeof data.autosaveEditor === 'boolean') state.autosaveEditor = data.autosaveEditor;
   state.uiDensity = data.uiDensity === 'compact' ? 'compact' : 'comfortable';
 
+  _applyPaneDocking();
   saveStorage();
 
   // Editor settings: only accept the exact fields applySettings() knows
@@ -836,6 +972,7 @@ function importStudioSettings(jsonText) {
   // duplicate global listener per import. Instead, just refresh the
   // specific on-screen fields an import can change.
   setTheme(state.theme);
+  _applySidebarWidth();
   if ($('lbl-font-size')) $('lbl-font-size').textContent = window.CM?.getSettings()?.fontSize ?? 13;
   if ($('sel-tab-size')) $('sel-tab-size').value = String(window.CM?.getSettings()?.tabSize ?? 2);
   if ($('chk-word-wrap')) $('chk-word-wrap').checked = !!window.CM?.getSettings()?.wordWrap;
@@ -946,7 +1083,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.20';
+const STUDIO_VERSION = '1.2.30';
 const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme
@@ -1079,6 +1216,638 @@ function _applyUiDensity() {
   document.documentElement.setAttribute('data-density', state.uiDensity === 'compact' ? 'compact' : 'comfortable');
 }
 
+function initFirstRunSetup() {
+  const root = document.documentElement;
+  const overlay = $('first-run-setup');
+  if (!overlay || root.dataset.firstRunSetup !== 'true') return;
+
+  document.addEventListener('keydown', (event) => {
+    if (overlay.classList.contains('hidden')) return;
+    if (event.key === 'Escape') {
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    const altGraph = event.getModifierState?.('AltGraph') ?? false;
+    const hasShortcutModifier = event.ctrlKey || event.metaKey || (event.altKey && !altGraph);
+    const isFunctionKey = /^F(?:[1-9]|1[0-2])$/.test(event.key);
+    if (!hasShortcutModifier && !isFunctionKey) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+
+  const intro = $('setup-intro');
+  const wizard = $('setup-wizard');
+  const stepPanels = [...document.querySelectorAll('.setup-step')];
+  const themeSelect = $('setup-theme');
+  const densitySelect = $('setup-density');
+  const fontSizeInput = $('setup-font-size');
+  const tabSizeSelect = $('setup-tab-size');
+  const wordWrapInput = $('setup-word-wrap');
+  const autosaveSelect = $('setup-autosave-mode');
+  const autosaveCustomField = $('setup-autosave-custom-field');
+  const autosaveCustomInput = $('setup-autosave-custom');
+  const autosaveManifestInput = $('setup-autosave-manifest');
+  const autosaveEditorInput = $('setup-autosave-editor');
+  const sidebarDockSelect = $('setup-sidebar-dock');
+  const railDockSelect = $('setup-rail-dock');
+  const sidebarWidthInput = $('setup-sidebar-width');
+  const railWidthInput = $('setup-rail-width');
+  let activeStep = 0;
+  let introTimer;
+  let transitionTimer;
+  let finishTimer;
+  let finishing = false;
+
+  if (themeSelect) {
+    if (state.theme === CUSTOM_THEME_ID) {
+      const currentTheme = document.createElement('option');
+      currentTheme.value = CUSTOM_THEME_ID;
+      currentTheme.textContent = 'Custom (current colors)';
+      themeSelect.appendChild(currentTheme);
+    }
+    themeSelect.value = state.theme;
+  }
+  if (densitySelect) densitySelect.value = state.uiDensity;
+
+  const editorSettings = window.CM?.getSettings() ?? { fontSize: 13, tabSize: 2, wordWrap: false };
+  if (fontSizeInput) fontSizeInput.value = String(editorSettings.fontSize);
+  if ($('setup-font-size-value')) $('setup-font-size-value').textContent = `${editorSettings.fontSize} px`;
+  if (tabSizeSelect) tabSizeSelect.value = String(editorSettings.tabSize);
+  if (wordWrapInput) wordWrapInput.checked = editorSettings.wordWrap;
+
+  const normalAutosaveModes = ['off', 'realtime', '5', '15', '30', '60'];
+  const savedAutosaveMode = state.autosaveMode === 'realtime' || typeof state.autosaveMode === 'number'
+    ? String(state.autosaveMode)
+    : state.autosaveMode;
+  const setupAutosaveMode = normalAutosaveModes.includes(savedAutosaveMode) ? savedAutosaveMode : 'custom';
+  if (autosaveSelect) autosaveSelect.value = setupAutosaveMode;
+  if (autosaveCustomInput) {
+    const savedInterval = typeof state.autosaveMode === 'number' ? state.autosaveMode : 30;
+    autosaveCustomInput.value = String(Math.max(1, Math.min(3600, savedInterval)));
+  }
+  autosaveCustomField?.classList.toggle('hidden', setupAutosaveMode !== 'custom');
+  if (autosaveManifestInput) autosaveManifestInput.checked = state.autosaveManifest;
+  if (autosaveEditorInput) autosaveEditorInput.checked = state.autosaveEditor;
+
+  if (sidebarDockSelect) sidebarDockSelect.value = state.sidebarDock;
+  if (railDockSelect) railDockSelect.value = state.railDock;
+  if (sidebarWidthInput) sidebarWidthInput.value = String(state.sidebarWidth);
+  if (railWidthInput) railWidthInput.value = String(state.railWidth);
+  if ($('setup-sidebar-width-value')) $('setup-sidebar-width-value').textContent = `${state.sidebarWidth} px`;
+  if ($('setup-rail-width-value')) $('setup-rail-width-value').textContent = `${state.railWidth} px`;
+
+  const setStep = (index) => {
+    activeStep = Math.max(0, Math.min(stepPanels.length - 1, index));
+    stepPanels.forEach((panel, panelIndex) => panel.classList.toggle('hidden', panelIndex !== activeStep));
+    $('setup-progress-label').textContent = `STEP ${activeStep + 1} OF ${stepPanels.length}`;
+    $('setup-progress-fill').style.width = `${((activeStep + 1) / stepPanels.length) * 100}%`;
+    $('setup-back').classList.toggle('hidden', activeStep === 0);
+    $('setup-next').textContent = activeStep === stepPanels.length - 1 ? 'Finish setup' : 'Continue';
+  };
+
+  const syncEditorSettings = () => {
+    const current = window.CM?.getSettings();
+    if ($('lbl-font-size') && current) $('lbl-font-size').textContent = String(current.fontSize);
+    const tabSize = $('sel-tab-size');
+    if (tabSize && current) tabSize.value = String(current.tabSize);
+    const wordWrap = $('chk-word-wrap');
+    if (wordWrap && current) wordWrap.checked = current.wordWrap;
+    _updateEditorToolbar();
+  };
+
+  const syncAutosaveSettings = () => {
+    const modeSelect = $('sel-autosave-mode');
+    const customInput = $('inp-autosave-custom');
+    const value = typeof state.autosaveMode === 'number' ? String(state.autosaveMode) : state.autosaveMode;
+    if (customInput) {
+      customInput.value = typeof state.autosaveMode === 'number' ? String(state.autosaveMode) : '';
+      customInput.style.display = normalAutosaveModes.includes(value) ? 'none' : '';
+    }
+    if (modeSelect) {
+      modeSelect.value = normalAutosaveModes.includes(value) ? value : 'custom';
+    }
+    const manifestInput = $('chk-autosave-manifest');
+    if (manifestInput) manifestInput.checked = state.autosaveManifest;
+    const editorInput = $('chk-autosave-editor');
+    if (editorInput) editorInput.checked = state.autosaveEditor;
+  };
+
+  const applyAutosaveMode = () => {
+    const mode = autosaveSelect?.value || 'off';
+    if (mode === 'custom') {
+      const interval = parseInt(autosaveCustomInput?.value || '30', 10);
+      state.autosaveMode = Number.isFinite(interval) ? Math.max(1, Math.min(3600, interval)) : 30;
+      if (autosaveCustomInput) autosaveCustomInput.value = String(state.autosaveMode);
+      autosaveCustomField?.classList.remove('hidden');
+    } else {
+      state.autosaveMode = mode === 'realtime' || mode === 'off' ? mode : parseInt(mode, 10);
+      autosaveCustomField?.classList.add('hidden');
+    }
+    saveStorage();
+    _applyAutosaveSettings();
+    syncAutosaveSettings();
+  };
+
+  syncAutosaveSettings();
+
+  themeSelect?.addEventListener('change', () => setTheme(themeSelect.value));
+  densitySelect?.addEventListener('change', () => {
+    state.uiDensity = densitySelect.value === 'compact' ? 'compact' : 'comfortable';
+    _applyUiDensity();
+    saveStorage();
+    const settingsDensity = $('sel-ui-density');
+    if (settingsDensity) settingsDensity.value = state.uiDensity;
+  });
+
+  fontSizeInput?.addEventListener('input', () => {
+    const fontSize = Math.max(10, Math.min(24, parseInt(fontSizeInput.value, 10) || 13));
+    window.CM?.applySettings({ fontSize });
+    $('setup-font-size-value').textContent = `${fontSize} px`;
+    syncEditorSettings();
+  });
+  tabSizeSelect?.addEventListener('change', () => {
+    window.CM?.applySettings({ tabSize: parseInt(tabSizeSelect.value, 10) });
+    syncEditorSettings();
+  });
+  wordWrapInput?.addEventListener('change', () => {
+    window.CM?.applySettings({ wordWrap: wordWrapInput.checked });
+    syncEditorSettings();
+  });
+
+  autosaveSelect?.addEventListener('change', applyAutosaveMode);
+  autosaveCustomInput?.addEventListener('change', applyAutosaveMode);
+  autosaveManifestInput?.addEventListener('change', () => {
+    state.autosaveManifest = autosaveManifestInput.checked;
+    saveStorage();
+    _applyAutosaveSettings();
+    syncAutosaveSettings();
+  });
+  autosaveEditorInput?.addEventListener('change', () => {
+    state.autosaveEditor = autosaveEditorInput.checked;
+    saveStorage();
+    _applyAutosaveSettings();
+    syncAutosaveSettings();
+  });
+
+  const applyLayoutSettings = (persist = false) => {
+    state.sidebarDock = sidebarDockSelect?.value === 'right' ? 'right' : 'left';
+    state.railDock = railDockSelect?.value === 'right' ? 'right' : 'left';
+    state.sidebarWidth = Math.max(190, Math.min(360, parseInt(sidebarWidthInput?.value || '238', 10)));
+    state.railWidth = Math.max(160, Math.min(320, parseInt(railWidthInput?.value || '220', 10)));
+    _applyPaneDocking();
+    _applySidebarWidth(state.sidebarWidth);
+    const rail = $('project-rail');
+    if (rail) rail.style.width = `${state.railWidth}px`;
+    $('setup-sidebar-width-value').textContent = `${state.sidebarWidth} px`;
+    $('setup-rail-width-value').textContent = `${state.railWidth} px`;
+    $('sidebar-resize-handle')?.setAttribute('aria-valuenow', String(state.sidebarWidth));
+    $('rail-resize-handle')?.setAttribute('aria-valuenow', String(state.railWidth));
+    if (persist) saveStorage();
+  };
+  sidebarDockSelect?.addEventListener('change', () => applyLayoutSettings(true));
+  railDockSelect?.addEventListener('change', () => applyLayoutSettings(true));
+  sidebarWidthInput?.addEventListener('input', () => applyLayoutSettings());
+  sidebarWidthInput?.addEventListener('change', () => applyLayoutSettings(true));
+  railWidthInput?.addEventListener('input', () => applyLayoutSettings());
+  railWidthInput?.addEventListener('change', () => applyLayoutSettings(true));
+
+  const finish = () => {
+    if (finishing) return;
+    finishing = true;
+    if (introTimer) clearTimeout(introTimer);
+    if (transitionTimer) clearTimeout(transitionTimer);
+    state.firstRunSetupComplete = true;
+    saveStorage();
+    root.dataset.firstRunSetup = 'false';
+    const revealTutorialOffer = () => {
+      overlay.classList.add('hidden');
+      overlay.classList.remove('is-finishing');
+      document.body.classList.remove('studio-first-run-reveal');
+      setTimeout(_showStudioTutorialOffer, 180);
+    };
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion) {
+      revealTutorialOffer();
+      return;
+    }
+    overlay.classList.add('is-finishing');
+    document.body.classList.add('studio-first-run-reveal');
+    finishTimer = setTimeout(revealTutorialOffer, 760);
+  };
+
+  const showWizard = () => {
+    if (!intro || !wizard) return;
+    intro.classList.add('is-leaving');
+    transitionTimer = setTimeout(() => {
+      intro.classList.add('hidden');
+      intro.setAttribute('aria-hidden', 'true');
+      wizard.classList.remove('hidden');
+      overlay.setAttribute('aria-labelledby', 'setup-wizard-title');
+      $('setup-theme')?.focus();
+    }, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 480);
+  };
+
+  $('setup-skip-intro')?.addEventListener('click', () => {
+    if (introTimer) clearTimeout(introTimer);
+    showWizard();
+  });
+  $('setup-skip')?.addEventListener('click', finish);
+  $('setup-back')?.addEventListener('click', () => setStep(activeStep - 1));
+  $('setup-next')?.addEventListener('click', () => {
+    if (activeStep === stepPanels.length - 1) finish();
+    else setStep(activeStep + 1);
+  });
+
+  setStep(0);
+  overlay.classList.remove('hidden');
+  intro?.setAttribute('aria-hidden', 'false');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  introTimer = setTimeout(showWizard, reduceMotion ? 0 : 3200);
+}
+
+let _studioTutorialSteps = [];
+let _studioTutorialIndex = 0;
+let _studioTutorialFrame = 0;
+let _studioTutorialPendingProject = false;
+let _studioTutorialReturnTab = null;
+let _studioTutorialPackageFlow = false;
+
+function _showStudioTutorialOffer() {
+  const overlay = $('studio-tutorial');
+  if (!overlay) return;
+  overlay.dataset.mode = 'offer';
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.inert = false;
+  $('tutorial-offer')?.classList.remove('hidden');
+  $('tutorial-step-content')?.classList.add('hidden');
+  overlay.setAttribute('aria-labelledby', 'tutorial-offer-title');
+  $('tutorial-package-start').textContent = state.projectDir
+    ? 'Walk through package tabs'
+    : 'Make my first package';
+  $('tutorial-start')?.focus();
+}
+
+function _buildStudioTutorialSteps(packageFlow = false) {
+  const projectOpen = !$('screen-project')?.classList.contains('hidden');
+  const sidebarCollapsed = document.documentElement.dataset.sidebarCollapsed === 'true';
+  if (packageFlow && projectOpen) {
+    const steps = [
+      {
+        selector: '#project-rail',
+        title: 'Let’s start with your project files',
+        description: 'The file tree contains your app files and folders. Start from the template files, and keep the manifest and entry page in the project root.',
+      },
+      {
+        tab: 'editor',
+        selector: '#editor-toolbar',
+        title: 'Build the app',
+        description: 'Open your HTML, CSS, and JavaScript from the file tree. Edit and preview your app here; save your changes before packaging.',
+      },
+      {
+        tab: 'manifest',
+        selector: '#panel-manifest .manifest-workspace',
+        title: 'Set the app identity',
+        description: 'In Manifest, check the app name, unique reverse-domain ID, version, entry HTML file, and icon. These details identify the package in NovaByte OS.',
+      },
+      {
+        tab: 'design',
+        selector: '#design-fullscreen',
+        title: 'Shape the window',
+        description: 'Design lets you inspect the app visually and configure its window presentation. Check the preview and make sure the layout works at the intended size.',
+      },
+      {
+        tab: 'permissions',
+        selector: '#panel-permissions .permissions-tab-wrap',
+        title: 'Request only needed permissions',
+        description: 'Declare the capabilities your app actually uses and provide clear reasons. Remove permissions inherited from a starter if you do not need them.',
+      },
+      {
+        tab: 'build',
+        selector: '#panel-build .build-page',
+        title: 'Review the package contents',
+        description: 'Choose an output location and inspect the file preview. Resolve validation issues before building so you know what will be included.',
+      },
+      {
+        tab: 'sign',
+        selector: '#panel-sign .sign-page',
+        title: 'Configure signing when needed',
+        description: 'Review the signing options for your distribution. Keep private keys secure; Studio does not include them in build profiles or packages.',
+      },
+      {
+        tab: 'git',
+        selector: '#panel-git #git-workspace',
+        title: 'Review your source changes',
+        description: 'Source Control helps you review and commit project changes. Check for credentials or local-only files before sharing your source.',
+      },
+      {
+        tab: 'review',
+        selector: '#panel-review .review-header',
+        title: 'Check the app at different sizes',
+        description: 'Review simulates the app window at common viewport sizes. Treat it as a preview, then test OS-specific APIs and permissions on the target system.',
+      },
+      {
+        tab: 'build',
+        selector: '#panel-build #btn-build',
+        title: 'Build your NovaByte package',
+        description: 'When you are ready, return to Build and select Build Package. This tour never starts a build or changes project files; you stay in control.',
+      },
+    ];
+    if (!sidebarCollapsed) {
+      steps.splice(1, 0, {
+        selector: '#btn-toggle-quick-access',
+        title: 'Quick Access',
+        description: 'This section keeps the Command Palette, project search, Workspaces, Source Control, and Build shortcuts close at hand.',
+      });
+    }
+    return steps;
+  }
+
+  const steps = [
+    {
+      selector: '#titlebar',
+      title: 'Studio title bar',
+      description: 'The title bar identifies Studio and shows your current project. Use the controls at the right to minimize, maximize, or close the window.',
+    },
+    sidebarCollapsed
+      ? {
+          selector: '#btn-reopen-sidebar',
+          title: 'Reopen your sidebar',
+          description: 'Your sidebar is currently collapsed. Reopen it here to reach project actions, Quick Access, and Studio tools.',
+        }
+      : {
+          selector: '#btn-new-project',
+          title: 'Create or open a project',
+          description: 'Start a project from a template or open an existing project folder. Your files stay together in the project tree.',
+        },
+  ];
+
+  if (!sidebarCollapsed) {
+    steps.push({
+      selector: '#btn-toggle-quick-access',
+      title: 'Quick Access',
+      description: 'Expand this section for shortcuts to the Command Palette, project search, Workspaces, Source Control, and Build.',
+    });
+  }
+
+  if (projectOpen) {
+    steps.push(
+      {
+        selector: '#project-rail',
+        title: 'Project files',
+        description: 'Browse and organize your project files here. Select a file to open it in the editor.',
+      },
+      {
+        selector: '#tabs',
+        title: 'Studio work areas',
+        description: 'Switch between the editor, manifest, visual Design view, permissions, Build, signing, Source Control, and Review.',
+      },
+    );
+  } else {
+    steps.push({
+      selector: '.welcome-actions',
+      title: 'Your starting point',
+      description: 'Create a new app or open an existing folder here. The welcome screen also lists the most useful keyboard shortcuts.',
+    });
+  }
+
+  if (!sidebarCollapsed) {
+    steps.push({
+      selector: '#btn-inspect',
+      title: 'Inspect a package',
+      description: 'Use Package Inspector to open and review an existing .novaapp package, its files, and its metadata.',
+    });
+    steps.push({
+      selector: '#btn-help',
+      title: 'Help whenever you need it',
+      description: 'Open this guide again for workflows, searchable documentation, and keyboard shortcuts. You can replay this tour from Help.',
+    });
+  }
+
+  return steps;
+}
+
+function _studioTutorialTargetIsVisible(target) {
+  if (!target) return false;
+  const rect = target.getBoundingClientRect();
+  const style = window.getComputedStyle(target);
+  return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+}
+
+function _positionStudioTutorial() {
+  const overlay = $('studio-tutorial');
+  const step = _studioTutorialSteps[_studioTutorialIndex];
+  if (!overlay || overlay.classList.contains('hidden') || overlay.dataset.mode !== 'tour' || !step) return;
+
+  const target = document.querySelector(step.selector);
+  const spotlight = $('tutorial-spotlight');
+  const card = $('tutorial-card');
+  if (!_studioTutorialTargetIsVisible(target) || !spotlight || !card) {
+    _advanceStudioTutorial(1);
+    return;
+  }
+
+  const rect = target.getBoundingClientRect();
+  const padding = 7;
+  const left = Math.max(4, rect.left - padding);
+  const top = Math.max(4, rect.top - padding);
+  const right = Math.min(window.innerWidth - 4, rect.right + padding);
+  const bottom = Math.min(window.innerHeight - 4, rect.bottom + padding);
+  spotlight.style.left = `${left}px`;
+  spotlight.style.top = `${top}px`;
+  spotlight.style.width = `${Math.max(1, right - left)}px`;
+  spotlight.style.height = `${Math.max(1, bottom - top)}px`;
+
+  const cardRect = card.getBoundingClientRect();
+  const gap = 16;
+  const below = bottom + gap;
+  const cardTop = below + cardRect.height <= window.innerHeight - 12
+    ? below
+    : Math.max(12, top - cardRect.height - gap);
+  const cardLeft = Math.min(
+    Math.max(12, (left + right - cardRect.width) / 2),
+    Math.max(12, window.innerWidth - cardRect.width - 12),
+  );
+  card.style.left = `${cardLeft}px`;
+  card.style.top = `${cardTop}px`;
+}
+
+function _renderStudioTutorialStep() {
+  const step = _studioTutorialSteps[_studioTutorialIndex];
+  if (!step) {
+    _finishStudioTutorial();
+    return;
+  }
+
+  $('tutorial-step-title').textContent = step.title;
+  $('tutorial-step-description').textContent = step.description;
+  $('tutorial-step-count').textContent = `${_studioTutorialIndex + 1} of ${_studioTutorialSteps.length}`;
+  $('tutorial-progress-fill').style.width = `${((_studioTutorialIndex + 1) / _studioTutorialSteps.length) * 100}%`;
+  $('tutorial-back').disabled = _studioTutorialIndex === 0;
+  $('tutorial-next').textContent = _studioTutorialIndex === _studioTutorialSteps.length - 1 ? 'Finish' : 'Next';
+  $('studio-tutorial').setAttribute('aria-labelledby', 'tutorial-step-title');
+  if (step.tab && state.screen === 'project' && state.activeTab !== step.tab) switchTab(step.tab);
+  if (_studioTutorialFrame) cancelAnimationFrame(_studioTutorialFrame);
+  _studioTutorialFrame = requestAnimationFrame(() => {
+    const positionAfterTabChange = () => {
+      const target = document.querySelector(step.selector);
+      if (_studioTutorialTargetIsVisible(target)) {
+        const rect = target.getBoundingClientRect();
+        const bottomClearance = Math.min(150, window.innerHeight * 0.2);
+        if (rect.top < 12 || rect.bottom > window.innerHeight - bottomClearance) {
+          target.scrollIntoView({
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+            block: 'center',
+            inline: 'nearest',
+          });
+        }
+      }
+      _positionStudioTutorial();
+      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        setTimeout(_positionStudioTutorial, 360);
+      }
+    };
+    if (step.tab) setTimeout(positionAfterTabChange, 140);
+    else positionAfterTabChange();
+  });
+}
+
+function _advanceStudioTutorial(direction) {
+  const next = _studioTutorialIndex + direction;
+  if (next < 0) return;
+  if (next >= _studioTutorialSteps.length) {
+    _finishStudioTutorial();
+    return;
+  }
+  _studioTutorialIndex = next;
+  _renderStudioTutorialStep();
+}
+
+function _startStudioTutorial(mode = 'overview') {
+  const overlay = $('studio-tutorial');
+  if (!overlay) return;
+  _studioTutorialPackageFlow = mode === 'package';
+  _studioTutorialReturnTab = _studioTutorialPackageFlow && state.screen === 'project' ? state.activeTab : null;
+  _studioTutorialSteps = _buildStudioTutorialSteps(_studioTutorialPackageFlow);
+  _studioTutorialIndex = 0;
+  overlay.dataset.mode = 'tour';
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.inert = false;
+  $('tutorial-offer')?.classList.add('hidden');
+  $('tutorial-step-content')?.classList.remove('hidden');
+  _renderStudioTutorialStep();
+  $('tutorial-next')?.focus();
+}
+
+function _finishStudioTutorial(restoreTab = false) {
+  const overlay = $('studio-tutorial');
+  if (!overlay) return;
+  if (restoreTab && _studioTutorialReturnTab && state.screen === 'project') {
+    switchTab(_studioTutorialReturnTab);
+  }
+  overlay.classList.add('hidden');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.inert = true;
+  $('tutorial-card').style.left = '';
+  $('tutorial-card').style.top = '';
+  $('tutorial-spotlight').style.cssText = '';
+  _studioTutorialSteps = [];
+  _studioTutorialReturnTab = null;
+  _studioTutorialPackageFlow = false;
+}
+
+function _initStudioTutorial() {
+  const overlay = $('studio-tutorial');
+  const card = $('tutorial-card');
+  if (!overlay || !card) return;
+
+  $('tutorial-start')?.addEventListener('click', () => _startStudioTutorial('overview'));
+  $('tutorial-skip')?.addEventListener('click', _finishStudioTutorial);
+  $('tutorial-package-start')?.addEventListener('click', () => {
+    if (state.projectDir && state.screen === 'project') {
+      _startStudioTutorial('package');
+      return;
+    }
+    _studioTutorialPendingProject = true;
+    _finishStudioTutorial();
+    openNewProjectModal();
+  });
+  $('tutorial-exit')?.addEventListener('click', () => _finishStudioTutorial(true));
+  $('tutorial-back')?.addEventListener('click', () => _advanceStudioTutorial(-1));
+  $('tutorial-next')?.addEventListener('click', () => {
+    if (_studioTutorialIndex === _studioTutorialSteps.length - 1) _finishStudioTutorial(false);
+    else _advanceStudioTutorial(1);
+  });
+  window.addEventListener('resize', _positionStudioTutorial);
+  document.addEventListener('scroll', _positionStudioTutorial, true);
+
+  document.addEventListener('keydown', (event) => {
+    if (overlay.classList.contains('hidden')) return;
+    const inCard = card.contains(event.target);
+    const hasShortcutModifier = event.ctrlKey || event.metaKey || event.altKey;
+    const isFunctionKey = /^F(?:[1-9]|1[0-2])$/.test(event.key);
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _finishStudioTutorial(true);
+      return;
+    }
+
+    if (inCard && !hasShortcutModifier && event.key === 'Tab') {
+      const controls = [...card.querySelectorAll('button:not(:disabled)')]
+        .filter(_studioTutorialTargetIsVisible);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+      return;
+    }
+
+    if (overlay.dataset.mode === 'tour' && inCard && !hasShortcutModifier) {
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        _advanceStudioTutorial(1);
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        _advanceStudioTutorial(-1);
+        return;
+      }
+    }
+
+    if (inCard && !hasShortcutModifier && !isFunctionKey) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) event.preventDefault();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (_studioTutorialPendingProject && event.key === 'Escape'
+      && !$('modal-new-project')?.classList.contains('hidden')) {
+      _studioTutorialPendingProject = false;
+    }
+  }, true);
+  document.addEventListener('click', (event) => {
+    if (!_studioTutorialPendingProject) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('[data-close="modal-new-project"]') || target?.id === 'modal-new-project') {
+      _studioTutorialPendingProject = false;
+    }
+  }, true);
+}
+
 function setTheme(themeId) {
   // Remember the preset the user was on before going custom, so the reset
   // button can revert to something coherent.
@@ -1170,6 +1939,7 @@ function showScreen(name) {
   for (const [k, el] of Object.entries(screens)) {
     el.classList.toggle('hidden', k !== name);
   }
+  $('sidebar-resize-handle')?.classList.toggle('hidden', name !== 'project' || state.sidebarCollapsed);
 }
 
 function showSettings() {
@@ -1196,8 +1966,12 @@ function initWindowControls() {
     if (maximized) win.restore(); else win.maximize();
   });
   $('btn-close').addEventListener('click', async () => {
-    if (await _promptUnsaved() === null) return;
-    win.close(true);
+    const choice = await _promptUnsaved();
+    if (choice === null) return;
+    if (choice === true) {
+      _closeGuardEnabled = false;
+      win.close(true);
+    }
   });
 }
 
@@ -1230,15 +2004,21 @@ async function _promptUnsaved() {
 function _initCloseGuard() {
   const win = nw.Window.get();
   win.on('close', async (e) => {
-    if (!_hasDirtyTabs()) return;
+    if (!_closeGuardEnabled || !_hasDirtyTabs()) return;
     e.preventDefault();
     try {
-      if (await _promptUnsaved() !== null) win.close(true);
+      const choice = await _promptUnsaved();
+      if (choice === null) return;
+      if (choice === true) {
+        _closeGuardEnabled = false;
+        win.close(true);
+      }
     } catch (error) {
       console.error('Could not confirm closing with unsaved changes:', error);
       showToast(`Could not close safely: ${error.message}`);
     }
   });
+  _closeGuardEnabled = true;
 }
 
 // Project loading
@@ -2363,9 +3143,46 @@ function initWindowDesigner() {
     $(id)?.addEventListener('change', _syncWindowPreview);
   });
 
+  const dimensionIds = ['mf-width', 'mf-height', 'mf-min-width', 'mf-min-height', 'mf-max-width', 'mf-max-height'];
+  const updateDimensionFeedback = () => {
+    const feedback = $('window-dimension-feedback');
+    if (!feedback) return;
+    const error = _windowSettingsError();
+    feedback.textContent = error || 'Maximum dimensions are optional; leave both blank for no limit.';
+    feedback.classList.toggle('is-error', Boolean(error));
+  };
+
+  document.querySelectorAll('.window-size-preset').forEach((preset) => {
+    preset.addEventListener('click', () => {
+      const width = Number(preset.dataset.width);
+      const height = Number(preset.dataset.height);
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) return;
+      widthInput.value = String(width);
+      heightInput.value = String(height);
+      widthInput.dispatchEvent(new Event('input', { bubbles: true }));
+      heightInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  });
+
+  $('window-size-reset')?.addEventListener('click', () => {
+    widthInput.value = '800';
+    heightInput.value = '560';
+    $('mf-min-width').value = '400';
+    $('mf-min-height').value = '300';
+    $('mf-max-width').value = '';
+    $('mf-max-height').value = '';
+    dimensionIds.forEach((id) => $(id).dispatchEvent(new Event('input', { bubbles: true })));
+  });
+
+  dimensionIds.forEach((id) => {
+    $(id)?.addEventListener('input', updateDimensionFeedback);
+    $(id)?.addEventListener('change', updateDimensionFeedback);
+  });
+
   $('mf-id')?.addEventListener('input', _validateAppIdField);
 
   _syncWindowPreview();
+  updateDimensionFeedback();
 }
 
 
@@ -3481,6 +4298,20 @@ function _designWriteImmediateHtmlEdits(edits) {
 // ---------------------------------------------------------------------
 
 function _designInjectedScript() {
+  document.addEventListener('wheel', (event) => {
+    if (event.ctrlKey || event.metaKey) event.preventDefault();
+  }, { capture: true, passive: false });
+  document.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    if (['+', '-', '=', '_', '0'].includes(event.key)
+      || ['NumpadAdd', 'NumpadSubtract', 'Numpad0'].includes(event.code)) {
+      event.preventDefault();
+    }
+  }, true);
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach((type) => {
+    document.addEventListener(type, (event) => event.preventDefault(), { passive: false });
+  });
+
   const PATH_ATTR = 'data-nb-design-path';
   let hovered = null;
   let selected = null;
@@ -5343,13 +6174,6 @@ function _designInitStagePanZoom() {
 
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const stageRect = stage.getBoundingClientRect();
-    // Zoom around the cursor position, not the top-left corner, so the
-    // point under the mouse stays put as scale changes.
-    const cx = e.clientX - stageRect.left;
-    const cy = e.clientY - stageRect.top;
-    const delta = -e.deltaY * 0.001;
-    zoomBy(1 + delta, cx, cy);
   }, { passive: false });
 
   // The iframe itself still needs pointer-events disabled while actively
@@ -7130,7 +7954,7 @@ function _toggleDirExpand(item, dirPath, depth) {
 // File editor
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp']);
-const BINARY_EXTS = new Set(['.novaapp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pdf',
+const BINARY_EXTS = new Set(['.zip', '.tar', '.gz', '.exe', '.bin', '.pdf',
   '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.wav', '.ogg']);
 
 // Tab system. VS Code style: preview=true tabs are reused on single-click,
@@ -7138,10 +7962,185 @@ const BINARY_EXTS = new Set(['.novaapp', '.zip', '.tar', '.gz', '.exe', '.bin', 
 const tabs = []; // [{ filePath, originalContent, isDirty, preview }]
 
 let _contextTarget = null;
+const EDITOR_CLIPBOARD = typeof navigator !== 'undefined' ? navigator.clipboard : null;
 let activeTabIndex = -1;
+let _closeGuardEnabled = false;
 
 function _getActiveTab() {
   return tabs[activeTabIndex] ?? null;
+}
+
+const FORMATTER_LANGUAGE_NAMES = {
+  js: 'JavaScript',
+  json: 'JSON',
+  css: 'CSS',
+  html: 'HTML',
+};
+
+function _guessFormatterParser(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.novaapp') return 'json';
+  const map = {
+    '.js': 'js',
+    '.mjs': 'js',
+    '.cjs': 'js',
+    '.jsx': 'js',
+    '.ts': 'js',
+    '.tsx': 'js',
+    '.json': 'json',
+    '.jsonc': 'json',
+    '.json5': 'json',
+    '.css': 'css',
+    '.scss': 'css',
+    '.less': 'css',
+    '.html': 'html',
+    '.htm': 'html',
+  };
+  return map[ext] || null;
+}
+
+async function _getFormatterFileInfo(filePath) {
+  const parser = _guessFormatterParser(filePath);
+  return {
+    parser,
+    language: parser ? (FORMATTER_LANGUAGE_NAMES[parser] || parser) : null,
+  };
+}
+
+function _positionEditorContextMenu(menu, x, y) {
+  menu.classList.remove('hidden');
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+}
+
+function hideEditorContextMenu() {
+  $('editor-context-menu')?.classList.add('hidden');
+}
+
+async function _showEditorContextMenu(x, y, tabIndex = activeTabIndex) {
+  const menu = $('editor-context-menu');
+  const tab = tabs[tabIndex];
+  if (!menu || !tab || IMAGE_EXTS.has(path.extname(tab.filePath).toLowerCase())) return;
+  if (tabIndex !== activeTabIndex) _switchToTab(tabIndex);
+
+  hideEditorContextMenu();
+  hideContextMenu();
+  hideRecentContextMenu();
+  const formatButton = $('editorctx-format');
+  formatButton.disabled = true;
+  formatButton.textContent = 'Detecting format…';
+  _positionEditorContextMenu(menu, x, y);
+
+  try {
+    const { language } = await _getFormatterFileInfo(tab.filePath);
+    if (_getActiveTab() !== tab) return;
+    formatButton.textContent = language ? `Format ${language}` : 'Format File';
+    formatButton.disabled = !language;
+  } catch (error) {
+    console.error('[editor] Could not detect file format:', error);
+    formatButton.textContent = 'Format File';
+    formatButton.disabled = true;
+  }
+}
+
+async function _formatActiveFile() {
+  const tab = _getActiveTab();
+  const editor = window.CM;
+  const view = editor?.view;
+  if (!tab || !view) return;
+
+  const parser = _guessFormatterParser(tab.filePath);
+  if (!parser) {
+    showToast('js-beautify does not support this file type');
+    return;
+  }
+
+  let formatter;
+  try {
+    formatter = await _ensureFormatter();
+  } catch (error) {
+    console.warn('[editor] Could not initialize js-beautify for formatting:', error);
+    formatter = null;
+  }
+  if (!formatter) {
+    showToast('Formatting is unavailable in this build');
+    return;
+  }
+
+  const content = view.state.doc.toString();
+  const selection = view.state.selection.main;
+  const cursorOffset = selection.head;
+  const isUnchanged = () => _getActiveTab() === tab && window.CM?.view === view &&
+    view.state.doc.toString() === content &&
+    view.state.selection.main.anchor === selection.anchor &&
+    view.state.selection.main.head === selection.head;
+  const config = { indent_size: 2, end_with_newline: true };
+
+  if (!isUnchanged()) {
+    showToast('Formatting cancelled because the active file changed');
+    return;
+  }
+
+  const formatted = parser === 'css'
+    ? formatter.css_beautify(content, config)
+    : parser === 'html'
+      ? formatter.html_beautify(content, config)
+      : formatter.js_beautify(content, config);
+
+  if (!isUnchanged()) {
+    showToast('Formatting cancelled because the active file changed');
+    return;
+  }
+
+  editor.replaceDocument(formatted, Math.min(cursorOffset, formatted.length));
+  showToast(`${FORMATTER_LANGUAGE_NAMES[parser] || parser} formatted`);
+}
+
+async function _copyEditorSelection(cut = false) {
+  const editor = window.CM;
+  const view = editor?.view;
+  if (!view) return;
+  const selection = view.state.selection.main;
+  const selectedText = selection.from === selection.to
+    ? ''
+    : view.state.sliceDoc(selection.from, selection.to);
+  if (selectedText == null || selectedText === '') return;
+  try {
+    if (!EDITOR_CLIPBOARD?.writeText) throw new Error('Clipboard access is unavailable');
+    await EDITOR_CLIPBOARD.writeText(selectedText);
+    if (cut) {
+      const currentSelection = view.state.selection.main;
+      if (window.CM?.view !== view || currentSelection.from !== selection.from ||
+          currentSelection.to !== selection.to ||
+          view.state.sliceDoc(selection.from, selection.to) !== selectedText) {
+        showToast('Selection changed before cut completed');
+        return;
+      }
+      editor.replaceSelection('');
+    }
+  } catch (error) {
+    console.error('[editor] Clipboard write failed:', error);
+    showToast(`Could not ${cut ? 'cut' : 'copy'} selection: ${error.message}`);
+  }
+}
+
+async function _pasteEditorClipboard() {
+  const editor = window.CM;
+  const view = editor?.view;
+  if (!view) return;
+  try {
+    if (!EDITOR_CLIPBOARD?.readText) throw new Error('Clipboard access is unavailable');
+    const text = await EDITOR_CLIPBOARD.readText();
+    if (window.CM?.view !== view) {
+      showToast('Paste cancelled because the active file changed');
+      return;
+    }
+    editor.replaceSelection(text);
+  } catch (error) {
+    console.error('[editor] Clipboard read failed:', error);
+    showToast(`Could not paste: ${error.message}`);
+  }
 }
 
 // Tab rendering
@@ -7243,7 +8242,7 @@ function _updateEditorToolbar() {
   const isImage = !!tab && IMAGE_EXTS.has(ext);
   const isHtml = ext === '.html' || ext === '.htm';
   const canCheckSyntax = !!_SYNTAX_LOADER_MAP[ext]
-    || ['.json', '.css', '.html', '.htm'].includes(ext);
+    || ['.json', '.novaapp', '.css', '.html', '.htm'].includes(ext);
   const breadcrumbs = $('editor-breadcrumbs');
 
   if (breadcrumbs) {
@@ -7431,6 +8430,7 @@ function openFileEditor(filePath) {
     _renderTabs();
     switchTab('editor');
     _highlightActiveFile();
+    _qoRecordRecentFile(filePath);
     return;
   }
 
@@ -7456,6 +8456,7 @@ function openFileEditor(filePath) {
   _loadTabIntoEditor(tabs[activeTabIndex]);
   switchTab('editor');
   _highlightActiveFile();
+  _qoRecordRecentFile(filePath);
 }
 
 // CM change callback
@@ -8238,6 +9239,7 @@ function showContextMenu(x, y, targetPath) {
   hideRecentContextMenu(); // only one context menu should ever be visible at a time
   _contextTarget = targetPath;
   const menu = $('context-menu');
+  hideEditorContextMenu();
 
   // Show/hide file-specific actions depending on whether we right-clicked a file/dir
   const hasTarget = !!targetPath;
@@ -8490,21 +9492,32 @@ function _syntaxPositionAtOffset(content, offset) {
 
 function _cssSyntaxDiagnostics(content, fileName, { editor = true, editorOffset, editorContent } = {}) {
   try {
-    require('css').parse(content, { source: fileName });
-    return [];
+    const result = cssTreeValidator.validateString(content, fileName);
+    const errors = result[fileName] || [];
+    if (!errors.length) return [];
+
+    return errors.map((error) => {
+      const offset = typeof error.offset === 'number' ? error.offset : 0;
+      const position = editorOffset !== undefined && editorContent
+        ? _syntaxPositionAtOffset(editorContent, editorOffset + offset)
+        : _syntaxPositionAtOffset(content, offset);
+
+      return {
+        severity: 'error',
+        fileName,
+        line: position.line,
+        column: position.column,
+        message: error.message || error.rawMessage || 'Invalid CSS',
+        editor,
+      };
+    });
   } catch (error) {
-    const sourceOffset = typeof error.source === 'string'
-      ? Math.max(0, content.length - error.source.length)
-      : 0;
-    const position = editorOffset !== undefined && editorContent
-      ? _syntaxPositionAtOffset(editorContent, editorOffset + sourceOffset)
-      : _syntaxPositionAtOffset(content, sourceOffset);
     return [{
       severity: 'error',
       fileName,
-      line: position.line,
-      column: position.column,
-      message: error.reason || error.message,
+      line: 1,
+      column: 1,
+      message: error.message || 'Invalid CSS',
       editor,
     }];
   }
@@ -8542,7 +9555,7 @@ async function checkSyntax() {
 
   const ext = path.extname(tab.filePath).toLowerCase();
   const loader = _SYNTAX_LOADER_MAP[ext];
-  const supported = loader || ['.json', '.css', '.html', '.htm'].includes(ext);
+  const supported = loader || ['.json', '.novaapp', '.css', '.html', '.htm'].includes(ext);
   if (!supported) {
     showToast(`Syntax check not supported for ${ext || 'this file type'}`);
     return;
@@ -8569,7 +9582,7 @@ async function checkSyntax() {
           });
         }
       }
-    } else if (ext === '.json') {
+    } else if (ext === '.json' || ext === '.novaapp') {
       const { validate, lineColumn } = require('@jsonlint/core');
       const result = validate(content, { mode: 'strict' });
       const esbuild = require('esbuild');
@@ -9704,7 +10717,7 @@ function _buildCommandRegistry() {
   };
   const syntaxCheckAvailable = () => {
     const ext = path.extname(activeTab()?.filePath || '').toLowerCase();
-    return !!_SYNTAX_LOADER_MAP[ext] || ['.json', '.css', '.html', '.htm'].includes(ext);
+    return !!_SYNTAX_LOADER_MAP[ext] || ['.json', '.novaapp', '.css', '.html', '.htm'].includes(ext);
   };
   const editorFontCanGrow = () => !!window.CM && (window.CM.getSettings()?.fontSize ?? 13) < 24;
   const editorFontCanShrink = () => !!window.CM && (window.CM.getSettings()?.fontSize ?? 13) > 10;
@@ -9812,19 +10825,148 @@ function _buildCommandRegistry() {
 let _cpRegistry = null;   // built lazily so all fns are defined
 let _cpActiveIdx = -1;
 let _cpFiltered = [];
+let _cpCategory = 'All';
+let _cpFavorites = new Set();
+let _cpFavoritesLoaded = false;
+let _cpRecentIds = [];
+const CP_FAVORITES_KEY = 'novapack_command_favorites';
+
+const CP_CATEGORY_ICONS = {
+  File: 'file',
+  Navigate: 'search',
+  Editor: 'edit',
+  Project: 'folder',
+  Build: 'package',
+  Workspace: 'workspaces',
+  Theme: 'palette',
+  Help: 'help',
+  Snippets: 'text',
+};
+
+const CP_CATEGORY_DESCRIPTIONS = {
+  File: 'Create a project or work with files.',
+  Navigate: 'Jump to a Studio view, file, or tool.',
+  Editor: 'Search, preview, and adjust editor behavior.',
+  Project: 'Manage and inspect the open project.',
+  Build: 'Package the project and review build output.',
+  Workspace: 'Save, restore, and organize your setup.',
+  Theme: 'Change the Studio color theme.',
+  Help: 'Get guidance and app information.',
+};
+
+function _cpDescription(cmd) {
+  if (cmd.description) return cmd.description;
+  if (cmd.id.startsWith('go-')) return `Open the ${cmd.label.replace(/^Go to /i, '')}.`;
+  if (cmd.id.startsWith('theme-')) return `Switch to the ${cmd.label.replace(/^Theme: /, '')} theme.`;
+  return CP_CATEGORY_DESCRIPTIONS[cmd.category] || `Run this ${cmd.category.toLowerCase()} command.`;
+}
+
+function _cpEnsureFavorites() {
+  if (_cpFavoritesLoaded) return;
+  _cpFavoritesLoaded = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem(CP_FAVORITES_KEY) || '[]');
+    if (!Array.isArray(stored) || stored.some((id) => typeof id !== 'string')) {
+      throw new TypeError('Saved command favorites are invalid');
+    }
+    _cpFavorites = new Set(stored);
+  } catch (error) {
+    console.error('Could not load command favorites:', error);
+    showToast('Saved command favorites could not be loaded', 'warn');
+  }
+}
+
+function _cpToggleFavorite(command) {
+  const wasFavorite = _cpFavorites.has(command.id);
+  if (wasFavorite) _cpFavorites.delete(command.id);
+  else _cpFavorites.add(command.id);
+  try {
+    localStorage.setItem(CP_FAVORITES_KEY, JSON.stringify([..._cpFavorites]));
+  } catch (error) {
+    if (wasFavorite) _cpFavorites.add(command.id);
+    else _cpFavorites.delete(command.id);
+    console.error('Could not save command favorites:', error);
+    showToast('Could not save command favorite', 'warn');
+    return;
+  }
+  _renderCpCategories();
+  _runCpFilter($('cp-input')?.value || '');
+  $('cp-input')?.focus();
+}
+
+function _cpAvailableCommands() {
+  return (_cpRegistry || []).filter((cmd) => !cmd.when || cmd.when());
+}
+
+function _renderCpCategories() {
+  const nav = $('cp-categories');
+  if (!nav) return;
+  const available = _cpAvailableCommands();
+  const categories = [...new Set(available.map((cmd) => cmd.category))];
+  const options = [
+    { id: 'All', label: 'All', count: available.length },
+    { id: 'Recent', label: 'Recent', count: _cpRecentIds.filter((id) => available.some((cmd) => cmd.id === id)).length },
+    { id: 'Starred', label: 'Starred', count: available.filter((cmd) => _cpFavorites.has(cmd.id)).length },
+    ...categories.map((category) => ({
+      id: category,
+      label: category,
+      count: available.filter((cmd) => cmd.category === category).length,
+    })),
+  ];
+  nav.replaceChildren();
+  for (const option of options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cp-category-chip' + (_cpCategory === option.id ? ' is-active' : '');
+    button.setAttribute('aria-pressed', String(_cpCategory === option.id));
+    const label = document.createElement('span');
+    label.textContent = option.label;
+    const count = document.createElement('span');
+    count.className = 'cp-category-count';
+    count.textContent = String(option.count);
+    button.append(label, count);
+    button.addEventListener('click', () => {
+      _cpCategory = option.id;
+      _renderCpCategories();
+      _runCpFilter($('cp-input')?.value || '');
+      $('cp-input')?.focus();
+    });
+    nav.appendChild(button);
+  }
+}
 
 // Help modal
+let _activeHelpSection = 'how-to-use';
+
 function openHelp(section) {
   const overlay = $('modal-help');
   overlay?.classList.remove('hidden');
+  const search = $('help-search');
+  if (search) search.value = '';
+  _filterHelp('');
   if (section) _showHelpSection(section);
 
   // Reflect the real platform modifier key (\u2318 on macOS, Ctrl elsewhere)
   // instead of hardcoding "Ctrl" in the markup.
-  ['help-kbd-palette', 'help-kbd-quickopen', 'help-kbd-save'].forEach((id) => {
+  [
+    'help-kbd-new',
+    'help-kbd-open',
+    'help-kbd-build',
+    'help-kbd-palette',
+    'help-kbd-quickopen',
+    'help-kbd-save',
+    'help-kbd-undo',
+    'help-kbd-redo',
+    'help-kbd-find',
+    'help-kbd-search',
+    'help-kbd-diff',
+    'help-kbd-workspaces',
+  ].forEach((id) => {
     const el = $(id);
     if (el) el.textContent = el.textContent.replace(/^Ctrl/, MOD_KEY);
   });
+  const saveAllShortcut = $('help-kbd-save-all');
+  if (saveAllShortcut) saveAllShortcut.textContent = `${MOD_KEY}+${IS_MAC ? 'Option' : 'Alt'}+S`;
   const modKeyLabel = $('help-mod-key');
   if (modKeyLabel) modKeyLabel.textContent = MOD_KEY;
 }
@@ -9834,23 +10976,89 @@ function closeHelp() {
 }
 
 function _showHelpSection(section) {
+  if (![...document.querySelectorAll('.help-pane')].some((pane) => pane.dataset.helpPane === section)) return;
+  _activeHelpSection = section;
   document.querySelectorAll('.help-nav-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.helpSection === section);
   });
   document.querySelectorAll('.help-pane').forEach((pane) => {
     pane.classList.toggle('active', pane.dataset.helpPane === section);
   });
+  const panes = $('help-panes');
+  if (panes) panes.scrollTop = 0;
+}
+
+function _filterHelp(query) {
+  const normalized = query.trim().toLocaleLowerCase();
+  const buttons = [...document.querySelectorAll('.help-nav-btn')];
+  const panes = [...document.querySelectorAll('.help-pane')];
+  const status = $('help-search-status');
+  const noResults = $('help-no-results');
+
+  if (!normalized) {
+    buttons.forEach((button) => { button.hidden = false; });
+    noResults?.classList.add('hidden');
+    if (status) status.textContent = '';
+    _showHelpSection(_activeHelpSection);
+    return;
+  }
+
+  const matchingSections = new Set(
+    panes
+      .filter((pane) => pane.textContent.toLocaleLowerCase().includes(normalized))
+      .map((pane) => pane.dataset.helpPane),
+  );
+  buttons.forEach((button) => { button.hidden = !matchingSections.has(button.dataset.helpSection); });
+
+  const matchCount = matchingSections.size;
+  if (status) status.textContent = `${matchCount} topic${matchCount === 1 ? '' : 's'} found`;
+  noResults?.classList.toggle('hidden', matchCount > 0);
+  if (!matchCount) {
+    buttons.forEach((button) => button.classList.remove('active'));
+    panes.forEach((pane) => pane.classList.remove('active'));
+    return;
+  }
+
+  const section = matchingSections.has(_activeHelpSection)
+    ? _activeHelpSection
+    : panes.find((pane) => matchingSections.has(pane.dataset.helpPane)).dataset.helpPane;
+  _showHelpSection(section);
 }
 
 function initHelp() {
   $('btn-help')?.addEventListener('click', () => openHelp());
+  $('help-search')?.addEventListener('input', (event) => _filterHelp(event.currentTarget.value));
   document.querySelectorAll('.help-nav-btn').forEach((btn) => {
     btn.addEventListener('click', () => _showHelpSection(btn.dataset.helpSection));
+  });
+  document.querySelectorAll('[data-help-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const action = button.dataset.helpAction;
+      if (action === 'tutorial') {
+        closeHelp();
+        _startStudioTutorial(state.projectDir && state.screen === 'project' ? 'package' : 'overview');
+      } else if (action === 'new-project') {
+        closeHelp();
+        openNewProjectModal();
+      } else if (action === 'open-project') {
+        closeHelp();
+        pickFolder(loadProject);
+      } else if (action === 'tab-build') {
+        if (!state.projectDir) {
+          showToast('Open a project before going to Build.');
+          return;
+        }
+        closeHelp();
+        switchTab('build');
+      }
+    });
   });
 }
 
 function openCommandPalette() {
   if (!_cpRegistry) _cpRegistry = _buildCommandRegistry();
+  _cpEnsureFavorites();
+  _cpCategory = 'All';
 
   if (document.activeElement && document.activeElement !== document.body) {
     document.activeElement.blur();
@@ -9860,6 +11068,7 @@ function openCommandPalette() {
   const input = $('cp-input');
   overlay?.classList.remove('hidden');
   input.value = '';
+  _renderCpCategories();
   _runCpFilter('');
   input.focus();
 }
@@ -9870,12 +11079,28 @@ function closeCommandPalette() {
 
 function _runCpFilter(query) {
   const q = query.trim().toLowerCase();
-  _cpFiltered = _cpRegistry
-    .filter((cmd) => !cmd.when || cmd.when())
-    .filter((cmd) => !q || _cpMatch(cmd.label.toLowerCase(), cmd.category.toLowerCase(), q))
+  const available = _cpAvailableCommands();
+  const byId = new Map(available.map((cmd) => [cmd.id, cmd]));
+  let candidates;
+  if (_cpCategory === 'Recent') {
+    candidates = _cpRecentIds.map((id) => byId.get(id)).filter(Boolean);
+  } else if (_cpCategory === 'Starred') {
+    candidates = available.filter((cmd) => _cpFavorites.has(cmd.id));
+  } else {
+    candidates = _cpCategory === 'All'
+      ? available
+      : available.filter((cmd) => cmd.category === _cpCategory);
+  }
+  _cpFiltered = candidates
+    .filter((cmd) => !q || _cpMatch(
+      `${cmd.label} ${_cpDescription(cmd)} ${(cmd.aliases || []).join(' ')}`.toLowerCase(),
+      cmd.category.toLowerCase(),
+      q,
+    ))
     .sort((a, b) => {
       if (!q) return 0; // preserve registry order when no query
-      return _cpScore(b.label.toLowerCase(), q) - _cpScore(a.label.toLowerCase(), q);
+      return _cpScore(`${b.label} ${_cpDescription(b)} ${(b.aliases || []).join(' ')}`.toLowerCase(), q)
+        - _cpScore(`${a.label} ${_cpDescription(a)} ${(a.aliases || []).join(' ')}`.toLowerCase(), q);
     });
 
   _cpActiveIdx = _cpFiltered.length ? 0 : -1;
@@ -9895,11 +11120,19 @@ function _renderCpResults() {
   const el = $('cp-results');
   if (!el) return;
   el.replaceChildren();
+  const count = $('cp-results-count');
+  const label = $('cp-results-label');
+  if (count) count.textContent = `${_cpFiltered.length} COMMAND${_cpFiltered.length === 1 ? '' : 'S'}`;
+  if (label) label.textContent = `${_cpCategory.toUpperCase()} COMMANDS`;
 
   if (!_cpFiltered.length) {
     const empty = document.createElement('div');
-    empty.className = 'qo-empty';
-    empty.textContent = 'No matching commands';
+    empty.className = 'cp-empty';
+    empty.textContent = _cpCategory === 'Starred' && !$('cp-input')?.value
+      ? 'No starred commands yet — use the star beside a command to save it here.'
+      : _cpCategory === 'Recent' && !$('cp-input')?.value
+        ? 'Commands you run will appear here.'
+        : 'No matching commands. Try another category or search term.';
     el.appendChild(empty);
     return;
   }
@@ -9915,39 +11148,59 @@ function _renderCpResults() {
       lastCat = cmd.category;
     }
     const item = document.createElement('div');
-    item.className = 'cp-item' + (i === _cpActiveIdx ? ' qo-item--active' : '');
-    item.dataset.index = i;
+    item.className = 'cp-result-row';
+    item.setAttribute('role', 'listitem');
 
-    // _swatch comes from the THEMES constant -- safe to inject via style.
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cp-item' + (i === _cpActiveIdx ? ' qo-item--active' : '');
+    button.dataset.index = i;
+    button.setAttribute('aria-current', String(i === _cpActiveIdx));
+
+    const icon = document.createElement('span');
+    icon.className = 'cp-icon' + (cmd._swatch ? ' cp-icon--swatch' : '');
     if (cmd._swatch) {
-      const sw = document.createElement('span');
-      sw.className = 'cp-swatch';
-      sw.style.background = cmd._swatch;
-      item.appendChild(sw);
+      icon.style.background = cmd._swatch;
     } else {
-      const icon = document.createElement('span');
-      icon.className = 'cp-icon';
-      icon.textContent = '\u2325';
-      item.appendChild(icon);
+      icon.innerHTML = _uiIcon(CP_CATEGORY_ICONS[cmd.category] || 'grid');
     }
+    button.appendChild(icon);
 
+    const copy = document.createElement('span');
+    copy.className = 'cp-item-copy';
     const label = document.createElement('span');
     label.className = 'cp-label';
     label.textContent = cmd.label;
-    item.appendChild(label);
+    copy.appendChild(label);
+
+    const description = document.createElement('span');
+    description.className = 'cp-description';
+    description.textContent = _cpDescription(cmd);
+    copy.appendChild(description);
+    button.appendChild(copy);
 
     if (cmd.shortcut) {
       const sc = document.createElement('span');
       sc.className = 'cp-shortcut';
       sc.textContent = cmd.shortcut;
-      item.appendChild(sc);
+      button.appendChild(sc);
     }
 
-    item.addEventListener('mouseenter', () => {
-      _cpActiveIdx = +item.dataset.index;
+    button.addEventListener('mouseenter', () => {
+      _cpActiveIdx = +button.dataset.index;
       _cpHighlight();
     });
-    item.addEventListener('click', () => _cpExecute(+item.dataset.index));
+    button.addEventListener('click', () => _cpExecute(+button.dataset.index));
+
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = 'cp-star' + (_cpFavorites.has(cmd.id) ? ' is-starred' : '');
+    star.textContent = _cpFavorites.has(cmd.id) ? '\u2605' : '\u2606';
+    star.title = _cpFavorites.has(cmd.id) ? 'Remove from starred commands' : 'Add to starred commands';
+    star.setAttribute('aria-label', star.title);
+    star.setAttribute('aria-pressed', String(_cpFavorites.has(cmd.id)));
+    star.addEventListener('click', () => _cpToggleFavorite(cmd));
+    item.append(button, star);
     frag.appendChild(item);
   });
   el.appendChild(frag);
@@ -9957,6 +11210,7 @@ function _cpHighlight() {
   const items = $('cp-results')?.querySelectorAll('.cp-item') || [];
   items.forEach((el, i) => {
     el.classList.toggle('qo-item--active', i === _cpActiveIdx);
+    el.setAttribute('aria-current', String(i === _cpActiveIdx));
     if (i === _cpActiveIdx) el.scrollIntoView({ block: 'nearest' });
   });
 }
@@ -9964,6 +11218,7 @@ function _cpHighlight() {
 function _cpExecute(idx) {
   const cmd = _cpFiltered[idx];
   if (!cmd) return;
+  _cpRecentIds = [cmd.id, ..._cpRecentIds.filter((id) => id !== cmd.id)].slice(0, 8);
   closeCommandPalette();
   // Small delay so the modal is gone before the action runs (avoids focus fights)
   setTimeout(() => cmd.action(), 30);
@@ -9972,6 +11227,8 @@ function _cpExecute(idx) {
 function _initCommandPalette() {
   const input = $('cp-input');
   if (!input) return;
+  const modifier = $('cp-mod-key');
+  if (modifier) modifier.textContent = MOD_KEY;
 
   input.addEventListener('input', () => _runCpFilter(input.value));
 
@@ -9986,13 +11243,26 @@ function _initCommandPalette() {
       _cpActiveIdx = Math.max(_cpActiveIdx - 1, 0);
       _cpHighlight();
     } else if (e.key === 'Enter') {
+      e.preventDefault();
       _cpExecute(_cpActiveIdx);
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      const command = _cpFiltered[_cpActiveIdx];
+      if (command) _cpToggleFavorite(command);
     } else if (e.key === 'Escape') {
       closeCommandPalette();
     }
   });
 
-  $('modal-command-palette')?.addEventListener('click', (e) => {
+  $('cp-close')?.addEventListener('click', closeCommandPalette);
+  const overlay = $('modal-command-palette');
+  overlay?.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && event.target !== input) {
+      event.preventDefault();
+      closeCommandPalette();
+    }
+  });
+  overlay?.addEventListener('click', (e) => {
     if (e.target.id === 'modal-command-palette') closeCommandPalette();
   });
 }
@@ -10000,14 +11270,49 @@ function _initCommandPalette() {
 // Quick-open file switcher
 let _qoFiles = [];
 let _qoActiveIdx = -1;
+let _qoMode = 'All';
+let _qoRecentPaths = [];
+
+function _qoRecentStorageKey() {
+  return `novapack_quick_open_recent:${path.resolve(state.projectDir || '')}`;
+}
+
+function _qoLoadRecentFiles() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(_qoRecentStorageKey()) || '[]');
+    if (!Array.isArray(stored) || stored.some((filePath) => typeof filePath !== 'string')) {
+      throw new TypeError('Saved Quick Open history is invalid');
+    }
+    _qoRecentPaths = stored
+      .filter((filePath) => _workspacePathIsInside(filePath, state.projectDir) && fs.existsSync(filePath))
+      .slice(0, 20);
+  } catch (error) {
+    console.error('Could not load Quick Open history:', error);
+    showToast('Quick Open history could not be loaded', 'warn');
+    _qoRecentPaths = [];
+  }
+}
+
+function _qoRecordRecentFile(filePath) {
+  if (!state.projectDir || !_workspacePathIsInside(filePath, state.projectDir)) return;
+  _qoRecentPaths = [path.resolve(filePath), ..._qoRecentPaths.filter((item) => path.resolve(item) !== path.resolve(filePath))]
+    .slice(0, 20);
+  try {
+    localStorage.setItem(_qoRecentStorageKey(), JSON.stringify(_qoRecentPaths));
+  } catch (error) {
+    console.error('Could not save Quick Open history:', error);
+    showToast('Could not save Quick Open history', 'warn');
+  }
+}
 
 function openQuickOpen() {
   if (!state.projectDir) {
     pickFolder(loadProject);
     return;
   }
+  _qoLoadRecentFiles();
   _qoFiles = _collectSearchableFiles(state.projectDir)
-    .map((f) => ({ full: f, rel: path.relative(state.projectDir, f) }));
+    .map((full) => ({ full, rel: path.relative(state.projectDir, full) }));
 
   // Blur whatever currently has focus (almost always the CodeMirror editor)
   // before showing the modal, so keystrokes can't land in the document
@@ -10019,7 +11324,15 @@ function openQuickOpen() {
   const overlay = $('modal-quick-open');
   const input = $('qo-input');
   overlay?.classList.remove('hidden');
+  _qoMode = 'All';
   input.value = '';
+  $('qo-project-name').textContent = state.projectName || path.basename(state.projectDir);
+  document.querySelectorAll('.qo-filter').forEach((button) => {
+    const active = button.dataset.qoMode === _qoMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  _qoUpdateFilterCounts();
   _renderQoResults('');
   input.focus();
 }
@@ -10032,20 +11345,61 @@ function _renderQoResults(query) {
   const el = $('qo-results');
   if (!el) return;
   const q = query.trim().toLowerCase();
+  const activeTab = _getActiveTab();
+  const activePath = activeTab ? path.resolve(activeTab.filePath) : '';
+  const openPaths = new Set(tabs.map((tab) => path.resolve(tab.filePath)));
+  const filesByPath = new Map(_qoFiles.map((file) => [path.resolve(file.full), file]));
+  let candidates = _qoMode === 'Open'
+    ? tabs.map((tab) => filesByPath.get(path.resolve(tab.filePath)) || ({
+      full: tab.filePath,
+      rel: path.relative(state.projectDir, tab.filePath),
+    }))
+    : _qoMode === 'Recent'
+      ? _qoRecentPaths.map((filePath) => filesByPath.get(path.resolve(filePath))).filter(Boolean)
+      : _qoFiles;
 
-  const scored = _qoFiles
-    .map((f) => ({ ...f, score: _qoScore(f.rel.toLowerCase(), q) }))
-    .filter((f) => !q || f.score > 0)
-    .sort((a, b) => b.score - a.score)
+  const recentOrder = new Map(_qoRecentPaths.map((filePath, index) => [path.resolve(filePath), index]));
+  const scored = candidates
+    .map((file) => {
+      const rel = file.rel.replace(/\\/g, '/');
+      const base = path.basename(rel);
+      const score = Math.max(_qoScore(rel.toLowerCase(), q), _qoScore(base.toLowerCase(), q));
+      const resolved = path.resolve(file.full);
+      return {
+        ...file,
+        rel,
+        score,
+        isOpen: openPaths.has(resolved),
+        isActive: resolved === activePath,
+        recentRank: recentOrder.get(resolved) ?? Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .filter((file) => !q || file.score > 0)
+    .sort((a, b) => {
+      if (q && a.score !== b.score) return b.score - a.score;
+      if (a.recentRank !== b.recentRank) return a.recentRank - b.recentRank;
+      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+      return a.rel.localeCompare(b.rel);
+    })
     .slice(0, 50);
 
   _qoActiveIdx = scored.length ? 0 : -1;
   el.replaceChildren();
+  const count = $('qo-results-count');
+  const label = $('qo-results-label');
+  const clear = $('qo-clear');
+  if (count) count.textContent = `${scored.length} FILE${scored.length === 1 ? '' : 'S'}`;
+  if (label) label.textContent = _qoMode === 'Recent' ? 'RECENT FILES'
+    : _qoMode === 'Open' ? 'OPEN EDITORS' : 'PROJECT FILES';
+  clear?.classList.toggle('hidden', !query);
 
   if (!scored.length) {
     const empty = document.createElement('div');
     empty.className = 'qo-empty';
-    empty.textContent = 'No files found';
+    empty.textContent = q ? 'No files match that search. Try another name or path.'
+      : _qoMode === 'Open' ? 'No files are currently open.'
+        : _qoMode === 'Recent' ? 'Files you open will appear here.'
+          : 'No searchable files found in this project.';
     el.appendChild(empty);
     return;
   }
@@ -10056,7 +11410,17 @@ function _renderQoResults(query) {
     item.className = 'qo-item' + (i === 0 ? ' qo-item--active' : '');
     item.dataset.index = i;
     item.dataset.path = f.full;
+    item.tabIndex = -1;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(i === _qoActiveIdx));
+    item.title = f.full;
 
+    const icon = document.createElement('span');
+    icon.className = 'qo-file-icon';
+    icon.innerHTML = _fileIconHtml(path.extname(f.rel).toLowerCase());
+
+    const copy = document.createElement('span');
+    copy.className = 'qo-file-copy';
     const name = document.createElement('span');
     name.className = 'qo-name';
     name.textContent = path.basename(f.rel);
@@ -10064,9 +11428,31 @@ function _renderQoResults(query) {
     const relDir = path.dirname(f.rel);
     const p = document.createElement('span');
     p.className = 'qo-path';
-    p.textContent = relDir === '.' ? '' : relDir;
+    p.textContent = relDir === '.' ? state.projectName || path.basename(state.projectDir) : relDir;
 
-    item.append(name, p);
+    copy.append(name, p);
+    const badges = document.createElement('span');
+    badges.className = 'qo-file-badges';
+    if (f.isActive) {
+      const active = document.createElement('span');
+      active.className = 'qo-file-badge qo-file-badge--active';
+      active.textContent = 'ACTIVE';
+      badges.appendChild(active);
+    } else if (f.isOpen) {
+      const opened = document.createElement('span');
+      opened.className = 'qo-file-badge';
+      opened.textContent = 'OPEN';
+      badges.appendChild(opened);
+    }
+    const openTab = tabs.find((tab) => path.resolve(tab.filePath) === path.resolve(f.full));
+    if (openTab?.isDirty) {
+      const dirty = document.createElement('span');
+      dirty.className = 'qo-file-dirty';
+      dirty.textContent = 'UNSAVED';
+      badges.appendChild(dirty);
+    }
+
+    item.append(icon, copy, badges);
     item.addEventListener('mouseenter', () => {
       _qoActiveIdx = +item.dataset.index;
       _qoHighlight();
@@ -10078,6 +11464,13 @@ function _renderQoResults(query) {
     frag.appendChild(item);
   });
   el.appendChild(frag);
+}
+
+function _qoUpdateFilterCounts() {
+  const openCount = $('qo-open-count');
+  const recentCount = $('qo-recent-count');
+  if (openCount) openCount.textContent = String(tabs.length);
+  if (recentCount) recentCount.textContent = String(_qoRecentPaths.length);
 }
 
 // Simple fuzzy score: consecutive match bonus, start-of-segment bonus.
@@ -10099,6 +11492,7 @@ function _qoScore(name, q) {
 function _qoHighlight() {
   $('qo-results')?.querySelectorAll('.qo-item').forEach((el, i) => {
     el.classList.toggle('qo-item--active', i === _qoActiveIdx);
+    el.setAttribute('aria-selected', String(i === _qoActiveIdx));
     if (i === _qoActiveIdx) el.scrollIntoView({ block: 'nearest' });
   });
 }
@@ -10127,6 +11521,25 @@ function _initQuickOpen() {
     }
   });
 
+  $('qo-close')?.addEventListener('click', closeQuickOpen);
+  $('qo-clear')?.addEventListener('click', () => {
+    input.value = '';
+    _renderQoResults('');
+    input.focus();
+  });
+  $('qo-filters')?.addEventListener('click', (event) => {
+    const button = event.target.closest('.qo-filter');
+    if (!button) return;
+    _qoMode = button.dataset.qoMode || 'All';
+    document.querySelectorAll('.qo-filter').forEach((filter) => {
+      const active = filter === button;
+      filter.classList.toggle('is-active', active);
+      filter.setAttribute('aria-pressed', String(active));
+    });
+    _renderQoResults(input.value);
+    input.focus();
+  });
+
   $('modal-quick-open')?.addEventListener('click', (e) => {
     if (e.target.id === 'modal-quick-open') closeQuickOpen();
   });
@@ -10143,17 +11556,264 @@ function showInspector() {
   $('project-breadcrumb').textContent = 'Inspector';
 }
 
-// Build an audit row for a single permission. `cls` is the CSS modifier
-// (ok | missing | unused), `icon` is the symbol, `label` is the audit-status
-// description ("declared & used" etc, NOT the permission's own doc text).
-//
-// If `perm` matches a known entry in PERMISSIONS, we also append that
-// catalogue's `description` field (the same text shown in the editor hover
-// tooltips) as a second, dimmer line -- so "why is this flagged" is
-// answerable right here instead of only via a separate tooltip lookup.
-// Unknown permission strings (typos, or something from a future/foreign
-// catalogue) just get the status line, same as before.
-function _auditRow(cls, icon, perm, label) {
+const _PACKAGE_AUDIT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.html', '.htm']);
+const _PACKAGE_AUDIT_MAX_FILES = 4000;
+const _PACKAGE_AUDIT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const _PACKAGE_AUDIT_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION = 4;
+const _PACKAGE_AUDIT_MAX_UNMAPPED_ACTIONS = 50;
+const _PACKAGE_AUDIT_MAX_UNKNOWN_DECLARATIONS = 50;
+
+function _stripSourceComments(source, isHtml = false) {
+  const text = isHtml
+    ? source.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '))
+    : source;
+  const output = [];
+  let segmentStart = 0;
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quote) {
+      if (char === '\\') i++;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char !== '/' || (text[i + 1] !== '/' && text[i + 1] !== '*')) continue;
+    const isLineComment = text[i + 1] === '/';
+    const start = i;
+    i += 2;
+    while (i < text.length && (isLineComment ? text[i] !== '\n' : !(text[i - 1] === '*' && text[i] === '/'))) i++;
+    if (!isLineComment && i < text.length) i++;
+    const end = i;
+    output.push(text.slice(segmentStart, start), text.slice(start, end).replace(/[^\r\n]/g, ' '));
+    segmentStart = end;
+  }
+  output.push(text.slice(segmentStart));
+  return output.join('');
+}
+
+function _scanPackagePermissionEvidence(pkg) {
+  const evidence = new Map();
+  const unknownActions = new Map();
+  const conditionalApis = new Map();
+  const alternativeEvidence = new Map();
+  const stats = { scannedFiles: 0, skippedFiles: 0, truncated: false, omittedUnknownActions: 0 };
+  const files = pkg?.files && typeof pkg.files === 'object' && !Array.isArray(pkg.files)
+    ? Object.entries(pkg.files)
+    : [];
+  let totalBytes = 0;
+
+  const addEvidence = (permission, reference) => {
+    if (!evidence.has(permission)) evidence.set(permission, []);
+    const refs = evidence.get(permission);
+    if (refs.length < _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION) refs.push(reference);
+  };
+  const addConditionalApi = (api, filePath, line) => {
+    if (!conditionalApis.has(api)) conditionalApis.set(api, []);
+    const refs = conditionalApis.get(api);
+    if (refs.length < _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION) refs.push({ path: filePath, line });
+  };
+  const addAlternativeEvidence = (id, permissions, reference) => {
+    if (!alternativeEvidence.has(id)) alternativeEvidence.set(id, { permissions, references: [] });
+    const refs = alternativeEvidence.get(id).references;
+    if (refs.length < _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION) refs.push(reference);
+  };
+
+  for (const [filePath, encoded] of files) {
+    if (!_PACKAGE_AUDIT_EXTENSIONS.has(path.extname(filePath).toLowerCase())) continue;
+    if (stats.scannedFiles >= _PACKAGE_AUDIT_MAX_FILES || totalBytes >= _PACKAGE_AUDIT_MAX_TOTAL_BYTES) {
+      stats.truncated = true;
+      stats.skippedFiles++;
+      continue;
+    }
+    if (typeof encoded !== 'string') {
+      stats.skippedFiles++;
+      continue;
+    }
+    if (encoded.length > Math.ceil(_PACKAGE_AUDIT_MAX_FILE_BYTES / 3) * 4) {
+      stats.skippedFiles++;
+      continue;
+    }
+    if (encoded.length > Math.ceil((_PACKAGE_AUDIT_MAX_TOTAL_BYTES - totalBytes) / 3) * 4) {
+      stats.skippedFiles++;
+      stats.truncated = true;
+      continue;
+    }
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      stats.skippedFiles++;
+      continue;
+    }
+    const bytes = Buffer.from(encoded, 'base64');
+    if (bytes.length > _PACKAGE_AUDIT_MAX_FILE_BYTES || totalBytes + bytes.length > _PACKAGE_AUDIT_MAX_TOTAL_BYTES
+        || bytes.includes(0)) {
+      stats.skippedFiles++;
+      continue;
+    }
+    totalBytes += bytes.length;
+    stats.scannedFiles++;
+    const source = _stripSourceComments(bytes.toString('utf8'), ['.html', '.htm'].includes(path.extname(filePath).toLowerCase()));
+    const lines = source.split(/\r?\n/);
+    const lineForOffset = (offset) => source.slice(0, offset).split(/\r?\n/).length;
+    lines.forEach((line, index) => {
+      for (const [pattern, permissions] of _PERMISSION_API_RULES) {
+        const expression = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+        for (const match of line.matchAll(expression)) {
+          if (/window\.nova(?:OS)?\.app\.launch|window\.nova\.apps\.launch|window\.novaOS\.settings\.set/.test(match[0])) continue;
+          for (const permission of permissions) {
+            addEvidence(permission, { path: filePath, line: index + 1, source: match[0], kind: 'NovaOS API reference' });
+          }
+        }
+      }
+
+    });
+
+    const settingsSetIpcPattern = /(?:window\.)?nova(?:OS)?\.ipc\s*\(\s*(['"])nova:settings:set\1\s*,\s*\{[^}]*?\bkey\s*:\s*(['"])([^'"]+)\2/g;
+    const literalSettingsSetCalls = new Set();
+    for (const match of source.matchAll(settingsSetIpcPattern)) {
+      literalSettingsSetCalls.add(match.index);
+      if (['wallpaperId', 'customWallpaper'].includes(match[3])) continue;
+      addEvidence('system:settings', {
+        path: filePath, line: lineForOffset(match.index), source: match[0], kind: 'IPC call',
+      });
+    }
+
+    const ipcActionPattern = /(?:window\.)?nova(?:OS)?\.ipc\s*\(\s*(['"])(nova:[a-zA-Z0-9:_-]+)\1/g;
+    for (const match of source.matchAll(ipcActionPattern)) {
+      const action = match[2];
+      if (action === 'nova:app:launch') {
+        addAlternativeEvidence('app-launch', ['system:app-launch', 'system:apps'], {
+          path: filePath, line: lineForOffset(match.index), source: match[0], kind: 'IPC call',
+        });
+        continue;
+      }
+      if (action === 'nova:settings:set') {
+        if (!literalSettingsSetCalls.has(match.index)) {
+          addConditionalApi('Settings update (key-dependent)', filePath, lineForOffset(match.index));
+        }
+        continue;
+      }
+      const permissions = _permissionsForChannel(action);
+      if (action.startsWith('nova:reg:')) {
+        addConditionalApi('Registry operation (hive/ACL-dependent)', filePath, lineForOffset(match.index));
+      }
+      if (!permissions.length) {
+        const conditional = _conditionalPermissionForChannel(action);
+        if (conditional) {
+          addConditionalApi(conditional, filePath, lineForOffset(match.index));
+          continue;
+        }
+        if (_isKnownPermissionlessChannel(action)) continue;
+        if (!unknownActions.has(action) && unknownActions.size >= _PACKAGE_AUDIT_MAX_UNMAPPED_ACTIONS) {
+          stats.omittedUnknownActions++;
+          continue;
+        }
+        if (!unknownActions.has(action)) unknownActions.set(action, []);
+        const refs = unknownActions.get(action);
+        if (refs.length < _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION) {
+          refs.push({ path: filePath, line: lineForOffset(match.index) });
+        }
+      }
+      for (const permission of permissions) {
+        addEvidence(permission, {
+          path: filePath,
+          line: lineForOffset(match.index),
+          source: match[0],
+          kind: 'IPC call',
+        });
+      }
+    }
+
+    const appLaunchPattern = /window\.nova(?:OS)?\.app\.launch\s*\(|window\.nova\.apps\.launch\s*\(/g;
+    for (const match of source.matchAll(appLaunchPattern)) {
+      addAlternativeEvidence('app-launch', ['system:app-launch', 'system:apps'], {
+        path: filePath, line: lineForOffset(match.index), source: match[0], kind: 'App launch API',
+      });
+    }
+
+    const settingsSetPattern = /window\.novaOS\.settings\.set\s*\(\s*(['"])([^'"]+)\1/g;
+    const settingsSetMatches = [...source.matchAll(settingsSetPattern)];
+    for (const match of settingsSetMatches) {
+      if (['wallpaperId', 'customWallpaper'].includes(match[2])) continue;
+      addEvidence('system:settings', {
+        path: filePath, line: lineForOffset(match.index), source: match[0], kind: 'Settings API reference',
+      });
+    }
+    const settingsSetCallPattern = /window\.novaOS\.settings\.set\s*\(/g;
+    const literalSettingsSetOffsets = new Set(settingsSetMatches.map((match) => match.index));
+    for (const match of source.matchAll(settingsSetCallPattern)) {
+      if (!literalSettingsSetOffsets.has(match.index)) {
+        addConditionalApi('Settings update (key-dependent)', filePath, lineForOffset(match.index));
+      }
+    }
+
+    const registryPattern = /window\.novaOS\.registry\.(?:get|list|stat|export|watch|set|remove|import)\s*\(/g;
+    for (const match of source.matchAll(registryPattern)) {
+      addConditionalApi('Registry operation (hive/ACL-dependent)', filePath, lineForOffset(match.index));
+    }
+
+    const eventPattern = /(?:window\.)?nova(?:OS)?\.(?:events\.(?:on|subscribe)|onEvent)\s*\(\s*(['"])([^'"]+)\1/g;
+    for (const match of source.matchAll(eventPattern)) {
+      for (const permission of _permissionsForEvent(match[2])) {
+        addEvidence(permission, {
+          path: filePath,
+          line: lineForOffset(match.index),
+          source: match[0],
+          kind: 'Protected event subscription',
+        });
+      }
+    }
+
+    const requestPattern = /(?:window\.)?novaOS\.permissions\.request\s*\(\s*(['"])([a-zA-Z0-9_:.-]+)\1|window\.nova\.requestPermission\s*\(\s*(['"])([a-zA-Z0-9_:.-]+)\3/g;
+    for (const match of source.matchAll(requestPattern)) {
+      const permission = _canonicalPermission(match[2] || match[4]);
+      if (PERMISSION_IDS.has(permission)) {
+        addEvidence(permission, {
+          path: filePath,
+          line: lineForOffset(match.index),
+          source: match[0],
+          kind: 'Permission request',
+        });
+      }
+    }
+
+    const mediaPattern = /(?:window\.novaOS\.media\.getUserMedia|window\.nova\.getUserMedia)\s*\(([^)]*)\)/g;
+    for (const match of source.matchAll(mediaPattern)) {
+      const options = match[1];
+      const mediaPermissions = [];
+      if (/\bvideo\s*:\s*(?:true|\{)/.test(options)) mediaPermissions.push('device:camera');
+      if (/\baudio\s*:\s*(?:true|\{)/.test(options)) mediaPermissions.push('device:microphone');
+      if (!mediaPermissions.length) {
+        addConditionalApi('Camera/microphone constraints (argument-dependent)', filePath, lineForOffset(match.index));
+      }
+      for (const permission of mediaPermissions) {
+        addEvidence(permission, {
+          path: filePath,
+          line: lineForOffset(match.index),
+          source: match[0],
+          kind: 'Media API reference',
+        });
+      }
+    }
+
+    for (const [pattern, label] of [
+      [/window\.novaOS\.fs\.(?:read|write|watch)\s*\(/g, 'Filesystem access (path-dependent)'],
+      [/window\.novaOS\.media\.query\s*\(/g, 'Media query (type-dependent)'],
+      [/(?:window\.)?fetch\s*\(/g, 'Network fetch (URL-dependent)'],
+    ]) {
+      for (const match of source.matchAll(pattern)) {
+        addConditionalApi(label, filePath, lineForOffset(match.index));
+      }
+    }
+  }
+
+  return { evidence, unknownActions, conditionalApis, alternativeEvidence, stats };
+}
+
+function _auditRow(cls, icon, perm, label, evidence = []) {
   const row = document.createElement('div');
   row.className = `audit-row audit-row--${cls}`;
 
@@ -10173,6 +11833,13 @@ function _auditRow(cls, icon, perm, label) {
   lbl.textContent = label;
   textCol.appendChild(lbl);
 
+  for (const reference of evidence) {
+    const source = document.createElement('span');
+    source.className = 'audit-source';
+    source.textContent = `${reference.path}:${reference.line} · ${reference.kind}`;
+    textCol.appendChild(source);
+  }
+
   const known = _PERMISSION_MAP[perm];
   if (known?.description) {
     const why = document.createElement('span');
@@ -10185,18 +11852,61 @@ function _auditRow(cls, icon, perm, label) {
   return row;
 }
 
-function _renderPermissionAudit(declared, detected) {
-  // Use the native Set methods (ES2025) -- intersection preserves
-  // declared's iteration order, difference preserves the receiver's order,
-  // matching the original filter-based behaviour.
-  const ok = [...declared.intersection(detected)];
-  const missing = [...detected.difference(declared)];   // used but not declared
-  const unused = [...declared.difference(detected)];    // declared but not used
+function _renderPermissionAudit(declared, evidence, options = {}) {
+  const evidenceMap = evidence instanceof Map
+    ? evidence
+    : new Map([...evidence].map((permission) => [permission, []]));
+  const satisfiedBySuperset = new Set();
+  if (declared.has('registry.system')) {
+    for (const permission of ['registry.read', 'registry.write']) {
+      const references = evidenceMap.get(permission);
+      if (!references?.length) continue;
+      satisfiedBySuperset.add(permission);
+      evidenceMap.set('registry.system', [
+        ...(evidenceMap.get('registry.system') || []),
+        ...references,
+      ].slice(0, _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION));
+    }
+  }
+  const missingAlternatives = [];
+  for (const group of options.alternativeEvidence?.values() || []) {
+    const declaredAlternatives = group.permissions.filter((permission) => declared.has(permission));
+    if (!declaredAlternatives.length) {
+      missingAlternatives.push(group);
+      continue;
+    }
+    for (const permission of declaredAlternatives) {
+      evidenceMap.set(permission, [
+        ...(evidenceMap.get(permission) || []),
+        ...group.references,
+      ].slice(0, _PACKAGE_AUDIT_MAX_REFS_PER_PERMISSION));
+    }
+  }
+  const detected = new Set(evidenceMap.keys());
+  const ok = [...declared].filter((permission) => detected.has(permission));
+  const missing = [...detected].filter((permission) => !declared.has(permission) && !satisfiedBySuperset.has(permission));
+  const unconfirmed = [...declared].filter((permission) => !detected.has(permission));
 
   const rows = [
-    ...missing.map((p) => _auditRow('missing', 'close', p, 'used in code -- not declared')),
-    ...ok.map((p) => _auditRow('ok', 'check', p, 'declared & used')),
-    ...unused.map((p) => _auditRow('unused', 'alert', p, 'declared -- not detected in code')),
+    ...missing.map((permission) => _auditRow(
+      'missing', 'alert', permission, 'Source reference found · not declared', evidenceMap.get(permission),
+    )),
+    ...missingAlternatives.map((group) => _auditRow(
+      'missing', 'alert', group.permissions.join(' or '), 'Source reference found · declare one grant',
+      group.references,
+    )),
+    ...ok.map((permission) => _auditRow(
+      'ok', 'check', permission,
+      `${options.optional?.has(permission) ? 'Optional' : 'Required'} · source reference found`,
+      evidenceMap.get(permission),
+    )),
+    ...unconfirmed.map((permission) => _auditRow(
+      'unused', 'alert', permission,
+      `${options.optional?.has(permission) ? 'Optional' : 'Required'} · no static reference found`,
+    )),
+    ...(options.unknownDeclarations || []).map((permission) => _auditRow(
+      'unused', 'alert', permission, 'Unknown to this Studio permission catalog',
+    )),
   ];
 
   const card = document.createElement('div');
@@ -10207,29 +11917,74 @@ function _renderPermissionAudit(declared, detected) {
   title.textContent = 'Permission Audit';
   card.appendChild(title);
 
-  if (rows.length) {
-    const summary = document.createElement('span');
-    if (missing.length) {
-      summary.className = 'audit-summary audit-summary--error';
-      summary.textContent = `${missing.length} undeclared permission${missing.length > 1 ? 's' : ''} -- app may be blocked at runtime`;
-    } else if (unused.length) {
-      summary.className = 'audit-summary audit-summary--warn';
-      summary.textContent = `${unused.length} over-declared permission${unused.length > 1 ? 's' : ''} -- consider trimming`;
-    } else if (ok.length || detected.size === 0) {
-      summary.className = 'audit-summary audit-summary--ok';
-      summary.textContent = 'All permissions accounted for';
-    }
-    card.appendChild(summary);
+  const summary = document.createElement('span');
+  const undeclaredCount = missing.length + missingAlternatives.length;
+  summary.className = `audit-summary ${undeclaredCount ? 'audit-summary--error' : 'audit-summary--warn'}`;
+  summary.textContent = `${options.stats?.scannedFiles || 0} source files scanned · ${detected.size} permission${detected.size === 1 ? '' : 's'} with source references${undeclaredCount ? ` · ${undeclaredCount} not declared` : ''}`;
+  card.appendChild(summary);
 
+  const limitation = document.createElement('p');
+  limitation.className = 'audit-limitation';
+  limitation.textContent = 'Text-based static scan of JS/TS/HTML only: source references do not prove runtime use, and no match does not prove a permission is unused. Dynamic calls, template strings, path-dependent access, and behavior in skipped files may not be detected. Filesystem, registry, settings, media-query, and fetch calls with argument-dependent grants are listed separately.';
+  card.appendChild(limitation);
+
+  if (rows.length) {
     const list = document.createElement('div');
     list.className = 'audit-list';
     for (const row of rows) list.appendChild(row);
     card.appendChild(list);
   } else {
     const note = document.createElement('div');
-    note.style.cssText = 'font-size:11px;color:var(--text-faint);padding:6px 0';
-    note.textContent = 'No permissions declared or detected';
+    note.className = 'audit-limitation';
+    note.textContent = 'No known permission declarations or source references were found.';
     card.appendChild(note);
+  }
+
+  const notes = [];
+  if (options.stats?.skippedFiles) {
+    notes.push(`${options.stats.skippedFiles} file${options.stats.skippedFiles === 1 ? '' : 's'} skipped (binary, oversized, invalid, or scan limit).`);
+  }
+  if (options.stats?.truncated) notes.push('Scan stopped at its configured file/size limit; results are incomplete.');
+  if (options.unknownActions?.size) {
+    notes.push(`${options.unknownActions.size} unmapped Nova IPC action${options.unknownActions.size === 1 ? '' : 's'} found; they may be custom actions or from a newer OS.`);
+  }
+  if (options.stats?.omittedUnknownActions) {
+    notes.push(`${options.stats.omittedUnknownActions} additional unmapped action reference${options.stats.omittedUnknownActions === 1 ? '' : 's'} omitted.`);
+  }
+  if (options.invalidDeclarationCount) {
+    notes.push(`${options.invalidDeclarationCount} malformed permission entr${options.invalidDeclarationCount === 1 ? 'y was' : 'ies were'} ignored.`);
+  }
+  if (options.duplicateCount) {
+    notes.push(`${options.duplicateCount} duplicate permission entr${options.duplicateCount === 1 ? 'y' : 'ies'} found in the manifest.`);
+  }
+  if (notes.length) {
+    const note = document.createElement('p');
+    note.className = 'audit-limitation';
+    note.textContent = notes.join(' ');
+    card.appendChild(note);
+  }
+
+  if (options.unknownActions?.size) {
+    const unknown = document.createElement('div');
+    unknown.className = 'audit-unknown-actions';
+    const examples = [...options.unknownActions].slice(0, 8)
+      .map(([action, references]) => `${action} (${references[0].path}:${references[0].line})`);
+    unknown.textContent = `Unmapped action strings: ${examples.join(', ')}`;
+    card.appendChild(unknown);
+  }
+  if (options.omittedUnknownDeclarationCount) {
+    const note = document.createElement('p');
+    note.className = 'audit-limitation';
+    note.textContent = `${options.omittedUnknownDeclarationCount} additional unknown permission declaration${options.omittedUnknownDeclarationCount === 1 ? '' : 's'} omitted.`;
+    card.appendChild(note);
+  }
+  if (options.conditionalApis?.size) {
+    const conditional = document.createElement('div');
+    conditional.className = 'audit-conditional-apis';
+    const examples = [...options.conditionalApis].map(([api, references]) =>
+      `${api} (${references[0].path}:${references[0].line})`);
+    conditional.textContent = `Argument-dependent APIs: ${examples.join(', ')}`;
+    card.appendChild(conditional);
   }
   return card;
 }
@@ -10239,30 +11994,6 @@ function _runProjectPermissionAudit() {
   if (!host || !state.projectDir) return;
   const evidence = new Map();
   const sourceExtensions = new Set(['.js', '.mjs', '.cjs', '.ts', '.html', '.htm', '.css', '.json']);
-  const apiRules = [
-    [/window\.novaOS\.notifications\./, ['device:notifications']],
-    [/window\.novaOS\.alarms\./, ['system:schedule']],
-    [/window\.novaOS\.clipboard\.readText\b/, ['clipboard:read']],
-    [/window\.novaOS\.clipboard\.writeText\b/, ['clipboard:write']],
-    [/window\.novaOS\.app\.list\b/, ['system:apps']],
-    [/window\.novaOS\.app\.launch\b/, ['system:app-launch']],
-    [/window\.novaOS\.app\.info\b/, ['system:info']],
-    [/window\.novaOS\.settings\.get\b/, ['system:info']],
-    [/window\.novaOS\.settings\.set\b/, ['system:settings']],
-    [/window\.novaOS\.geolocation\./, ['device:geolocation']],
-    [/window\.novaOS\.calendar\.list\b/, ['calendar:read']],
-    [/window\.novaOS\.calendar\.save\b/, ['calendar:write']],
-    [/window\.novaOS\.calendar\.remove\b/, ['calendar:delete']],
-    [/window\.novaOS\.contacts\.list\b/, ['contacts:read']],
-    [/window\.novaOS\.contacts\.save\b/, ['contacts:write']],
-    [/window\.novaOS\.contacts\.remove\b/, ['contacts:delete']],
-    [/window\.novaOS\.data\.(?:backup|restore)\b/, ['data:backup']],
-    [/window\.novaOS\.data\.(?:export|import)\b/, ['data:export']],
-    [/window\.novaOS\.events\.on\b/, ['system:events']],
-    [/window\.novaOS\.badge\./, ['system:badge']],
-    [/window\.novaOS\.secrets\./, ['secrets:store']],
-    [/window\.novaOS\.share\.onInbound\b/, ['system:share-target']],
-  ];
   try {
     walkProjectFiles(state.projectDir, (filePath, relativePath) => {
       if (!sourceExtensions.has(path.extname(relativePath).toLowerCase())) return;
@@ -10276,7 +12007,7 @@ function _runProjectPermissionAudit() {
             if (refs.length < 4) refs.push({ path: relativePath, line: index + 1, action: match[0] });
           }
         }
-        for (const [pattern, permissions] of apiRules) {
+        for (const [pattern, permissions] of _PERMISSION_API_RULES) {
           const match = pattern.exec(line);
           if (!match) continue;
           for (const permission of permissions) {
@@ -10378,12 +12109,12 @@ function _runProjectPermissionAudit() {
 }
 
 async function inspectFile(filePath) {
-  let info, vResult, actions;
+  let info, vResult, pkg;
   try {
     info = inspect(filePath);
-    [vResult, actions] = await Promise.all([
+    [vResult, pkg] = await Promise.all([
       verify(filePath),
-      Promise.resolve(listActions(filePath)),
+      Promise.resolve(loadPackage(filePath)),
     ]);
   } catch (e) {
     $('inspector-dropzone').classList.remove('hidden');
@@ -10469,14 +12200,51 @@ async function inspectFile(filePath) {
   infoCard.appendChild(infoKv);
   grid.appendChild(infoCard);
 
-  // Permission audit card -- .novaapp files are untrusted, so we treat
-  // manifest.permissions and the detected action list as hostile input.
-  const declared = new Set([
-    ...(Array.isArray(info.manifest?.permissions) ? info.manifest.permissions : []),
-    ...(Array.isArray(info.manifest?.optionalPermissions) ? info.manifest.optionalPermissions : []),
-  ].map(_canonicalPermission));
-  const detected = new Set(actions.flatMap(_permissionsForChannel));
-  grid.appendChild(_renderPermissionAudit(declared, detected));
+  // A static source scan provides evidence, not proof of runtime use.
+  const rawRequired = Array.isArray(info.manifest?.permissions) ? info.manifest.permissions : [];
+  const rawOptional = Array.isArray(info.manifest?.optionalPermissions) ? info.manifest.optionalPermissions : [];
+  const rawDeclarations = [...rawRequired, ...rawOptional];
+  const declared = new Set();
+  const optional = new Set();
+  const required = new Set(rawRequired
+    .filter((permission) => typeof permission === 'string' && permission.trim())
+    .map((permission) => _canonicalPermission(permission.trim()))
+    .filter((permission) => PERMISSION_IDS.has(permission)));
+  const unknownDeclarations = new Set();
+  let invalidDeclarationCount = 0;
+  let duplicateCount = 0;
+  let omittedUnknownDeclarationCount = 0;
+  const seenDeclarations = new Set();
+  for (const value of rawDeclarations) {
+    if (typeof value !== 'string' || !value.trim()) {
+      invalidDeclarationCount++;
+      continue;
+    }
+    const permission = _canonicalPermission(value.trim());
+    if (seenDeclarations.has(permission)) duplicateCount++;
+    seenDeclarations.add(permission);
+    if (PERMISSION_IDS.has(permission)) declared.add(permission);
+    else if (unknownDeclarations.size < _PACKAGE_AUDIT_MAX_UNKNOWN_DECLARATIONS || unknownDeclarations.has(permission)) {
+      unknownDeclarations.add(permission);
+    } else omittedUnknownDeclarationCount++;
+  }
+  for (const value of rawOptional) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const permission = _canonicalPermission(value.trim());
+    if (PERMISSION_IDS.has(permission) && !required.has(permission)) optional.add(permission);
+  }
+  const audit = _scanPackagePermissionEvidence(pkg);
+  grid.appendChild(_renderPermissionAudit(declared, audit.evidence, {
+    optional,
+    unknownDeclarations: [...unknownDeclarations],
+    unknownActions: audit.unknownActions,
+    conditionalApis: audit.conditionalApis,
+    alternativeEvidence: audit.alternativeEvidence,
+    stats: audit.stats,
+    invalidDeclarationCount,
+    duplicateCount,
+    omittedUnknownDeclarationCount,
+  }));
 
   // Files card
   const filesCard = document.createElement('div');
@@ -10712,6 +12480,7 @@ function _wireRecentItems(container) {
 
 function showRecentContextMenu(x, y, dir) {
   hideContextMenu(); // close the file-tree menu if it happens to be open
+  hideEditorContextMenu();
   _recentContextTarget = dir;
   const entry = state.recentProjects.find((r) => r.dir === dir);
   const menu = $('recent-context-menu');
@@ -11894,6 +13663,10 @@ async function createProject() {
 
   closeModal('modal-new-project');
   await loadProject(dir);
+  if (_studioTutorialPendingProject && state.projectDir && state.screen === 'project') {
+    _studioTutorialPendingProject = false;
+    _startStudioTutorial('package');
+  }
 }
 
 function _createProjectFromUserTemplate(targetDir, template, overrides) {
@@ -12347,13 +14120,13 @@ function initRailResize() {
   const MIN_WIDTH = 160;
   const MAX_WIDTH = 320;
 
-  rail.style.width = `${state.railWidth || 220}px`;
+  const initialWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, state.railWidth || 220));
+  rail.style.width = `${initialWidth}px`;
+  handle.setAttribute('aria-valuenow', String(initialWidth));
 
-  // Minimum width the toolbar itself needs (path label can shrink to ~0,
-  // but the button row can't shrink below its own content).
+  // Keep the action row visible; the path label can shrink.
   const toolbarMinWidth = () => {
     if (!actions) return MIN_WIDTH;
-    // header horizontal padding (12px each side) + button row width
     return actions.scrollWidth + 24;
   };
 
@@ -12363,7 +14136,7 @@ function initRailResize() {
 
   const onMouseMove = (e) => {
     if (!dragging) return;
-    const delta = e.clientX - startX;
+    const delta = (e.clientX - startX) * (state.railDock === 'right' ? -1 : 1);
     const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + delta));
     const needed = toolbarMinWidth();
 
@@ -12375,6 +14148,7 @@ function initRailResize() {
       return;
     }
     rail.style.width = `${next}px`;
+    handle.setAttribute('aria-valuenow', String(Math.round(next)));
   };
 
   const onMouseUp = (_e, skipWidthSave) => {
@@ -12402,6 +14176,28 @@ function initRailResize() {
     document.addEventListener('mouseup', onMouseUp);
   });
 
+  handle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 32 : 8;
+    const direction = state.railDock === 'right' ? -1 : 1;
+    let next;
+    if (e.key === 'ArrowLeft') next = rail.getBoundingClientRect().width - step * direction;
+    else if (e.key === 'ArrowRight') next = rail.getBoundingClientRect().width + step * direction;
+    else if (e.key === 'Home') next = MIN_WIDTH;
+    else if (e.key === 'End') next = MAX_WIDTH;
+    else return;
+
+    e.preventDefault();
+    const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next));
+    if (width < toolbarMinWidth()) {
+      collapseRail();
+      return;
+    }
+    rail.style.width = `${width}px`;
+    state.railWidth = width;
+    handle.setAttribute('aria-valuenow', String(width));
+    saveStorage();
+  });
+
   // Manual collapse/expand controls
   $('btn-collapse-rail')?.addEventListener('click', () => collapseRail());
   $('btn-reopen-rail')?.addEventListener('click', () => expandRail());
@@ -12414,6 +14210,7 @@ function collapseRail(skipSave) {
   const handle = $('rail-resize-handle');
   const tab = $('btn-reopen-rail');
   if (!rail || !handle) return;
+  document.documentElement.dataset.railCollapsed = 'true';
   rail.classList.add('hidden');
   handle.classList.add('hidden');
   tab?.classList.remove('hidden');
@@ -12423,11 +14220,98 @@ function collapseRail(skipSave) {
   }
 }
 
+function _applyPaneDocking() {
+  const layout = $('main-layout');
+  const project = $('screen-project');
+  const root = document.documentElement;
+  const sidebarDock = state.sidebarDock === 'right' ? 'right' : 'left';
+  const railDock = state.railDock === 'right' ? 'right' : 'left';
+  root.dataset.sidebarDock = sidebarDock;
+  root.dataset.railDock = railDock;
+  if (layout) layout.dataset.sidebarDock = sidebarDock;
+  if (project) project.dataset.railDock = railDock;
+}
+
+function initPaneDocking() {
+  const panes = [
+    { key: 'sidebarDock', surface: '#sidebar .sidebar-brand', container: 'main-layout' },
+    { key: 'railDock', surface: '#project-rail .file-tree-header', container: 'screen-project' },
+  ];
+
+  _applyPaneDocking();
+
+  for (const pane of panes) {
+    const surface = document.querySelector(pane.surface);
+    const container = $(pane.container);
+    if (!surface || !container) continue;
+
+    const guides = document.createElement('div');
+    guides.className = 'pane-dock-guides hidden';
+    guides.setAttribute('aria-hidden', 'true');
+    for (const side of ['left', 'right']) {
+      const zone = document.createElement('div');
+      zone.className = 'pane-dock-zone';
+      zone.dataset.side = side;
+      const label = document.createElement('span');
+      label.textContent = `Dock ${side}`;
+      zone.appendChild(label);
+      guides.appendChild(zone);
+    }
+    container.appendChild(guides);
+
+    let pointerId = null;
+    let startX = 0;
+    let moved = false;
+
+    const finishDrag = (event, commit) => {
+      if (pointerId === null || (event && event.pointerId !== pointerId)) return;
+      const side = guides.dataset.active;
+      pointerId = null;
+      guides.classList.add('hidden');
+      guides.removeAttribute('data-active');
+      document.body.classList.remove('is-docking-pane');
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', cancel);
+      if (commit && moved && (side === 'left' || side === 'right')) {
+        state[pane.key] = side;
+        _applyPaneDocking();
+        saveStorage();
+      }
+    };
+
+    const move = (event) => {
+      if (event.pointerId !== pointerId) return;
+      if (!moved && Math.abs(event.clientX - startX) < 8) return;
+      moved = true;
+      const bounds = container.getBoundingClientRect();
+      guides.dataset.active = event.clientX < bounds.left + bounds.width / 2 ? 'left' : 'right';
+    };
+    const end = (event) => finishDrag(event, true);
+    const cancel = (event) => finishDrag(event, false);
+
+    surface.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || pointerId !== null ||
+          event.target.closest('button, a, input, select, textarea, [role="button"]')) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      moved = false;
+      guides.classList.remove('hidden');
+      guides.removeAttribute('data-active');
+      document.body.classList.add('is-docking-pane');
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', end);
+      document.addEventListener('pointercancel', cancel);
+    });
+  }
+}
+
 function expandRail() {
   const rail = $('project-rail');
   const handle = $('rail-resize-handle');
   const tab = $('btn-reopen-rail');
   if (!rail || !handle) return;
+  document.documentElement.dataset.railCollapsed = 'false';
   rail.classList.remove('hidden');
   handle.classList.remove('hidden');
   tab?.classList.add('hidden');
@@ -12435,20 +14319,106 @@ function expandRail() {
   saveStorage();
 }
 
+function _applySidebarWidth(width = state.sidebarWidth) {
+  const sidebar = $('sidebar');
+  const handle = $('sidebar-resize-handle');
+  if (!sidebar) return;
+  const next = Math.min(360, Math.max(190, Math.round(width)));
+  sidebar.style.width = `${next}px`;
+  handle?.setAttribute('aria-valuenow', String(next));
+}
+
+function initSidebarResize() {
+  const sidebar = $('sidebar');
+  const handle = $('sidebar-resize-handle');
+  if (!sidebar || !handle) return;
+
+  const MIN_WIDTH = 190;
+  const MAX_WIDTH = 360;
+  const maxWidth = () => {
+    const railWidth = $('project-rail')?.getBoundingClientRect().width || 220;
+    return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, window.innerWidth - railWidth - 460));
+  };
+  const applyWidth = (width) => {
+    const next = Math.min(maxWidth(), Math.max(MIN_WIDTH, Math.round(width)));
+    sidebar.style.width = `${next}px`;
+    handle.setAttribute('aria-valuenow', String(next));
+  };
+
+  applyWidth(state.sidebarWidth || 238);
+
+  let startX = 0;
+  let startWidth = 0;
+  let activePointerId = null;
+
+  const stopResize = (event) => {
+    if (activePointerId === null || (event && event.pointerId !== activePointerId)) return;
+    activePointerId = null;
+    handle.classList.remove('is-resizing');
+    document.body.classList.remove('is-resizing-sidebar');
+    document.removeEventListener('pointermove', moveResize);
+    document.removeEventListener('pointerup', stopResize);
+    document.removeEventListener('pointercancel', stopResize);
+    state.sidebarWidth = Math.round(sidebar.getBoundingClientRect().width);
+    saveStorage();
+  };
+  const moveResize = (event) => {
+    if (event.pointerId !== activePointerId) return;
+    const direction = state.sidebarDock === 'right' ? -1 : 1;
+    applyWidth(startWidth + (event.clientX - startX) * direction);
+  };
+  window.addEventListener('resize', () => applyWidth(state.sidebarWidth || 238));
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || sidebar.classList.contains('hidden')) return;
+    event.preventDefault();
+    activePointerId = event.pointerId;
+    startX = event.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    handle.classList.add('is-resizing');
+    document.body.classList.add('is-resizing-sidebar');
+    document.addEventListener('pointermove', moveResize);
+    document.addEventListener('pointerup', stopResize);
+    document.addEventListener('pointercancel', stopResize);
+  });
+
+  handle.addEventListener('keydown', (event) => {
+    const current = sidebar.getBoundingClientRect().width;
+    const step = event.shiftKey ? 32 : 12;
+    let next;
+    const direction = state.sidebarDock === 'right' ? -1 : 1;
+    if (event.key === 'ArrowLeft') next = current - step * direction;
+    else if (event.key === 'ArrowRight') next = current + step * direction;
+    else if (event.key === 'Home') next = MIN_WIDTH;
+    else if (event.key === 'End') next = maxWidth();
+    else return;
+    event.preventDefault();
+    applyWidth(next);
+    state.sidebarWidth = Math.round(sidebar.getBoundingClientRect().width);
+    saveStorage();
+  });
+}
+
 function initSidebarCollapse() {
   const sidebar = $('sidebar');
+  const handle = $('sidebar-resize-handle');
   const tab = $('btn-reopen-sidebar');
   if (!sidebar) return;
 
   const collapse = () => {
+    document.documentElement.dataset.sidebarCollapsed = 'true';
     sidebar.classList.add('hidden');
+    handle?.classList.add('hidden');
     tab?.classList.remove('hidden');
     state.sidebarCollapsed = true;
     saveStorage();
   };
 
   const expand = () => {
+    document.documentElement.dataset.sidebarCollapsed = 'false';
     sidebar.classList.remove('hidden');
+    handle?.classList.remove('hidden');
+    _applySidebarWidth();
     tab?.classList.add('hidden');
     state.sidebarCollapsed = false;
     saveStorage();
@@ -12459,6 +14429,7 @@ function initSidebarCollapse() {
 
   if (state.sidebarCollapsed) {
     sidebar.classList.add('hidden');
+    handle?.classList.add('hidden');
     tab?.classList.remove('hidden');
   }
 }
@@ -12920,47 +14891,150 @@ function _semverGt(a, b) {
 // slow / unreachable GitHub doesn't hang the launch. Silent by default --
 // the badge is the only signal; non-silent mode shows a toast on no-update.
 const UPDATE_CHECK_TIMEOUT_MS = 10_000;
+let _latestUpdateRelease = null;
 
 async function checkForUpdates(silent = true) {
+  const checkButton = $('btn-check-updates');
+  if (checkButton) checkButton.disabled = true;
+  if (!silent) {
+    $('modal-update')?.classList.remove('hidden');
+    $('update-title').textContent = 'Checking for updates';
+    $('update-current-version').textContent = `Installed version ${STUDIO_VERSION}`;
+    $('update-new-version').textContent = '';
+    $('update-status').textContent = 'Checking the latest release…';
+    $('update-footer-status').textContent = 'Contacting GitHub for the latest release.';
+    $('btn-download-update').disabled = true;
+    $('update-assets-section').classList.add('hidden');
+    $('update-changelog').textContent = '';
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
-  let res;
   try {
-    res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: { Accept: 'application/vnd.github+json' },
       signal: controller.signal,
     });
-  } catch (err) {
-    clearTimeout(timeout);
-    if (!silent) showToast('Could not check for updates');
-    return;
-  }
-  clearTimeout(timeout);
+    if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
+    const release = await res.json();
+    const latest = String(release.tag_name || '').replace(/^v/i, '');
+    if (!latest) throw new Error('Release response did not include a version tag');
 
-  if (!res.ok) return;
-  let release;
-  try {
-    release = await res.json();
-  } catch {
-    return;
-  }
-  const latest = (release.tag_name || '').replace(/^v/i, '');
-  if (!latest) return;
-
-  if (_semverGt(latest, STUDIO_VERSION)) {
+    _latestUpdateRelease = release;
     const badge = $('btn-update-badge');
-    if (badge) {
-      badge.classList.remove('hidden');
-      badge.onclick = () => openUpdateModal(release, latest);
+    if (_semverGt(latest, STUDIO_VERSION)) {
+      if (badge) {
+        badge.classList.remove('hidden');
+        badge.onclick = () => openUpdateModal(release, latest);
+      }
+      if (!silent) openUpdateModal(release, latest);
+    } else {
+      badge?.classList.add('hidden');
+      if (!silent) {
+        _renderNoUpdateState(release, latest);
+        showToast('NovaByte Studio is up to date');
+      }
     }
-  } else if (!silent) {
-    showToast('NovaByte Studio is up to date');
+  } catch (err) {
+    console.warn('[updates] Release check failed:', err);
+    if (!silent) {
+      $('update-title').textContent = 'Could not check for updates';
+      $('update-status').textContent = 'The latest release could not be reached.';
+      $('update-footer-status').textContent = 'Check your connection and try again.';
+      $('btn-download-update').disabled = !_latestUpdateRelease;
+      showToast('Could not check for updates');
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (checkButton) checkButton.disabled = false;
   }
 }
 
+function _renderNoUpdateState(release, latest) {
+  openUpdateModal(release, latest);
+  $('update-title').textContent = 'You’re up to date';
+  $('update-current-version').textContent = `Installed version ${STUDIO_VERSION}`;
+  $('update-new-version').textContent = `Latest version ${latest}`;
+  $('update-status').textContent = 'You’re running the latest release';
+  $('update-footer-status').textContent = 'No update is needed right now.';
+  $('btn-download-update').classList.add('hidden');
+  $('btn-download-update').disabled = false;
+  $('update-assets-section').classList.add('hidden');
+  $('update-new-version').classList.add('update-version-line--current');
+}
+
+function _formatReleaseDate(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime())
+    ? `Published ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date)}`
+    : '';
+}
+
+function _safeReleaseUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' &&
+      ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com'].includes(url.hostname)
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function _renderReleaseAssets(release) {
+  const section = $('update-assets-section');
+  const list = $('update-assets-list');
+  list.replaceChildren();
+  const assets = (Array.isArray(release.assets) ? release.assets : [])
+    .filter((asset) => asset && typeof asset.name === 'string' && _safeReleaseUrl(asset.browser_download_url));
+  $('update-release-assets-count').textContent = assets.length
+    ? `${assets.length} download${assets.length === 1 ? '' : 's'}`
+    : '';
+  if (!assets.length) {
+    section.classList.add('hidden');
+    return;
+  }
+
+  for (const asset of assets) {
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'update-asset';
+    const name = document.createElement('span');
+    name.className = 'update-asset-name';
+    name.textContent = asset.name;
+    const size = document.createElement('span');
+    size.className = 'update-asset-size';
+    size.textContent = Number.isFinite(asset.size) ? _formatSize(asset.size) : '';
+    link.append(name, size);
+    link.addEventListener('click', () => _openUpdateUrl(asset.browser_download_url));
+    list.appendChild(link);
+  }
+  section.classList.remove('hidden');
+}
+
+function _openUpdateUrl(value) {
+  const url = _safeReleaseUrl(value);
+  if (!url) {
+    showToast('This release link is not valid');
+    return;
+  }
+  nw.Shell.openExternal(url);
+}
+
 function openUpdateModal(release, latest) {
+  $('update-title').textContent = 'Update available';
   $('update-new-version').textContent = `Version ${latest} available`;
   $('update-current-version').textContent = `You have version ${STUDIO_VERSION}`;
+  $('update-status').textContent = 'A newer version is ready';
+  $('update-release-channel').textContent = release.prerelease ? 'Pre-release' : 'Stable release';
+  $('update-release-date').textContent = _formatReleaseDate(release.published_at);
+  $('update-footer-status').textContent = 'Updates are downloaded from the official release page.';
+  $('btn-download-update').textContent = 'View release';
+  $('btn-download-update').classList.remove('hidden');
+  $('btn-download-update').disabled = false;
+  $('update-new-version').classList.remove('update-version-line--current');
+  _renderReleaseAssets(release);
 
   let body = (release.body || 'No changelog provided.');
 
@@ -12983,17 +15057,15 @@ function openUpdateModal(release, latest) {
   // sanitize before injecting as HTML. Never skip the sanitize step just
   // because "it's our own repo": a compromised token or an edited release
   // is enough to turn this into a script-injection vector.
-  const rawHtml = (typeof marked !== 'undefined')
-    ? marked.parse(body)
-    : `<p>${_escHtml(body)}</p>`; // fallback if marked failed to load
+  const rawHtml = (typeof markdownit === 'function')
+    ? markdownit({ html: false, linkify: false, typographer: false }).render(body)
+    : `<p>${_escHtml(body)}</p>`; // fallback if markdown-it failed to load
   const cleanHtml = (typeof DOMPurify !== 'undefined')
-    ? DOMPurify.sanitize(rawHtml)
+    ? DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } })
     : _escHtml(body); // if DOMPurify is missing, never inject unsanitized HTML -- show escaped text instead
   $('update-changelog').innerHTML = cleanHtml;
 
-  $('btn-download-update').onclick = () => {
-    nw.Shell.openExternal(release.html_url);
-  };
+  $('btn-download-update').onclick = () => _openUpdateUrl(release.html_url);
 
   $('modal-update').classList.remove('hidden');
 }
@@ -13021,6 +15093,7 @@ function init() {
   _safeInit('loadStorage', loadStorage);
   _safeInit('applyTheme', () => applyTheme(state.theme));
   _safeInit('_initOsThemeListener', _initOsThemeListener);
+  _safeInit('studio tutorial', _initStudioTutorial);
   _safeInit('initWindowControls', initWindowControls);
   _safeInit('initWindowDesigner', initWindowDesigner);
   _safeInit('initDesignTab', initDesignTab);
@@ -13032,6 +15105,8 @@ function init() {
   _safeInit('initInspectorDrop', initInspectorDrop);
   _safeInit('renderRecent', renderRecent);
   _safeInit('_initThemePicker', _initThemePicker);
+  _safeInit('initPaneDocking', initPaneDocking);
+  _safeInit('initSidebarResize', initSidebarResize);
   _safeInit('initRailResize', initRailResize);
   _safeInit('initSidebarCollapse', initSidebarCollapse);
   _safeInit('_initManifestAutosave', _initManifestAutosave);
@@ -13040,11 +15115,16 @@ function init() {
   // Update shortcut badges to show Ctrl vs \u2318 based on platform
   _safeInit('shortcut labels', () => {
     const _sc = (id, lbl) => { const el = document.getElementById(id); if (el) el.textContent = lbl; };
+    _sc('editorctx-undo-shortcut', `${MOD_KEY}+Z`);
+    _sc('editorctx-redo-shortcut', `${MOD_KEY}+Shift+Z`);
+    _sc('editorctx-cut-shortcut', `${MOD_KEY}+X`);
+    _sc('editorctx-copy-shortcut', `${MOD_KEY}+C`);
+    _sc('editorctx-paste-shortcut', `${MOD_KEY}+V`);
+    _sc('editorctx-select-all-shortcut', `${MOD_KEY}+A`);
     _sc('sc-new', `${MOD_KEY}+N`);
     _sc('sc-open', `${MOD_KEY}+O`);
     _sc('sc-build', `${MOD_KEY}+B`);
     _sc('sc-quick-open', `${MOD_KEY}+P`);
-    _sc('sc-qo-icon', IS_MAC ? '\u2318' : '');
     _sc('sc-quickopen', `${MOD_KEY}+P`);
     _sc('sc-palette', `${MOD_KEY}+Shift+P`);
     _sc('sc-search', `${MOD_KEY}+Shift+F`);
@@ -13074,6 +15154,20 @@ function init() {
 
   // Sidebar
   _safeInit('sidebar buttons', () => {
+    const quickAccessToggle = $('btn-toggle-quick-access');
+    const quickAccess = $('sidebar-quick-actions');
+    const setQuickAccessCollapsed = (collapsed) => {
+      state.quickAccessCollapsed = collapsed;
+      document.documentElement.dataset.quickAccessCollapsed = String(collapsed);
+      quickAccessToggle?.setAttribute('aria-expanded', String(!collapsed));
+      quickAccess?.setAttribute('aria-hidden', String(collapsed));
+      if (quickAccess) quickAccess.inert = collapsed;
+    };
+    setQuickAccessCollapsed(state.quickAccessCollapsed);
+    quickAccessToggle?.addEventListener('click', () => {
+      setQuickAccessCollapsed(!state.quickAccessCollapsed);
+      saveStorage();
+    });
     $('btn-new-project')?.addEventListener('click', openNewProjectModal);
     $('btn-open-project')?.addEventListener('click', () => pickFolder(loadProject));
     $('btn-sidebar-command')?.addEventListener('click', openCommandPalette);
@@ -13203,6 +15297,20 @@ function init() {
     initEditorDirtyTracking();
     _initSettingsPage();
     $('btn-editor-empty-open')?.addEventListener('click', openQuickOpen);
+    $('cm-editor-host')?.addEventListener('contextmenu', (event) => {
+      if (!(event.target instanceof Element) || !event.target.closest('.cm-content')) return;
+      if (!_getActiveTab() || IMAGE_EXTS.has(path.extname(_getActiveTab().filePath).toLowerCase())) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _showEditorContextMenu(event.clientX, event.clientY);
+    });
+    $('editor-tabs')?.addEventListener('contextmenu', (event) => {
+      const tabElement = event.target instanceof Element ? event.target.closest('.editor-tab') : null;
+      if (!tabElement || IMAGE_EXTS.has(path.extname(tabs[Number(tabElement.dataset.index)]?.filePath || '').toLowerCase())) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _showEditorContextMenu(event.clientX, event.clientY, Number(tabElement.dataset.index));
+    });
     $('btn-editor-find')?.addEventListener('click', () => window.CM?.openFind());
     $('btn-editor-wrap')?.addEventListener('click', () => {
       const current = window.CM?.getSettings();
@@ -13240,6 +15348,21 @@ function init() {
 
   // Context menu actions
   _safeInit('context menu actions', () => {
+    $('editorctx-undo')?.addEventListener('click', () => { hideEditorContextMenu(); window.CM?.undo(); });
+    $('editorctx-redo')?.addEventListener('click', () => { hideEditorContextMenu(); window.CM?.redo(); });
+    $('editorctx-cut')?.addEventListener('click', () => { hideEditorContextMenu(); _copyEditorSelection(true); });
+    $('editorctx-copy')?.addEventListener('click', () => { hideEditorContextMenu(); _copyEditorSelection(); });
+    $('editorctx-paste')?.addEventListener('click', () => { hideEditorContextMenu(); _pasteEditorClipboard(); });
+    $('editorctx-select-all')?.addEventListener('click', () => { hideEditorContextMenu(); window.CM?.selectAll(); });
+    $('editorctx-format')?.addEventListener('click', async () => {
+      hideEditorContextMenu();
+      try {
+        await _formatActiveFile();
+      } catch (error) {
+        console.error('[editor] Formatting failed:', error);
+        showToast(`Could not format file: ${error.message}`);
+      }
+    });
     $('filectx-rename')?.addEventListener('click', () => { const t = _contextTarget; hideContextMenu(); renameItem(t); });
     $('filectx-duplicate')?.addEventListener('click', () => { const t = _contextTarget; hideContextMenu(); duplicateItem(t); });
     $('filectx-compare')?.addEventListener('click', () => {
@@ -13264,11 +15387,12 @@ function init() {
 
   // Dismiss context menus on outside click + Escape-to-close modals
   _safeInit('document-wide handlers', () => {
-    document.addEventListener('click', () => { hideContextMenu(); hideRecentContextMenu(); });
+    document.addEventListener('click', () => { hideContextMenu(); hideRecentContextMenu(); hideEditorContextMenu(); });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         hideContextMenu();
         hideRecentContextMenu();
+        hideEditorContextMenu();
         if (!$('modal-diff').classList.contains('hidden')) closeDiff();
         if (!$('modal-quick-open').classList.contains('hidden')) closeQuickOpen();
         if (!$('modal-workspace').classList.contains('hidden')) closeWorkspaces();
@@ -13441,11 +15565,39 @@ function init() {
     });
   });
 
+  _safeInit('update modal', () => {
+    $('btn-check-updates')?.addEventListener('click', () => checkForUpdates(false));
+    $('update-changelog')?.addEventListener('click', (event) => {
+      const link = event.target instanceof Element ? event.target.closest('a') : null;
+      if (!link) return;
+      event.preventDefault();
+      _openUpdateUrl(link.href);
+    });
+    $('btn-copy-update-version')?.addEventListener('click', async () => {
+      const version = _latestUpdateRelease?.tag_name || STUDIO_VERSION;
+      try {
+        await navigator.clipboard.writeText(version);
+        showToast(`Copied version ${version}`);
+      } catch (err) {
+        showToast(`Copy failed: ${err.message}`);
+      }
+    });
+    const notesButton = $('btn-toggle-update-notes');
+    const notesSection = $('update-changelog')?.closest('.update-notes-section');
+    notesButton?.addEventListener('click', () => {
+      const expanded = notesButton.getAttribute('aria-expanded') === 'true';
+      notesButton.setAttribute('aria-expanded', String(!expanded));
+      notesButton.textContent = expanded ? 'Expand' : 'Collapse';
+      notesSection?.classList.toggle('is-collapsed', expanded);
+    });
+  });
+
   // Check for updates on launch (silent -- only shows badge if newer version found)
   _safeInit('checkForUpdates', () => checkForUpdates());
 
   _safeInit('custom select controls', _initCustomSelects);
   _safeInit('_initEditorPermissionHover', _initEditorPermissionHover);
+  _safeInit('first-run setup', initFirstRunSetup);
 }
 
 // Boot. Only runs in a real browser/script context -- when this file is
@@ -13532,8 +15684,9 @@ if (typeof module !== 'undefined' && module.exports) {
     BuildError,
     // Coercion helpers
     _coerceToHex,
-    // Inspector rendering (depends on inspect/verify/listActions mocks)
+    // Inspector permission audit helpers
     _renderPermissionAudit,
+    _scanPackagePermissionEvidence,
     // Init wiring (so tests can call them in isolation if desired)
     _initNewProjectIdSync,
     // File pickers (NW.js)

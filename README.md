@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.20-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.30-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -114,14 +114,14 @@ Every new project includes a `vendor/` directory. Drop single-file libraries the
 
 ```
 vendor/
-  marked.min.js
+  markdown-it.min.js
   chart.min.js
 ```
 
 Reference them in your HTML as:
 
 ```html
-<script src="vendor/marked.min.js" defer></script>
+<script src="vendor/markdown-it.min.js" defer></script>
 ```
 
 Only copy the final built/minified file you need — don't copy entire `node_modules` folders.
@@ -154,7 +154,8 @@ logs/
 NovaByte Studio includes a full-featured CodeMirror 6 editor with:
 
 - **Multi-tab editing** — VS Code-style pinned/preview tabs with dirty indicators
-- **Syntax highlighting** — JavaScript, TypeScript, HTML, CSS, JSON, Markdown and more
+- **Syntax highlighting** — JavaScript, TypeScript, HTML, CSS, JSON, Markdown and more, including editable `.novaapp` package files
+- **Editor context menu** — undo/redo, clipboard actions, select all, and Prettier formatting with the file language detected automatically
 - **TypeScript intellisense** — in-process type-aware completion and linting via `@typescript/vfs` (no server required)
 - **Find / Replace** — search panel with next/previous/replace/replace-all
 - **Diff / merge view** — side-by-side file comparison, including unsaved changes vs disk

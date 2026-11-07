@@ -1821,7 +1821,7 @@ Start typing **markdown** on the left to see it rendered on the right.
 - supports [links](https://example.com)</textarea>
     <div id="preview" aria-label="Rendered preview" aria-live="polite"></div>
   </main>
-  <script src="vendor/marked.min.js" defer></script>
+  <script src="vendor/markdown-it.min.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>`,
@@ -1834,9 +1834,8 @@ function main() {
   const preview = document.getElementById('preview');
   const lifecycle = new AbortController();
 
-  // marked converts markdown to HTML but does not sanitize it — markdown
-  // allows raw HTML passthrough by default, so unescaped input (or a
-  // malicious link/image) becomes live markup the moment it hits innerHTML.
+  // Markdown output is untrusted even with raw HTML disabled. Sanitize the
+  // rendered HTML before adding it to the preview.
   //
   // This rebuilds the output in a new fragment instead of pruning the parsed
   // tree in place. Parsing via template.innerHTML and then unwrapping nodes
@@ -1913,12 +1912,16 @@ function main() {
     return clean;
   }
 
+  const md = typeof window.markdownit === 'function'
+    ? window.markdownit({ html: false, linkify: false, typographer: false })
+    : null;
+
   function render() {
-    if (typeof marked === 'undefined') {
-      preview.textContent = 'vendor/marked.min.js not found — drop the real library file into vendor/ to enable rendering.';
+    if (!md) {
+      preview.textContent = 'vendor/markdown-it.min.js not found — drop the library file into vendor/ to enable rendering.';
       return;
     }
-    preview.replaceChildren(sanitize(marked.parse(source.value)));
+    preview.replaceChildren(sanitize(md.render(source.value)));
   }
 
   source.addEventListener('input', render, { signal: lifecycle.signal });
@@ -2718,7 +2721,7 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
     }
 
     // vendor/ holds bundled third-party libraries the user drops in
-    // themselves (e.g. vendor/marked.min.js for the markdown-viewer template).
+    // themselves (e.g. vendor/markdown-it.min.js for the markdown-viewer template).
     // Files placed here are base64-encoded and included in the package
     // automatically at build time — reference them in HTML as
     // <script src="vendor/library.min.js">. Don't put node_modules here;
@@ -2734,11 +2737,11 @@ function create({ targetDir, template = 'blank', manifest, appsRoot } = {}) {
         'They are bundled automatically when you build — no CDN needed.',
         '',
         'Example:',
-        '  vendor/marked.min.js',
+        '  vendor/markdown-it.min.js',
         '  vendor/chart.min.js',
         '',
         'Then reference them in your HTML:',
-        '  <script src="vendor/marked.min.js" defer></script>',
+        '  <script src="vendor/markdown-it.min.js" defer></script>',
         '',
         'Do not put node_modules here — copy only the built/minified file you need.',
       ].join('\n'),

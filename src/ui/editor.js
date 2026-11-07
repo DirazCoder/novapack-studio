@@ -10,7 +10,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter,
          highlightSpecialChars, drawSelection, dropCursor,
          rectangularSelection, crosshairCursor,
          highlightActiveLine }                from '@codemirror/view';
-import { defaultKeymap, history,
+import { defaultKeymap, history, redo, undo,
          historyKeymap, indentWithTab }        from '@codemirror/commands';
 import { foldGutter, indentOnInput,
          syntaxHighlighting, defaultHighlightStyle,
@@ -70,7 +70,7 @@ function langForExt(ext) {
                           typescript: ext === '.ts' || ext === '.tsx' });
     case '.css': return css();
     case '.html': case '.htm': return html();
-    case '.json': return json();
+    case '.json': case '.jsonc': case '.json5': case '.novaapp': return json();
     case '.md': case '.markdown': return markdown();
     // Same extension set builder.js's CPP_SOURCE_EXTENSIONS detects for
     // compilation (.cpp/.cc/.cxx/.c), plus header extensions (.h/.hpp) --
@@ -94,7 +94,7 @@ const tsFacetComp  = new Compartment(); // ts/js type-aware completion, per file
 // so it's cached — switching tabs within the same project must NOT rebuild it.
 
 const _tsEnvCache = new Map(); // projectRoot -> VirtualTypeScriptEnvironment
-const _LIVE_SYNTAX_EXTS = new Set(['.json', '.css', '.html', '.htm']);
+const _LIVE_SYNTAX_EXTS = new Set(['.json', '.novaapp', '.css', '.html', '.htm']);
 
 function _liveSyntaxLinter(view) {
   const { state } = view;
@@ -442,6 +442,44 @@ window.CM = {
       changes: { from: 0, to: _view.state.doc.length, insert: content },
     });
   },
+
+  replaceDocument(content, cursorOffset) {
+    if (!_view) return;
+    const position = Math.max(0, Math.min(cursorOffset, content.length));
+    _view.dispatch({
+      changes: { from: 0, to: _view.state.doc.length, insert: content },
+      selection: { anchor: position },
+    });
+    _view.focus();
+  },
+
+  getSelectionText() {
+    if (!_view) return null;
+    const { from, to } = _view.state.selection.main;
+    return from === to ? '' : _view.state.sliceDoc(from, to);
+  },
+
+  replaceSelection(text) {
+    if (!_view) return;
+    const { from, to } = _view.state.selection.main;
+    const position = from + text.length;
+    _view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: position },
+    });
+    _view.focus();
+  },
+
+  selectAll() {
+    if (!_view) return;
+    _view.dispatch({
+      selection: { anchor: 0, head: _view.state.doc.length },
+    });
+    _view.focus();
+  },
+
+  undo() { if (_view) undo(_view); },
+  redo() { if (_view) redo(_view); },
 
   // Inserts text at the current selection (replacing it, if any), then
   // places the cursor at the end of the inserted text and scrolls it into

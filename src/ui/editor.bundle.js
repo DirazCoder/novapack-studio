@@ -32467,6 +32467,9 @@ var _CMLoaded = (() => {
       case ".htm":
         return html();
       case ".json":
+      case ".jsonc":
+      case ".json5":
+      case ".novaapp":
         return json();
       case ".md":
       case ".markdown":
@@ -32491,7 +32494,7 @@ var _CMLoaded = (() => {
   var fontSizeComp = new Compartment();
   var tsFacetComp = new Compartment();
   var _tsEnvCache = /* @__PURE__ */ new Map();
-  var _LIVE_SYNTAX_EXTS = /* @__PURE__ */ new Set([".json", ".css", ".html", ".htm"]);
+  var _LIVE_SYNTAX_EXTS = /* @__PURE__ */ new Set([".json", ".novaapp", ".css", ".html", ".htm"]);
   function _liveSyntaxLinter(view) {
     const { state } = view;
     const tree = ensureSyntaxTree(state, state.doc.length, 100);
@@ -32825,6 +32828,43 @@ var _CMLoaded = (() => {
       _view.dispatch({
         changes: { from: 0, to: _view.state.doc.length, insert: content2 }
       });
+    },
+    replaceDocument(content2, cursorOffset) {
+      if (!_view) return;
+      const position = Math.max(0, Math.min(cursorOffset, content2.length));
+      _view.dispatch({
+        changes: { from: 0, to: _view.state.doc.length, insert: content2 },
+        selection: { anchor: position }
+      });
+      _view.focus();
+    },
+    getSelectionText() {
+      if (!_view) return null;
+      const { from, to } = _view.state.selection.main;
+      return from === to ? "" : _view.state.sliceDoc(from, to);
+    },
+    replaceSelection(text) {
+      if (!_view) return;
+      const { from, to } = _view.state.selection.main;
+      const position = from + text.length;
+      _view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: position }
+      });
+      _view.focus();
+    },
+    selectAll() {
+      if (!_view) return;
+      _view.dispatch({
+        selection: { anchor: 0, head: _view.state.doc.length }
+      });
+      _view.focus();
+    },
+    undo() {
+      if (_view) undo(_view);
+    },
+    redo() {
+      if (_view) redo(_view);
     },
     // Inserts text at the current selection (replacing it, if any), then
     // places the cursor at the end of the inserted text and scrolls it into

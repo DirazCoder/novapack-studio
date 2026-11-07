@@ -2058,14 +2058,14 @@
     const presetRow =
       `<div class="nbpro-theme-presets">
         <span class="nbpro-bar-label">Preset:</span>
-        <button class="nbpro-chip${_proState.themePreset === 'nb-dark' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-dark">Dark</button>
-        <button class="nbpro-chip${_proState.themePreset === 'nb-light' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-light">Light</button>
-        <button class="nbpro-chip${_proState.themePreset === 'legacy-green' ? ' nbpro-chip--active' : ''}" data-theme-preset="legacy-green">Legacy Green</button>
-        <button class="nbpro-chip${_proState.themePreset === 'amber' ? ' nbpro-chip--active' : ''}" data-theme-preset="amber">Amber</button>
-        <button class="nbpro-chip${_proState.themePreset === 'nightshade' ? ' nbpro-chip--active' : ''}" data-theme-preset="nightshade">Nightshade</button>
-        <button class="nbpro-chip${_proState.themePreset === 'high-contrast' ? ' nbpro-chip--active' : ''}" data-theme-preset="high-contrast">High Contrast</button>
-        <button class="nbpro-chip${_proState.themePreset === 'forest' ? ' nbpro-chip--active' : ''}" data-theme-preset="forest">Forest</button>
-        <button class="nbpro-chip nbpro-chip--ghost" data-theme-preset="preview">Preview on canvas</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'nb-dark' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-dark">Dark</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'nb-light' ? ' nbpro-chip--active' : ''}" data-theme-preset="nb-light">Light</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'legacy-green' ? ' nbpro-chip--active' : ''}" data-theme-preset="legacy-green">Legacy Green</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'amber' ? ' nbpro-chip--active' : ''}" data-theme-preset="amber">Amber</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'nightshade' ? ' nbpro-chip--active' : ''}" data-theme-preset="nightshade">Nightshade</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'high-contrast' ? ' nbpro-chip--active' : ''}" data-theme-preset="high-contrast">High Contrast</button>
+        <button type="button" class="nbpro-chip${_proState.themePreset === 'forest' ? ' nbpro-chip--active' : ''}" data-theme-preset="forest">Forest</button>
+        <button type="button" class="nbpro-chip nbpro-chip--ghost" data-theme-preset="preview">Preview on canvas</button>
       </div>`;
     const scopeHtml = scopes.map((scope) => {
       const varList = Object.entries(vars[scope]).map(([name, val]) => {
@@ -2168,6 +2168,7 @@
   let _themeLiveOriginals = {};
   let _themeOriginalDataTheme;
   let _themeOriginalFrame = null;
+  let _themePresetLiveVars = new Set();
 
   function _rememberThemeOriginal(element, name) {
     const frame = $('design-frame');
@@ -2200,6 +2201,55 @@
     _themeOriginalDataTheme = undefined;
     _themeOriginalFrame = null;
     _themeLiveOverrides = {};
+    _themePresetLiveVars = new Set();
+  }
+
+  function _hostThemeVars(presetId, names) {
+    const probe = document.createElement('div');
+    probe.setAttribute('data-theme', presetId);
+    probe.style.cssText = 'position:fixed;left:-10000px;top:-10000px;visibility:hidden';
+    document.body.appendChild(probe);
+    try {
+      const computed = getComputedStyle(probe);
+      return Object.fromEntries(names.map((name) => [name, computed.getPropertyValue(name).trim()])
+        .filter(([, value]) => value));
+    } finally {
+      probe.remove();
+    }
+  }
+
+  function _applyPresetToFrame(presetId, cssText, updateState = true) {
+    const frame = $('design-frame');
+    if (!frame?.contentDocument?.documentElement) return false;
+    const root = frame.contentDocument.documentElement;
+    if (_themeOriginalDataTheme === undefined || _themeOriginalFrame !== frame) {
+      if (_themeOriginalFrame !== frame) {
+        _themeLiveOriginals = {};
+        _themePresetLiveVars = new Set();
+        _themeOriginalFrame = frame;
+      }
+      _themeOriginalDataTheme = root.hasAttribute('data-theme') ? root.getAttribute('data-theme') : null;
+    }
+
+    const scopes = _extractThemeVars(cssText);
+    const presetScope = Object.keys(scopes).find((scope) => scope.includes(`[data-theme="${presetId}"]`));
+    const rootScope = Object.keys(scopes).find((scope) => /(^|[,\s]):root(?:\s*,|\s*$|\s+)/.test(scope) || scope === ':root');
+    const presetVars = presetScope ? {} : _hostThemeVars(presetId, Object.keys(scopes[rootScope] || {}));
+    const nextVars = new Set(Object.keys(presetVars));
+    for (const name of _themePresetLiveVars) {
+      if (nextVars.has(name)) continue;
+      _rememberThemeOriginal(root, name);
+      root.style.removeProperty(name);
+    }
+    for (const [name, value] of Object.entries(presetVars)) {
+      _rememberThemeOriginal(root, name);
+      root.style.setProperty(name, value);
+    }
+    _themePresetLiveVars = nextVars;
+    root.setAttribute('data-theme', presetId);
+    if (updateState) _proState.themePreset = presetId;
+    _postFrame({ type: 'nbpro:setFlags', flags: _canvasFlags() });
+    return true;
   }
 
   function _writeThemeVarsToCss() {
@@ -2256,57 +2306,24 @@
 
   function _applyThemePreset(presetId) {
     if (presetId === 'preview') {
-      // "Preview on canvas" is meant to preview whichever preset chip is
-      // currently selected -- it was previously hardcoded to always pull
-      // nb-dark's vars regardless of selection (and nothing ever tracked
-      // a "currently selected preset" in the first place, so the button's
-      // own highlighted/active look didn't correspond to real state
-      // either). Fall back to nb-dark only if nothing's been picked yet.
       const activePreset = _proState.themePreset || 'nb-dark';
       const cssFile = _readStyleCss();
-      if (!cssFile) return;
-      const vars = _extractThemeVars(cssFile.text);
-      const scopeKey = Object.keys(vars).find((s) => s === ':root' || s.indexOf(`[data-theme="${activePreset}"]`) >= 0)
-        || Object.keys(vars).find((s) => s.indexOf(activePreset) >= 0)
-        || ':root';
-      const previewVars = vars[scopeKey] || {};
-      const frame = $('design-frame');
-      if (!frame?.contentDocument) return;
-      Object.entries(previewVars).forEach(([name, value]) => {
-        _rememberThemeOriginal(frame.contentDocument.documentElement, name);
-        frame.contentDocument.documentElement.style.setProperty(name, value);
-      });
+      if (!cssFile || !_applyPresetToFrame(activePreset, cssFile.text, false)) return;
       _showToast(`Previewing ${activePreset} theme on canvas`);
       return;
     }
-    if (_themeOriginalDataTheme === undefined && presetId) {
-      const frame = $('design-frame');
-      if (frame?.contentDocument) {
-        if (_themeOriginalFrame !== frame) {
-          _themeLiveOriginals = {};
-          _themeOriginalFrame = frame;
-        }
-        _themeOriginalDataTheme = frame.contentDocument.documentElement.hasAttribute('data-theme')
-          ? frame.contentDocument.documentElement.getAttribute('data-theme')
-          : null;
-      }
-    }
-    // Apply preset by setting data-theme on the iframe
-    const frame = $('design-frame');
-    if (!frame?.contentDocument) return;
-    frame.contentDocument.documentElement.setAttribute('data-theme', presetId);
-    _proState.themePreset = presetId;
-    _postFrame({ type: 'nbpro:setFlags', flags: _canvasFlags() });
+    const cssFile = _readStyleCss();
+    if (!cssFile || !_applyPresetToFrame(presetId, cssFile.text)) return;
     _saveProState();
     _renderThemeManager();
-    _showToast(`Canvas switched to ${presetId} preset`);
+    _showToast(`Canvas preview switched to ${presetId} preset`);
   }
 
   function _applySavedThemeToFrame() {
     const frame = $('design-frame');
     if (!frame?.contentDocument || !_proState.themePreset) return;
-    frame.contentDocument.documentElement.setAttribute('data-theme', _proState.themePreset);
-    _postFrame({ type: 'nbpro:setFlags', flags: _canvasFlags() });
+    const cssFile = _readStyleCss();
+    _applyPresetToFrame(_proState.themePreset, cssFile?.text || '');
   }
 
   // ── Transitions & hover-state inspector ──────────────────────────────────
@@ -2797,7 +2814,8 @@
   }
 
   function _pollForSyncDrift() {
-    if (state && state.activeTab !== 'design') return;
+    const appState = _state();
+    if (appState && appState.activeTab !== 'design') return;
     const projectDir = _state()?.projectDir || null;
     if (projectDir !== _lastKnownProjectDir) {
       _captureAstSnapshot();
