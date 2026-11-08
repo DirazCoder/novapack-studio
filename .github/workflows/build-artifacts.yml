@@ -48,7 +48,7 @@ jobs:
           - os: macos-latest
             flag: --mac
             folder: osx-arm64
-          - os: macos-13
+          - os: macos-26-intel
             flag: --mac-x64
             folder: osx-x64
 
