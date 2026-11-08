@@ -110,16 +110,18 @@ When a newer compatible marketplace version is available, the Marketplace
 offers an Update action. Updating replaces the installed package and disables
 it until you explicitly enable and trust the updated version.
 
-## Complete `api` reference
+## API Level 1: Studio 1.2.31–1.2.33
 
 Studio passes the same `api` object to `activate(api)` and `deactivate(api)`.
-The supported, versioned surface is `api.version === 1`.
+Studio 1.2.31–1.2.33 provide API Level 1 (`api.version === 1`). Studio 1.2.34
+and later provide API Level 2 (`api.version === 2`), which retains the Level 1
+surface and adds the APIs in the API Level 2 section below.
 
 ### Metadata and notification
 
 | Member | Description |
 |---|---|
-| `api.version` | Plugin API version number (`1`). |
+| `api.version` | Plugin API version number (`1` in Studio 1.2.31–1.2.33; `2` in Studio 1.2.34 and later). |
 | `api.studio.version` | Running Studio version string. |
 | `api.studio.plugin.id` | Installed plugin ID. |
 | `api.studio.plugin.name` | Installed plugin name. |
@@ -479,6 +481,147 @@ without notice. `api.design` is not a versioned plugin API.
 
 Plugins may use `api.node.require('some-module')` for modules available to
 Studio. This is unrestricted process access, not a sandboxed or isolated API.
+
+## API Level 2: Studio 1.2.34+
+
+API Level 2 keeps the Level 1 APIs and adds the following methods. APIs that
+touch project files still require an open project. Plugin registrations are
+removed when the plugin is deactivated.
+
+### Plugin themes (`api.ui`)
+
+Register a theme in both Studio theme pickers. Theme IDs are namespaced to the
+registering plugin (`plugin:{pluginId}:{id}`); only the listed Studio color
+tokens and hexadecimal colors are accepted.
+
+```js
+const disposeTheme = api.ui.registerTheme({
+  id: 'ocean',
+  label: 'Ocean',
+  swatch: '#22a6b3',
+  colors: {
+    '--bg-base': '#101b2d',
+    '--bg-panel': '#17263d',
+    '--bg-raised': '#203450',
+    '--accent': '#22a6b3',
+    '--accent-hover': '#35c3cc',
+    '--on-accent': '#071a1c',
+    '--text-primary': '#edf7ff',
+    '--text-mid': '#b3c9df',
+    '--text-muted': '#829bb5',
+    '--text-faint': '#607993',
+    '--border': '#2d4662',
+    '--border-mid': '#385572',
+  },
+});
+```
+
+| Method | Behavior |
+|---|---|
+| `api.ui.registerTheme({ id, label, colors, swatch? })` | Registers a theme and returns a disposer. `id` follows the command ID rule; `label` is 1–64 characters. `colors` must contain at least one valid color. Optional `swatch` is a hexadecimal color; by default it uses `colors['--accent']` or `#58a6ff`. |
+
+Supported `colors` keys are `--bg-base`, `--bg-panel`, `--bg-raised`,
+`--bg-hover`, `--bg-active`, `--bg-overlay`, `--border`, `--border-mid`,
+`--accent`, `--accent-dim`, `--accent-hover`, `--on-accent`,
+`--text-primary`, `--text-mid`, `--text-muted`, `--text-faint`, `--red`,
+`--yellow`, `--orange`, `--blue`, `--hover-wash`, and
+`--hover-wash-strong`. Values must be `#RGB` or `#RRGGBB`, except the two
+hover-wash tokens, which also accept `rgba(r, g, b, a)` with RGB channels from
+0–255 and alpha from 0–1. Omitted tokens inherit from NovaByte Dark. Themes
+are removed on deactivation; if a plugin's theme is active when it is removed,
+Studio returns to NovaByte Dark. A selected plugin theme is restored when its
+plugin registers it on a later launch.
+
+`api.ui.getThemes()` includes registered plugin themes. Use the returned ID
+with `api.ui.setTheme(themeId)` to select one.
+
+### Persistent plugin storage (`api.storage`)
+
+Storage is JSON-backed and namespaced to the calling plugin. It uses Studio's
+local persistence and does not share keys with other plugins.
+
+| Method | Behavior |
+|---|---|
+| `api.storage.get(key, fallbackValue?)` | Returns the parsed value, or `fallbackValue` (default `undefined`) when the key is missing. Invalid stored JSON throws. |
+| `api.storage.set(key, value)` | Stores a JSON-serializable value. Throws for invalid keys, values, or storage errors. |
+| `api.storage.delete(key)` | Removes a key and returns whether it existed. |
+| `api.storage.keys()` | Returns this plugin's keys in sorted order. |
+| `api.storage.clear()` | Removes this plugin's keys only. |
+
+Keys must be non-empty strings of at most 128 characters. Values must be
+JSON-serializable; storage quota and browser persistence errors are surfaced
+to the caller. Stored data remains after a plugin is disabled or uninstalled;
+use `clear()` when the plugin is being removed and its data is no longer needed.
+
+### Native file dialogs (`api.dialogs`)
+
+```js
+api.dialogs.openFile({ accept: '.json,.txt' }, (filePath) => {
+  api.notify(`Selected ${filePath}`);
+});
+
+api.dialogs.openFolder((folderPath) => {
+  api.notify(`Selected ${folderPath}`);
+});
+```
+
+| Method | Behavior |
+|---|---|
+| `api.dialogs.openFile(options, callback)` | Opens Studio's native file picker. `options.accept` is an optional file-accept filter string. Calls `callback(absolutePath)` when a file is selected. |
+| `api.dialogs.openFile(callback)` | Same as above with no filter. |
+| `api.dialogs.openFolder(callback)` | Opens Studio's native folder picker and calls `callback(absolutePath)` when a folder is selected. |
+
+The callback is not called when the picker is canceled. Picker errors are
+reported by Studio. These APIs select existing files or folders; they do not
+provide a save-file dialog.
+
+### Clipboard (`api.clipboard`)
+
+| Method | Behavior |
+|---|---|
+| `await api.clipboard.readText()` | Reads clipboard text; rejects if clipboard access is unavailable or denied. |
+| `await api.clipboard.writeText(text)` | Writes a string to the clipboard; rejects if clipboard access is unavailable or denied. |
+
+Clipboard access follows the host runtime's permission and user-gesture rules.
+
+### System information (`api.system`)
+
+`api.system.getInfo()` returns a new snapshot:
+
+```js
+{
+  platform: 'win32',        // Node.js process.platform
+  architecture: 'x64',     // Node.js process.arch
+  release: '10.0.0',       // operating-system release
+  studioVersion: '1.2.34',
+  nodeVersion: '...'
+}
+```
+
+This intentionally exposes only platform and version information, not
+environment variables or process arguments.
+
+### Workspace integration (`api.workspace`)
+
+| Method | Behavior |
+|---|---|
+| `api.workspace.getState()` | Returns a snapshot `{ activeView, views, activeFile, openFiles }`. |
+| `api.workspace.switchView(viewId)` | Activates a built-in or registered plugin view; returns whether it became active. |
+| `api.workspace.openFile(relativePath)` | Opens a file in the current project using the same behavior as `api.project.openFile()`. |
+| `api.workspace.saveAll()` | Saves dirty editor tabs and returns whether all tabs are clean afterward. |
+| `api.workspace.focusEditor()` | Focuses the current editor if it is mounted. |
+
+### Additional project helpers (`api.project`)
+
+These are convenience methods in addition to the Level 1 project file APIs.
+They use the same project boundary checks.
+
+| Method | Behavior |
+|---|---|
+| `api.project.getAbsolutePath(relativePath)` | Resolves a project-relative path to an absolute path, rejecting paths or symlinks outside the open project. |
+| `api.project.getRelativePath(absolutePath)` | Returns a slash-separated project-relative path. Rejects non-absolute paths and paths outside the open project. |
+| `api.project.readJson(relativePath)` | Reads and parses a project JSON file; file and parse errors are thrown. |
+| `api.project.writeJson(relativePath, value)` | Writes a JSON-serializable value as two-space-indented JSON with a trailing newline. Creates parent directories as needed. |
 
 ## Resource cleanup
 

@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.33-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.34-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -18,7 +18,7 @@
 
 <br>
 
-[**Getting Started**](#getting-started) · [**Templates**](#available-templates) · [**Create a template**](./STUDIO_TEMPLATES.md) · [**Build from source**](#build-from-source) · [**.novaapp Guide**](./NOVAAPP.md)
+[**Getting Started**](#getting-started) · [**Templates**](#available-templates) · [**Create a template**](./STUDIO_TEMPLATES.md) · [**Plugin API**](./STUDIO_PLUGINS.md) · [**Build from source**](#build-from-source) · [**.novaapp Guide**](./NOVAAPP.md)
 
 </div>
 

@@ -85,6 +85,7 @@ const _studioPluginCatalogDetails = new Map();
 const _studioPluginCatalogDetailRequests = new Map();
 const _studioPluginCommands = new Map();
 const _studioPluginViews = new Map();
+const _studioPluginThemes = new Map();
 const _studioPluginActivationErrors = new Map();
 const _studioPluginEventTarget = new EventTarget();
 const _studioPluginDisposers = new Map();
@@ -1184,7 +1185,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.33';
+const STUDIO_VERSION = '1.2.34';
 const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme
@@ -1254,7 +1255,9 @@ const CUSTOM_THEME_VARS = [
 const CUSTOM_THEME_STORAGE_KEY = 'novapack_custom_theme';
 
 function _isValidTheme(themeId) {
-  return themeId === CUSTOM_THEME_ID || THEMES.some((t) => t.id === themeId);
+  return themeId === CUSTOM_THEME_ID
+    || THEMES.some((t) => t.id === themeId)
+    || _studioPluginThemes.has(themeId);
 }
 
 function _migrateThemeId(themeId) {
@@ -1300,12 +1303,21 @@ function _syncDesignSelectionAccent() {
 }
 
 function applyTheme(themeId) {
-  const valid = _isValidTheme(themeId) ? themeId : DEFAULT_THEME;
-  document.documentElement.setAttribute('data-theme', valid);
+  const pendingPluginTheme = typeof themeId === 'string'
+    && /^plugin:[a-z0-9][a-z0-9.-]{2,127}:[a-z0-9][a-z0-9.-]{0,63}$/i.test(themeId)
+    && !_studioPluginThemes.has(themeId);
+  const valid = _isValidTheme(themeId) || pendingPluginTheme ? themeId : DEFAULT_THEME;
+  const pluginTheme = _studioPluginThemes.get(valid);
+  document.documentElement.setAttribute(
+    'data-theme',
+    pluginTheme || pendingPluginTheme ? DEFAULT_THEME : valid,
+  );
   state.theme = valid;
 
   if (valid === CUSTOM_THEME_ID) {
     _applyCustomColors(state.customColors);
+  } else if (pluginTheme) {
+    _applyCustomColors(pluginTheme.colors);
   } else {
     _applyCustomColors(null); // strip any leftover inline overrides
   }
@@ -1977,7 +1989,11 @@ const CUSTOM_THEME_SWATCH_GRADIENT =
   'linear-gradient(135deg, #ef4444 0%, #eab308 33%, #22c55e 66%, #3b82f6 100%)';
 
 function _themeOptionEntries() {
-  return [...THEMES, { id: CUSTOM_THEME_ID, label: 'Custom', swatch: CUSTOM_THEME_SWATCH_GRADIENT }];
+  return [
+    ...THEMES,
+    { id: CUSTOM_THEME_ID, label: 'Custom', swatch: CUSTOM_THEME_SWATCH_GRADIENT },
+    ..._studioPluginThemes.values(),
+  ];
 }
 
 function renderThemePicker() {
@@ -9832,6 +9848,13 @@ async function _installMarketplacePlugin(plugin) {
 }
 
 function _createStudioPluginApi(plugin) {
+  const pluginStoragePrefix = `novabyte-studio:plugin:${encodeURIComponent(plugin.id)}:`;
+  const validateStorageKey = (key) => {
+    if (typeof key !== 'string' || !key.trim() || key.length > 128 || key.includes('\0')) {
+      throw new TypeError('Storage keys must be non-empty strings of at most 128 characters');
+    }
+    return `${pluginStoragePrefix}${key}`;
+  };
   const commands = {
     registerCommand(id, label, action, options = {}) {
       if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
@@ -10032,8 +10055,63 @@ function _createStudioPluginApi(plugin) {
       });
     },
   };
+  const registerTheme = ({ id, label, colors, swatch } = {}) => {
+    if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+      || typeof label !== 'string' || !label.trim() || label.length > 64
+      || !colors || typeof colors !== 'object' || Array.isArray(colors)) {
+      throw new TypeError('ui.registerTheme requires a valid ID, label, and color map');
+    }
+    const themeId = `plugin:${plugin.id}:${id}`;
+    if (_studioPluginThemes.has(themeId) || THEMES.some((theme) => theme.id === themeId)) {
+      throw new Error(`Plugin theme already registered: ${id}`);
+    }
+    const allowedColors = new Set(CUSTOM_THEME_VARS.flatMap((group) => group.vars.map((variable) => variable.key)));
+    const themeColors = {};
+    for (const [name, value] of Object.entries(colors)) {
+      const isHexColor = typeof value === 'string' && /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(value);
+      const rgbaMatch = typeof value === 'string' ? /^rgba\((.+)\)$/i.exec(value) : null;
+      const rgbaChannels = rgbaMatch?.[1].split(',').map((channel) => channel.trim());
+      const isRgbaColor = ['--hover-wash', '--hover-wash-strong'].includes(name)
+        && rgbaChannels?.length === 4
+        && rgbaChannels.slice(0, 3).every((channel) => /^\d{1,3}$/.test(channel) && Number(channel) <= 255)
+        && /^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(rgbaChannels[3]);
+      if (!allowedColors.has(name) || (!isHexColor && !isRgbaColor)) {
+        throw new TypeError(`Invalid plugin theme color: ${name}`);
+      }
+      themeColors[name] = value;
+    }
+    if (!Object.keys(themeColors).length) throw new TypeError('A plugin theme must define at least one color');
+    if (swatch !== undefined && (typeof swatch !== 'string' || !/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(swatch))) {
+      throw new TypeError('Theme swatch must be a hexadecimal color');
+    }
+    const theme = {
+      id: themeId,
+      label: `${label.trim()} (${plugin.name})`,
+      swatch: swatch || themeColors['--accent'] || '#58a6ff',
+      colors: themeColors,
+    };
+    _studioPluginThemes.set(themeId, theme);
+    if (state.theme === themeId) applyTheme(themeId);
+    renderThemePicker();
+    const settingsList = $('theme-picker-list-settings');
+    const settingsMenu = $('theme-picker-menu-settings');
+    if (settingsList && settingsMenu) _renderSettingsThemeList(settingsList, settingsMenu);
+    return _ownStudioPluginResource(plugin.id, () => {
+      _studioPluginThemes.delete(themeId);
+      if (state.theme === themeId) {
+        setTheme(DEFAULT_THEME);
+      } else {
+        renderThemePicker();
+        const settingsThemeList = $('theme-picker-list-settings');
+        const settingsThemeMenu = $('theme-picker-menu-settings');
+        if (settingsThemeList && settingsThemeMenu) {
+          _renderSettingsThemeList(settingsThemeList, settingsThemeMenu);
+        }
+      }
+    });
+  };
   const api = {
-    version: 1,
+    version: 2,
     studio: { version: STUDIO_VERSION, plugin: { id: plugin.id, name: plugin.name, version: plugin.version } },
     notify(message) {
       showToast(`${plugin.name}: ${String(message).slice(0, 500)}`);
@@ -10116,6 +10194,36 @@ function _createStudioPluginApi(plugin) {
           isPreview: tab.preview,
         } : null;
       },
+      getAbsolutePath(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        return resolveProjectPath(state.projectDir, relativePath);
+      },
+      getRelativePath(absolutePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof absolutePath !== 'string' || !path.isAbsolute(absolutePath)) {
+          throw new TypeError('getRelativePath requires an absolute path');
+        }
+        const target = path.resolve(absolutePath);
+        const projectRoot = path.resolve(state.projectDir);
+        const realProjectRoot = fs.realpathSync(projectRoot);
+        let relative = path.relative(projectRoot, target);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+          relative = path.relative(realProjectRoot, target);
+          if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+            throw new Error('Path is outside the open project');
+          }
+        }
+        const safeTarget = resolveProjectPath(state.projectDir, relative || '.');
+        return path.relative(realProjectRoot, safeTarget).split(path.sep).join('/');
+      },
+      readJson(relativePath) {
+        return JSON.parse(api.project.readFile(relativePath, 'utf8'));
+      },
+      writeJson(relativePath, value) {
+        const serialized = JSON.stringify(value, null, 2);
+        if (serialized === undefined) throw new TypeError('writeJson requires a JSON-serializable value');
+        api.project.writeFile(relativePath, `${serialized}\n`, 'utf8');
+      },
     },
     files: {
       getOpenFiles() {
@@ -10180,8 +10288,9 @@ function _createStudioPluginApi(plugin) {
     ui: {
       notify: (message) => api.notify(message),
       getTheme: () => state.theme,
-      getThemes: () => [...THEMES, { id: CUSTOM_THEME_ID, label: 'Custom' }]
+      getThemes: () => [...THEMES, { id: CUSTOM_THEME_ID, label: 'Custom' }, ..._studioPluginThemes.values()]
         .map(({ id, label }) => ({ id, label })),
+      registerTheme,
       setTheme(themeId) {
         if (!_isValidTheme(themeId)) throw new TypeError(`Unsupported Studio theme: ${themeId}`);
         setTheme(themeId);
@@ -10209,6 +10318,92 @@ function _createStudioPluginApi(plugin) {
         if (!allowed.has(name)) throw new TypeError(`Unsupported Studio view: ${name}`);
         switchTab(name);
         return state.activeTab === name;
+      },
+    },
+    storage: {
+      get(key, fallbackValue) {
+        const serialized = localStorage.getItem(validateStorageKey(key));
+        return serialized === null ? fallbackValue : JSON.parse(serialized);
+      },
+      set(key, value) {
+        const serialized = JSON.stringify(value);
+        if (serialized === undefined) throw new TypeError('Storage values must be JSON-serializable');
+        localStorage.setItem(validateStorageKey(key), serialized);
+      },
+      delete(key) {
+        const storageKey = validateStorageKey(key);
+        const existed = localStorage.getItem(storageKey) !== null;
+        localStorage.removeItem(storageKey);
+        return existed;
+      },
+      keys() {
+        const keys = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const storageKey = localStorage.key(index);
+          if (storageKey?.startsWith(pluginStoragePrefix)) {
+            keys.push(storageKey.slice(pluginStoragePrefix.length));
+          }
+        }
+        return keys.sort();
+      },
+      clear() {
+        for (const key of api.storage.keys()) localStorage.removeItem(validateStorageKey(key));
+      },
+    },
+    dialogs: {
+      openFile(options, callback) {
+        if (typeof options === 'function') {
+          callback = options;
+          options = {};
+        }
+        if (!options || typeof options !== 'object' || Array.isArray(options)
+          || (options.accept !== undefined && typeof options.accept !== 'string')
+          || typeof callback !== 'function') {
+          throw new TypeError('dialogs.openFile requires an options object and callback');
+        }
+        pickFile(options.accept || null, callback);
+      },
+      openFolder(callback) {
+        if (typeof callback !== 'function') throw new TypeError('dialogs.openFolder requires a callback');
+        pickFolder(callback);
+      },
+    },
+    clipboard: {
+      async readText() {
+        if (typeof navigator === 'undefined' || typeof navigator.clipboard?.readText !== 'function') {
+          throw new Error('Clipboard read access is unavailable in this Studio runtime');
+        }
+        return navigator.clipboard.readText();
+      },
+      async writeText(text) {
+        if (typeof text !== 'string') throw new TypeError('clipboard.writeText requires a string');
+        if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') {
+          throw new Error('Clipboard write access is unavailable in this Studio runtime');
+        }
+        await navigator.clipboard.writeText(text);
+      },
+    },
+    system: {
+      getInfo: () => ({
+        platform: process.platform,
+        architecture: process.arch,
+        release: os.release(),
+        studioVersion: STUDIO_VERSION,
+        nodeVersion: process.versions.node,
+      }),
+    },
+    workspace: {
+      getState: () => ({
+        activeView: state.activeTab,
+        views: api.ui.getViews(),
+        activeFile: api.files.getActiveFile(),
+        openFiles: api.files.getOpenFiles(),
+      }),
+      switchView: (viewId) => api.ui.switchView(viewId),
+      openFile: (relativePath) => api.project.openFile(relativePath),
+      saveAll: () => api.files.saveAll(),
+      focusEditor() {
+        if (typeof window !== 'undefined') window.CM?.focus();
       },
     },
     build: {
@@ -15550,7 +15745,12 @@ function _openNativePicker(input, callback, expectedKind) {
       return;
     }
     try {
-      callback(selectedPath);
+      const result = callback(selectedPath);
+      if (result && typeof result.catch === 'function') {
+        result.catch((callbackError) => {
+          showToast(`Could not process the selected ${expectedKind}: ${callbackError.message}`);
+        });
+      }
     } catch (err) {
       showToast(`Could not process the selected ${expectedKind}: ${err.message}`);
     }
@@ -15675,6 +15875,26 @@ function _posixPickerCommands(kind, accept, startDirectory) {
   const kdialogArgs = kind === 'folder'
     ? ['--getexistingdirectory', withSlash]
     : ['--getopenfilename', withSlash, extensions.map((ext) => `*.${ext}`).join(' ')].filter(Boolean);
+  if (process.platform === 'linux') {
+    const pythonChooser = [
+      'import sys, tkinter as tk',
+      'from tkinter import filedialog',
+      'root = tk.Tk()',
+      'root.withdraw()',
+      'root.wm_attributes("-topmost", True)',
+      kind === 'folder'
+        ? 'value = filedialog.askdirectory(initialdir=sys.argv[1], title="Select a folder")'
+        : 'value = filedialog.askopenfilename(initialdir=sys.argv[1], title="Select a file")',
+      'root.destroy()',
+      'print(value, end="")',
+    ].join('; ');
+    return [
+      { cmd: 'zenity', args: zenityArgs },
+      { cmd: 'kdialog', args: kdialogArgs },
+      { cmd: 'yad', args: kind === 'folder' ? ['--file-selection', '--directory', `--filename=${withSlash}`] : ['--file-selection', `--filename=${withSlash}`] },
+      { cmd: 'python3', args: ['-c', pythonChooser, startDirectory] },
+    ];
+  }
   return [{ cmd: 'zenity', args: zenityArgs }, { cmd: 'kdialog', args: kdialogArgs }];
 }
 
@@ -15698,6 +15918,14 @@ function _runPosixPicker(kind, accept, callback, fallback) {
       if (err) {
         // osascript reports cancel as error -128, zenity/kdialog as exit code 1 with no output
         if (!picked && (/-128/.test(stderr || '') || err.code === 1)) return;
+        // A desktop chooser can be unavailable even though its executable exists
+        // (for example, Tkinter is not installed or no X11 display is active).
+        // Try the remaining external pickers instead of falling into NW's native
+        // directory input, which can terminate Linux ARM64 Chromium builds.
+        if (process.platform === 'linux' && !picked && index < commands.length - 1) {
+          tryNext(index + 1);
+          return;
+        }
         showToast(`Could not open the ${kind} picker: ${String(stderr || '').trim() || err.message}`);
         return;
       }
@@ -15716,7 +15944,12 @@ function _runPosixPicker(kind, accept, callback, fallback) {
         return;
       }
       try {
-        callback(selectedPath);
+        const result = callback(selectedPath);
+        if (result && typeof result.catch === 'function') {
+          result.catch((callbackError) => {
+            showToast(`Could not process the selected ${kind}: ${callbackError.message}`);
+          });
+        }
       } catch (callbackError) {
         showToast(`Could not process the selected ${kind}: ${callbackError.message}`);
       }
@@ -15731,6 +15964,10 @@ function pickFolder(callback) {
     return;
   }
   const fallback = () => {
+    if (process.platform === 'linux') {
+      showToast('No folder picker is available. Install zenity, kdialog, yad, or Python Tkinter.');
+      return;
+    }
     const input = document.createElement('input');
     input.type = 'file';
     input.setAttribute('nwdirectory', '');
@@ -15741,6 +15978,10 @@ function pickFolder(callback) {
 
 function pickFile(accept, callback) {
   const fallback = () => {
+    if (process.platform === 'linux') {
+      showToast('No file picker is available. Install zenity, kdialog, yad, or Python Tkinter.');
+      return;
+    }
     const input = document.createElement('input');
     input.type = 'file';
     if (accept) input.accept = accept;
