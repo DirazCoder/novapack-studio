@@ -91,6 +91,10 @@ async function loadEmsdkEnvironment(emsdkRoot) {
     EM_CONFIG: path.join(emsdkRoot, '.emscripten'),
   };
   if (windows) {
+    // EMSDK supports x64 Windows-host tools on ARM64 Windows through
+    // emulation. Keep the host architecture aligned with the bundled SDK,
+    // even when NovaByte Studio itself is running on an ARM64 Windows host.
+    env.EMSDK_ARCH = 'x86_64';
     await runFile('cmd.exe', ['/d', '/c', 'call emsdk.bat activate latest'], {
       cwd: emsdkRoot,
       env,
