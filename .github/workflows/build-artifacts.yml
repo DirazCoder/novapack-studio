@@ -71,7 +71,7 @@ jobs:
           fi
 
       - name: Clone EMSDK Manifest for Cache Key
-        run: git clone --depth 1 https://github.com "${{ env.EMSDK_PATH }}"
+        run: git clone --depth 1 https://github.com/emscripten-core/emsdk.git "${{ env.EMSDK_PATH }}"
 
       - name: Cache Emscripten SDK
         id: cache-emsdk
