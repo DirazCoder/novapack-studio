@@ -107,10 +107,32 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          echo "${{ env.EMSDK_PATH }}" >> $env:GITHUB_PATH
-          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') construct_env | Out-String | ConvertFrom-StringData | ForEach-Object {
-            echo "$($_.Key)=$($_.Value)" >> $env:GITHUB_ENV
+          $emsdkPath = $env:EMSDK_PATH
+          $emsdkEnvironment = & $env:ComSpec /d /c "call `"$emsdkPath\emsdk.bat`" construct_env >nul && set"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $environmentVariables = @{}
+          foreach ($line in $emsdkEnvironment) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $environmentVariables[$Matches[1]] = $Matches[2]
+            }
           }
+
+          $requiredVariables = @('EMSDK', 'EMSDK_NODE', 'EMSDK_PYTHON', 'PATH')
+          $missingVariables = $requiredVariables | Where-Object { -not $environmentVariables.ContainsKey($_) }
+          if ($missingVariables) {
+            throw "EMSDK did not provide required environment variables: $($missingVariables -join ', ')"
+          }
+
+          foreach ($name in @('EMSDK', 'EMSDK_NODE', 'EMSDK_PYTHON', 'EM_CONFIG', 'EM_CACHE')) {
+            if ($environmentVariables.ContainsKey($name)) {
+              "$name=$($environmentVariables[$name])" >> $env:GITHUB_ENV
+            }
+          }
+
+          $environmentVariables['PATH'] -split ';' |
+            Where-Object { $_ -like "$emsdkPath*" } |
+            ForEach-Object { $_ >> $env:GITHUB_PATH }
 
       - name: Load Emscripten Environment (Linux/macOS)
         if: runner.os != 'Windows'
