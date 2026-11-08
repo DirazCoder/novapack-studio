@@ -9,20 +9,28 @@ const dist = path.join(root, 'dist');
 
 const allPlatforms = [
   { platform: 'win', arch: 'x64' },
+  { platform: 'win', arch: 'arm64' },
   { platform: 'osx', arch: 'arm64' },
+  { platform: 'osx', arch: 'x64' },
   { platform: 'linux', arch: 'x64' },
+  { platform: 'linux', arch: 'arm64' },
 ];
 const platformFlags = new Map([
-  ['--win', 'win'],
-  ['--windows', 'win'],
-  ['--mac', 'osx'],
-  ['--macos', 'osx'],
-  ['--linux', 'linux'],
+  ['--win', 'win-x64'],
+  ['--windows', 'win-x64'],
+  ['--win-arm64', 'win-arm64'],
+  ['--windows-arm64', 'win-arm64'],
+  ['--mac', 'osx-arm64'],
+  ['--macos', 'osx-arm64'],
+  ['--mac-x64', 'osx-x64'],
+  ['--macos-x64', 'osx-x64'],
+  ['--linux', 'linux-x64'],
+  ['--linux-arm64', 'linux-arm64'],
 ]);
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log('Usage: npm run build -- [--win] [--mac] [--linux]');
+  console.log('Usage: npm run build -- [--win|--win-arm64] [--mac|--mac-x64] [--linux|--linux-arm64]');
   console.log('Builds all platforms by default. Pass one or more flags to build only those platforms.');
   process.exit(0);
 }
@@ -36,7 +44,7 @@ if (unknownArgs.length) {
 
 const selectedPlatforms = new Set(args.map((arg) => platformFlags.get(arg)));
 const platforms = selectedPlatforms.size
-  ? allPlatforms.filter(({ platform }) => selectedPlatforms.has(platform))
+  ? allPlatforms.filter(({ platform, arch }) => selectedPlatforms.has(`${platform}-${arch}`))
   : allPlatforms;
 
 fs.rmSync(staging, { recursive: true, force: true });

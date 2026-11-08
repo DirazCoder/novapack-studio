@@ -1184,7 +1184,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.32';
+const STUDIO_VERSION = '1.2.33';
 const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme

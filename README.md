@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.32-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.33-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -54,9 +54,10 @@ npm run build -- --win
 npm run build -- --mac
 npm run build -- --linux
 npm run build -- --win --linux
+npm run build -- --win-arm64 --linux-arm64 --mac-x64
 ```
 
-The flags also accept `--windows` and `--macos` aliases. A platform-specific build replaces only that platform's output under `dist/`; other platform builds are left untouched. Run `npm run build -- --help` to see usage.
+The architecture-specific flags are `--win-arm64`, `--linux-arm64`, and `--mac-x64`; the default `--win`, `--linux`, and `--mac` flags build Windows x64, Linux x64, and macOS arm64, respectively. The flags also accept `--windows` and `--macos` aliases for their defaults, plus `--windows-arm64` and `--macos-x64`. A platform-specific build replaces only that platform's output under `dist/`; other platform builds are left untouched. Run `npm run build -- --help` to see usage.
 
 ---
 
