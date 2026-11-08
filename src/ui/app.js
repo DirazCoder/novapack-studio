@@ -14635,22 +14635,111 @@ function _pickFolderWindows(callback) {
   });
 }
 
+function _acceptToExtensions(accept) {
+  return String(accept || '')
+    .split(',')
+    .map((part) => part.trim().replace(/^\./, '').toLowerCase())
+    .filter((part) => /^[a-z0-9]+$/.test(part));
+}
+
+// Each entry builds argv for one OS dialog tool. They run out of process like the
+// Windows picker, because NW.js's own <input nwdirectory> dialog takes the whole
+// app down on macOS and Linux when the user confirms a selection.
+function _posixPickerCommands(kind, accept, startDirectory) {
+  const extensions = _acceptToExtensions(accept);
+  if (process.platform === 'darwin') {
+    const chooser = kind === 'folder'
+      ? 'choose folder with prompt "Select a folder" default location (POSIX file (item 1 of argv))'
+      : `choose file with prompt "Select a file" default location (POSIX file (item 1 of argv))${
+        extensions.length ? ` of type {${extensions.map((ext) => `"${ext}"`).join(', ')}}` : ''}`;
+    return [{
+      cmd: 'osascript',
+      args: ['-e', 'on run argv', '-e', `POSIX path of (${chooser})`, '-e', 'end run', startDirectory],
+    }];
+  }
+  const withSlash = startDirectory.endsWith('/') ? startDirectory : `${startDirectory}/`;
+  const zenityArgs = ['--file-selection', `--filename=${withSlash}`];
+  if (kind === 'folder') zenityArgs.push('--directory');
+  else if (extensions.length) zenityArgs.push(`--file-filter=Supported files | ${extensions.map((ext) => `*.${ext}`).join(' ')}`);
+  const kdialogArgs = kind === 'folder'
+    ? ['--getexistingdirectory', withSlash]
+    : ['--getopenfilename', withSlash, extensions.map((ext) => `*.${ext}`).join(' ')].filter(Boolean);
+  return [{ cmd: 'zenity', args: zenityArgs }, { cmd: 'kdialog', args: kdialogArgs }];
+}
+
+function _runPosixPicker(kind, accept, callback, fallback) {
+  const startDirectory = _pickerStartDirectory();
+  if (!startDirectory) return;
+  const commands = _posixPickerCommands(kind, accept, startDirectory);
+
+  const tryNext = (index) => {
+    if (index >= commands.length) {
+      fallback();
+      return;
+    }
+    const { cmd, args } = commands[index];
+    execFile(cmd, args, { maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err && err.code === 'ENOENT') {
+        tryNext(index + 1);
+        return;
+      }
+      const picked = String(stdout || '').trim();
+      if (err) {
+        // osascript reports cancel as error -128, zenity/kdialog as exit code 1 with no output
+        if (!picked && (/-128/.test(stderr || '') || err.code === 1)) return;
+        showToast(`Could not open the ${kind} picker: ${String(stderr || '').trim() || err.message}`);
+        return;
+      }
+      if (!picked) return;
+      // osascript returns folders with a trailing slash
+      const selectedPath = picked.length > 1 ? picked.replace(/\/+$/, '') : picked;
+      let stats;
+      try {
+        stats = fs.statSync(selectedPath);
+      } catch (statError) {
+        showToast(`Could not access the selected ${kind}: ${statError.message}`);
+        return;
+      }
+      if (kind === 'folder' ? !stats.isDirectory() : !stats.isFile()) {
+        showToast(`The ${kind} picker did not return a ${kind} path.`);
+        return;
+      }
+      try {
+        callback(selectedPath);
+      } catch (callbackError) {
+        showToast(`Could not process the selected ${kind}: ${callbackError.message}`);
+      }
+    });
+  };
+  tryNext(0);
+}
+
 function pickFolder(callback) {
   if (process.platform === 'win32') {
     _pickFolderWindows(callback);
     return;
   }
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.setAttribute('nwdirectory', '');
-  _openNativePicker(input, callback, 'folder');
+  const fallback = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.setAttribute('nwdirectory', '');
+    _openNativePicker(input, callback, 'folder');
+  };
+  _runPosixPicker('folder', null, callback, fallback);
 }
 
 function pickFile(accept, callback) {
-  const input = document.createElement('input');
-  input.type = 'file';
-  if (accept) input.accept = accept;
-  _openNativePicker(input, callback, 'file');
+  const fallback = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    if (accept) input.accept = accept;
+    _openNativePicker(input, callback, 'file');
+  };
+  if (process.platform === 'win32') {
+    fallback();
+    return;
+  }
+  _runPosixPicker('file', accept, callback, fallback);
 }
 
 // Studio-native replacements for Chromium's blocking alert/confirm/prompt.
