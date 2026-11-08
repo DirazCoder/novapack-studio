@@ -118,7 +118,6 @@ jobs:
         run: |
           echo "${{ env.EMSDK_PATH }}" >> $GITHUB_PATH
           echo "EMSDK=${{ env.EMSDK_PATH }}" >> $GITHUB_ENV
-          # Source environment flags to expose variable configurations explicitly
           source "${{ env.EMSDK_PATH }}/emsdk_env.sh"
           echo "EM_CONFIG=$EM_CONFIG" >> $GITHUB_ENV
 
