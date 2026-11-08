@@ -48,7 +48,7 @@ jobs:
           - os: macos-latest
             flag: --mac
             folder: osx-arm64
-          - os: macos-26-intel
+          - os: macos-13
             flag: --mac-x64
             folder: osx-x64
 
@@ -58,6 +58,73 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # -------------------------------------------------------------
+      # EMSDK CACHE SETUP
+      # -------------------------------------------------------------
+      - name: Set EMSDK Target Path
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "EMSDK_PATH=$RUNNER_TEMP\emsdk" >> $GITHUB_ENV
+          else
+            echo "EMSDK_PATH=$RUNNER_TEMP/emsdk" >> $GITHUB_ENV
+          fi
+
+      - name: Clone EMSDK Manifest for Cache Key
+        run: git clone --depth 1 https://github.com "${{ env.EMSDK_PATH }}"
+
+      - name: Cache Emscripten SDK
+        id: cache-emsdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EMSDK_PATH }}
+          key: emsdk-${{ runner.os }}-${{ matrix.folder }}-${{ hashFiles(format('{0}/emscripten-releases-tags.json', env.EMSDK_PATH)) }}
+
+      # -------------------------------------------------------------
+      # INSTALL EMSDK (Runs only if cache misses)
+      # -------------------------------------------------------------
+      - name: Install Emscripten SDK (Windows)
+        if: runner.os == 'Windows' && steps.cache-emsdk.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $env:EMSDK_ARCH = 'x86_64'
+          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') install latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') activate latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Emscripten SDK (Linux/macOS)
+        if: runner.os != 'Windows' && steps.cache-emsdk.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          "${{ env.EMSDK_PATH }}/emsdk" install latest
+          "${{ env.EMSDK_PATH }}/emsdk" activate latest
+
+      # -------------------------------------------------------------
+      # EXPOSE ENVIRONMENT VARIABLES (Runs on both Hit and Miss)
+      # -------------------------------------------------------------
+      - name: Load Emscripten Environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          echo "${{ env.EMSDK_PATH }}" >> $env:GITHUB_PATH
+          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') construct_env | Out-String | ConvertFrom-StringData | ForEach-Object {
+            echo "$($_.Key)=$($_.Value)" >> $env:GITHUB_ENV
+          }
+
+      - name: Load Emscripten Environment (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "${{ env.EMSDK_PATH }}" >> $GITHUB_PATH
+          echo "EMSDK=${{ env.EMSDK_PATH }}" >> $GITHUB_ENV
+          # Source environment flags to expose variable configurations explicitly
+          source "${{ env.EMSDK_PATH }}/emsdk_env.sh"
+          echo "EM_CONFIG=$EM_CONFIG" >> $GITHUB_ENV
+
+      # -------------------------------------------------------------
+      # BUILD RUNNERS & DEPENDENCIES
+      # -------------------------------------------------------------
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -66,67 +133,48 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Emscripten SDK (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $emsdk = Join-Path $env:RUNNER_TEMP 'emsdk'
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git $emsdk
-          & (Join-Path $emsdk 'emsdk.bat') install latest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $emsdk 'emsdk.bat') activate latest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Install Emscripten SDK (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          "$RUNNER_TEMP/emsdk/emsdk" install latest
-          "$RUNNER_TEMP/emsdk/emsdk" activate latest
-
       - name: Build ${{ matrix.folder }}
         run: node build.mjs ${{ matrix.flag }}
 
+      # -------------------------------------------------------------
+      # CLEANUP & BUNDLING
+      # -------------------------------------------------------------
       - name: Clear Emscripten SDK cache & clean installers (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $emsdk = Join-Path $env:RUNNER_TEMP 'emsdk'
-          # Fixed path sourcing execution:
-          $command = 'call "{0}" >nul && emcc --clear-cache' -f (Join-Path $emsdk 'emsdk_env.bat')
+          $command = 'call "{0}" >nul && emcc --clear-cache' -f (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk_env.bat')
           & $env:ComSpec /d /s /c $command
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          
-          # Remove heavy installer zips and local configurations
-          if (Test-Path (Join-Path $emsdk 'zips')) { Remove-Item -Recurse -Force (Join-Path $emsdk 'zips') }
-          if (Test-Path (Join-Path $emsdk '.git')) { Remove-Item -Recurse -Force (Join-Path $emsdk '.git') }
+          if (Test-Path (Join-Path "${{ env.EMSDK_PATH }}" 'zips')) { Remove-Item -Recurse -Force (Join-Path "${{ env.EMSDK_PATH }}" 'zips') }
+          if (Test-Path (Join-Path "${{ env.EMSDK_PATH }}" '.git')) { Remove-Item -Recurse -Force (Join-Path "${{ env.EMSDK_PATH }}" '.git') }
 
       - name: Clear Emscripten SDK cache & clean installers (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          source "${{ env.EMSDK_PATH }}/emsdk_env.sh"
           emcc --clear-cache
-          
-          # Remove heavy installer zips and git histories
-          rm -rf "$RUNNER_TEMP/emsdk/zips"
-          rm -rf "$RUNNER_TEMP/emsdk/.git"
+          rm -rf "${{ env.EMSDK_PATH }}/zips"
+          rm -rf "${{ env.EMSDK_PATH }}/.git"
 
       - name: Bundle Emscripten SDK (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force (Join-Path $env:GITHUB_WORKSPACE "dist\${{ matrix.folder }}")
-          Copy-Item -Recurse (Join-Path $env:RUNNER_TEMP 'emsdk') (Join-Path $env:GITHUB_WORKSPACE "dist\${{ matrix.folder }}\emsdk")
+          Copy-Item -Recurse "${{ env.EMSDK_PATH }}" (Join-Path $env:GITHUB_WORKSPACE "dist\${{ matrix.folder }}\emsdk")
 
       - name: Bundle Emscripten SDK (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p "dist/${{ matrix.folder }}"
-          cp -a "$RUNNER_TEMP/emsdk" "dist/${{ matrix.folder }}/emsdk"
+          cp -a "${{ env.EMSDK_PATH }}" "dist/${{ matrix.folder }}/emsdk"
 
+      # -------------------------------------------------------------
+      # PACKAGING ARTIFACTS
+      # -------------------------------------------------------------
       - name: Install 7-Zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -147,7 +195,6 @@ jobs:
         shell: bash
         run: |
           brew install sevenzip
-          echo "/opt/homebrew/bin" >> $GITHUB_PATH
 
       - name: Archive build with Ultra Settings (Windows)
         if: runner.os == 'Windows'
@@ -160,7 +207,6 @@ jobs:
         shell: bash
         working-directory: dist/${{ matrix.folder }}
         run: |
-          # Use 7zz on mac or standard 7z on Linux
           COMMAND=$(command -v 7z || command -v 7zz)
           $COMMAND a -mx=9 -m0=lzma2 -md=64m -ms=on "../NovaByte-Studio-${{ matrix.folder }}-${{ needs.read-version.outputs.version }}.7z" .
 
