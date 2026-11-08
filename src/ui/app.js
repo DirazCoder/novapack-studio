@@ -55,16 +55,34 @@ const {
 const { TEMPLATES, create } = require('./src/sdk/templates.js');
 const AppPackage = require('./src/sdk/app-package.js');
 const {
+  downloadCommunityTemplate,
+  fetchCommunityTemplateCatalog,
+  validateCommunityTemplateBundle,
+  validateTemplateFilePath,
+} = require('./src/sdk/community-templates.js');
+const {
   activatePlugins,
   createPluginManager,
   deactivatePlugins,
+  downloadStudioPluginArchive,
+  fetchStudioPluginCatalog,
+  getPluginIconDataUrl,
   isPluginDomNode,
   listProjectFiles,
   resolveProjectPath,
 } = require('./src/sdk/plugins.js');
+const semver = require('semver');
 
 let _studioPluginManager = null;
 let _activeStudioPlugins = [];
+let _studioPluginCatalog = [];
+let _studioPluginCatalogLoaded = false;
+let _studioPluginCatalogLoading = false;
+let _studioPluginManagerView = 'marketplace';
+let _studioPluginSelectedId = null;
+let _studioPluginCatalogRevision = 0;
+const _studioPluginCatalogDetails = new Map();
+const _studioPluginCatalogDetailRequests = new Map();
 const _studioPluginCommands = new Map();
 const _studioPluginViews = new Map();
 const _studioPluginActivationErrors = new Map();
@@ -167,6 +185,7 @@ const state = {
   autosaveManifest: true,
   autosaveEditor: true,
   uiDensity: 'comfortable',
+  disableGlassEffects: false,
 };
 window.state = state;
 
@@ -724,6 +743,7 @@ let screens = {}; // populated in init() after HTML is injected by the build
 
 // Storage
 const STORAGE_KEY = 'novapack_studio_data';
+const GLASS_EFFECTS_STORAGE_KEY = 'novapack_studio_disable_glass_effects';
 
 // File-tree watcher state. Both are torn down on every project switch to
 // avoid stacking watchers across loadProject() calls.
@@ -779,14 +799,20 @@ function getDefaultTheme() {
 // to defaults rather than poisoning the in-memory state with partial data.
 function loadStorage() {
   let raw;
+  let glassEffectsPreference = null;
   try {
     raw = localStorage.getItem(STORAGE_KEY);
+    const storedGlassEffects = localStorage.getItem(GLASS_EFFECTS_STORAGE_KEY);
+    if (storedGlassEffects === 'true' || storedGlassEffects === 'false') {
+      glassEffectsPreference = storedGlassEffects === 'true';
+    }
   } catch (err) {
     // localStorage can throw in private mode or when storage is disabled.
     // Fall back to defaults -- the app still runs, just without persistence.
     raw = null;
   }
 
+  state.disableGlassEffects = glassEffectsPreference === true;
   if (!raw) {
     state.firstRunSetupComplete = false;
     state.theme = getDefaultTheme();
@@ -798,6 +824,7 @@ function loadStorage() {
     state.railCollapsed = false;
     state.sidebarCollapsed = false;
     state.quickAccessCollapsed = true;
+    _applyGlassEffects();
     return;
   }
 
@@ -817,6 +844,7 @@ function loadStorage() {
     state.railCollapsed = false;
     state.sidebarCollapsed = false;
     state.quickAccessCollapsed = true;
+    _applyGlassEffects();
     return;
   }
 
@@ -852,6 +880,8 @@ function loadStorage() {
   state.autosaveManifest = data.autosaveManifest !== false;
   state.autosaveEditor = data.autosaveEditor !== false;
   state.uiDensity = data.uiDensity === 'compact' ? 'compact' : 'comfortable';
+  state.disableGlassEffects = glassEffectsPreference ?? (data.disableGlassEffects === true);
+  _applyGlassEffects();
 }
 
 function saveStorage() {
@@ -874,6 +904,7 @@ function saveStorage() {
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
       uiDensity: state.uiDensity,
+      disableGlassEffects: state.disableGlassEffects,
     });
   } catch (err) {
     // JSON.stringify only fails on circular references or symbols on
@@ -883,6 +914,10 @@ function saveStorage() {
   }
   try {
     localStorage.setItem(STORAGE_KEY, serialized);
+    localStorage.setItem(
+      GLASS_EFFECTS_STORAGE_KEY,
+      state.disableGlassEffects ? 'true' : 'false',
+    );
   } catch (err) {
     // Swallow QuotaExceededError -- persistence is best-effort. The app keeps
     // working in-memory; the user just won't see their changes after restart.
@@ -939,6 +974,7 @@ function exportStudioSettings() {
       autosaveManifest: state.autosaveManifest,
       autosaveEditor: state.autosaveEditor,
       uiDensity: state.uiDensity,
+      disableGlassEffects: state.disableGlassEffects,
       editorSettings: null,
     },
   };
@@ -1006,8 +1042,10 @@ function importStudioSettings(jsonText) {
   if (typeof data.autosaveManifest === 'boolean') state.autosaveManifest = data.autosaveManifest;
   if (typeof data.autosaveEditor === 'boolean') state.autosaveEditor = data.autosaveEditor;
   state.uiDensity = data.uiDensity === 'compact' ? 'compact' : 'comfortable';
+  if (typeof data.disableGlassEffects === 'boolean') state.disableGlassEffects = data.disableGlassEffects;
 
   _applyPaneDocking();
+  _applyGlassEffects();
   saveStorage();
 
   // Editor settings: only accept the exact fields applySettings() knows
@@ -1047,6 +1085,7 @@ function importStudioSettings(jsonText) {
   }
   if ($('chk-autosave-manifest')) $('chk-autosave-manifest').checked = state.autosaveManifest;
   if ($('chk-autosave-editor')) $('chk-autosave-editor').checked = state.autosaveEditor;
+  if ($('chk-disable-glass-effects')) $('chk-disable-glass-effects').checked = state.disableGlassEffects;
   _applyAutosaveSettings();
 
   return { success: true };
@@ -1145,7 +1184,7 @@ function _initOsThemeListener() {
 }
 
 // Version
-const STUDIO_VERSION = '1.2.31';
+const STUDIO_VERSION = '1.2.32';
 const GITHUB_REPO = 'DirazCoder/novapack-studio';
 
 // Theme
@@ -1271,11 +1310,18 @@ function applyTheme(themeId) {
     _applyCustomColors(null); // strip any leftover inline overrides
   }
   _applyUiDensity();
+  _applyGlassEffects();
   _syncDesignSelectionAccent();
 }
 
 function _applyUiDensity() {
   document.documentElement.setAttribute('data-density', state.uiDensity === 'compact' ? 'compact' : 'comfortable');
+}
+
+function _applyGlassEffects() {
+  const root = document.documentElement;
+  if (state.disableGlassEffects) root.setAttribute('data-glass-effects', 'off');
+  else root.removeAttribute('data-glass-effects');
 }
 
 function initFirstRunSetup() {
@@ -8981,12 +9027,32 @@ function _initSettingsPage() {
     saveStorage();
   });
 
+  const glassEffectsInput = $('chk-disable-glass-effects');
+  if (glassEffectsInput) {
+    glassEffectsInput.checked = state.disableGlassEffects;
+    glassEffectsInput.addEventListener('change', () => {
+      state.disableGlassEffects = glassEffectsInput.checked;
+      _applyGlassEffects();
+      try {
+        localStorage.setItem(
+          GLASS_EFFECTS_STORAGE_KEY,
+          state.disableGlassEffects ? 'true' : 'false',
+        );
+      } catch (error) {
+        console.error('Could not persist blur and glass preference:', error);
+        showToast(`Could not save appearance preference: ${error.message}`);
+      }
+      saveStorage();
+    });
+  }
+
   $('btn-appearance-reset')?.addEventListener('click', () => {
     state.customColors = {};
     state.lastNonCustomTheme = DEFAULT_THEME;
     state.uiDensity = 'comfortable';
+    state.disableGlassEffects = false;
+    if (glassEffectsInput) glassEffectsInput.checked = false;
     setTheme(DEFAULT_THEME);
-    saveStorage();
     showToast('Appearance restored to defaults');
   });
 
@@ -9102,8 +9168,8 @@ function _pluginManagerButton(label, action, className = 'action-btn action-btn-
   return button;
 }
 
-function _renderStudioPlugins() {
-  const list = $('plugin-list');
+function _renderInstalledStudioPlugins() {
+  const list = $('plugin-installed-list');
   if (!list || !_studioPluginManager) return;
   list.replaceChildren();
   let plugins;
@@ -9117,13 +9183,25 @@ function _renderStudioPlugins() {
     list.append(empty);
     return;
   }
-  $('plugin-settings-summary').textContent = plugins.length
-    ? `${plugins.length} installed plugin${plugins.length === 1 ? '' : 's'}`
-    : 'Manage installed plugins and browse community plugins.';
+  const totalInstalled = plugins.length;
+  const installedCount = $('plugin-installed-count');
+  if (installedCount) installedCount.textContent = String(totalInstalled);
+  const installedSummary = $('plugin-installed-summary');
+  if (installedSummary) installedSummary.textContent = `${totalInstalled} installed plugin${totalInstalled === 1 ? '' : 's'}`;
+  const query = _studioPluginManagerView === 'installed'
+    ? ($('plugin-search')?.value || '').trim().toLowerCase()
+    : '';
+  plugins = plugins.filter((plugin) => [plugin.name, plugin.id, plugin.publisher, plugin.description]
+    .some((value) => String(value || '').toLowerCase().includes(query)));
+  $('plugin-settings-summary').textContent = totalInstalled
+    ? `${totalInstalled} installed plugin${totalInstalled === 1 ? '' : 's'}`
+    : 'Manage installed plugins and browse the NovaByte catalog.';
   if (!plugins.length) {
     const empty = document.createElement('div');
     empty.className = 'plugin-empty';
-    empty.textContent = 'No plugins installed yet. Install a .nbplugin package or a local plugin folder.';
+    empty.textContent = totalInstalled
+      ? 'No installed plugins match your search.'
+      : 'No plugins installed yet. Browse the marketplace or install a package.';
     list.append(empty);
     return;
   }
@@ -9132,6 +9210,22 @@ function _renderStudioPlugins() {
     const activationError = _studioPluginActivationErrors.get(plugin.id);
     const card = document.createElement('article');
     card.className = 'plugin-card';
+    const icon = document.createElement('div');
+    icon.className = 'plugin-card-icon';
+    const fallback = document.createElement('span');
+    fallback.className = 'plugin-card-icon-fallback';
+    fallback.textContent = (plugin.name || plugin.id).split(/[\s.-]+/).filter(Boolean)
+      .slice(0, 2).map((part) => part[0].toUpperCase()).join('') || 'NB';
+    icon.append(fallback);
+    const iconUrl = getPluginIconDataUrl(plugin);
+    if (iconUrl) {
+      const image = document.createElement('img');
+      image.alt = '';
+      image.src = iconUrl;
+      image.addEventListener('load', () => fallback.remove(), { once: true });
+      image.addEventListener('error', () => image.remove(), { once: true });
+      icon.append(image);
+    }
     const main = document.createElement('div');
     main.className = 'plugin-card-main';
     const heading = document.createElement('div');
@@ -9142,7 +9236,7 @@ function _renderStudioPlugins() {
     const badge = document.createElement('span');
     badge.className = `plugin-badge${plugin.signature === 'verified' ? ' plugin-badge--verified' : plugin.signature !== 'unsigned' ? ' plugin-badge--warning' : ''}`;
     badge.textContent = plugin.signature === 'verified'
-      ? 'Verified signature'
+      ? 'Verified'
       : plugin.signature === 'invalid' ? 'Invalid package' : 'Unverified';
     heading.append(badge);
     const meta = document.createElement('div');
@@ -9219,8 +9313,521 @@ function _renderStudioPlugins() {
         _setPluginManagerNotice(`Could not uninstall ${plugin.name}: ${error.message}`, 'error');
       }
     }));
-    card.append(main, actions);
+    actions.append(_pluginManagerButton('Open folder', () => {
+      try {
+        if (typeof nw === 'undefined' || !nw.Shell?.showItemInFolder) throw new Error('Folder reveal is unavailable');
+        nw.Shell.showItemInFolder(plugin.path);
+      } catch (error) {
+        _setPluginManagerNotice(`Could not open plugin folder: ${error.message}`, 'error');
+      }
+    }));
+    actions.append(_pluginManagerButton('Copy ID', async () => {
+      try {
+        await navigator.clipboard.writeText(plugin.id);
+        _setPluginManagerNotice(`Copied ${plugin.id}.`, 'success');
+      } catch (error) {
+        _setPluginManagerNotice(`Could not copy plugin ID: ${error.message}`, 'error');
+      }
+    }));
+    card.append(icon, main, actions);
     list.append(card);
+  }
+}
+
+function _marketplacePluginIcon(container, iconDataUrl) {
+  if (!iconDataUrl) return;
+  const image = document.createElement('img');
+  image.alt = '';
+  image.src = iconDataUrl;
+  image.addEventListener('load', () => {
+    container.querySelector('.plugin-card-icon-fallback')?.remove();
+  }, { once: true });
+  image.addEventListener('error', () => image.remove(), { once: true });
+  container.append(image);
+}
+
+function _marketplacePluginUpdateAvailable(plugin, installed) {
+  return Boolean(installed
+    && semver.valid(plugin.version)
+    && semver.valid(installed.version)
+    && semver.gt(plugin.version, installed.version));
+}
+
+function _marketplaceInstalledVersionIsNewer(plugin, installed) {
+  return Boolean(installed
+    && semver.valid(plugin.version)
+    && semver.valid(installed.version)
+    && semver.lt(plugin.version, installed.version));
+}
+
+function _minimumPluginStudioVersion(range) {
+  if (!semver.validRange(range)) return null;
+  const parsedRange = new semver.Range(range);
+  const hasMinimumInEveryRange = parsedRange.set.every((comparators) => (
+    comparators.some((comparator) => ['>=', '>', ''].includes(comparator.operator))
+  ));
+  return hasMinimumInEveryRange ? semver.minVersion(range)?.version || null : null;
+}
+
+function _formatPluginStudioRequirement(range) {
+  const minimum = _minimumPluginStudioVersion(range);
+  return minimum
+    ? `Requires minimum Studio version ${minimum}`
+    : `Studio compatibility: ${range || 'not specified'}`;
+}
+
+async function _loadMarketplacePluginDetails(plugin) {
+  if (_studioPluginCatalogDetails.has(plugin.id)) {
+    return _studioPluginCatalogDetails.get(plugin.id);
+  }
+  if (_studioPluginCatalogDetailRequests.has(plugin.id)) {
+    return _studioPluginCatalogDetailRequests.get(plugin.id);
+  }
+  const catalogRevision = _studioPluginCatalogRevision;
+  const request = (async () => {
+    const temporaryDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'novabyte-plugin-details-'));
+    try {
+      const archivePath = path.join(temporaryDirectory, `${plugin.id}.nbplugin`);
+      const archive = await downloadStudioPluginArchive(plugin);
+      fs.writeFileSync(archivePath, archive, { flag: 'wx', mode: 0o600 });
+      const inspected = await _studioPluginManager.inspectArchive(archivePath, { allowIncompatible: true });
+      if (inspected.id !== plugin.id || inspected.version !== plugin.version
+        || inspected.signature !== 'verified') {
+        throw new Error('Package identity or NovaByte signature did not match the catalog listing');
+      }
+      if (catalogRevision !== _studioPluginCatalogRevision) {
+        throw new Error('The marketplace was refreshed while package details were loading');
+      }
+      const details = {
+        manifest: inspected,
+        iconDataUrl: inspected.iconDataUrl || null,
+      };
+      _studioPluginCatalogDetails.set(plugin.id, details);
+      return details;
+    } finally {
+      try {
+        await fs.promises.rm(temporaryDirectory, { recursive: true, force: true });
+      } catch (error) {
+        console.error('[plugins] Could not clean temporary marketplace details:', error);
+      }
+    }
+  })();
+  _studioPluginCatalogDetailRequests.set(plugin.id, request);
+  try {
+    return await request;
+  } catch (error) {
+    if (_studioPluginCatalogDetailRequests.get(plugin.id) === request) {
+      _studioPluginCatalogDetailRequests.delete(plugin.id);
+    }
+    throw error;
+  }
+}
+
+function _renderMarketplacePluginDetails(plugin) {
+  const catalogRevision = _studioPluginCatalogRevision;
+  const detail = $('plugin-marketplace-detail');
+  const list = $('plugin-marketplace-list');
+  const caption = $('plugin-marketplace-pane')?.querySelector('.plugin-marketplace-caption');
+  const toolbar = $('plugin-manager-toolbar');
+  if (!detail || !list || !caption) return;
+  list.hidden = true;
+  caption.hidden = true;
+  detail.hidden = false;
+  toolbar?.classList.add('is-detail');
+  detail.replaceChildren();
+
+  const back = _pluginManagerButton('Back to marketplace', () => {
+    _studioPluginSelectedId = null;
+    _renderMarketplaceStudioPlugins();
+  });
+  back.classList.add('plugin-detail-back');
+
+  const hero = document.createElement('div');
+  hero.className = 'plugin-detail-hero';
+  const icon = document.createElement('div');
+  icon.className = 'plugin-card-icon plugin-detail-icon';
+  const fallback = document.createElement('span');
+  fallback.className = 'plugin-card-icon-fallback';
+  fallback.textContent = (plugin.name || plugin.id).split(/[\s.-]+/).filter(Boolean)
+    .slice(0, 2).map((part) => part[0].toUpperCase()).join('') || 'NB';
+  icon.append(fallback);
+  const titleBlock = document.createElement('div');
+  titleBlock.className = 'plugin-detail-title-block';
+  const titleRow = document.createElement('div');
+  titleRow.className = 'plugin-card-heading';
+  const title = document.createElement('h3');
+  title.textContent = plugin.name;
+  const verified = document.createElement('span');
+  verified.className = 'plugin-badge plugin-badge--verified';
+  verified.textContent = 'Verified';
+  titleRow.append(title, verified);
+  const publisher = document.createElement('p');
+  publisher.className = 'plugin-detail-publisher';
+  publisher.textContent = `by ${plugin.publisher}`;
+  titleBlock.append(titleRow, publisher);
+  hero.append(icon, titleBlock);
+
+  const summary = document.createElement('p');
+  summary.className = 'plugin-detail-description';
+  summary.textContent = plugin.description;
+  const metadata = document.createElement('dl');
+  metadata.className = 'plugin-detail-metadata';
+  const addMetadata = (label, value, target = metadata) => {
+    if (typeof value !== 'string' || !value.trim()) return;
+    const row = document.createElement('div');
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const description = document.createElement('dd');
+    description.textContent = value;
+    row.append(term, description);
+    target.append(row);
+  };
+  addMetadata('Version', plugin.version);
+  addMetadata('Plugin ID', plugin.id);
+  const minimumStudioVersion = _minimumPluginStudioVersion(plugin.compatibleStudio);
+  addMetadata(
+    minimumStudioVersion ? 'Minimum Studio version' : 'Studio compatibility',
+    minimumStudioVersion || plugin.compatibleStudio,
+  );
+  addMetadata('Current Studio', STUDIO_VERSION);
+  if (plugin.size > 0) addMetadata('Package size', `${(plugin.size / (1024 * 1024)).toFixed(2)} MiB`);
+  if (plugin.publishedAt) {
+    const published = new Date(plugin.publishedAt);
+    addMetadata('Published', Number.isNaN(published.getTime()) ? plugin.publishedAt : published.toLocaleDateString());
+  }
+
+  const sections = document.createElement('div');
+  sections.className = 'plugin-detail-sections';
+  const descriptionSection = document.createElement('section');
+  const descriptionHeading = document.createElement('h4');
+  descriptionHeading.textContent = 'About this plugin';
+  descriptionSection.append(descriptionHeading, summary);
+  sections.append(descriptionSection, metadata);
+  if (plugin.releaseNotes) {
+    const releaseSection = document.createElement('section');
+    const releaseHeading = document.createElement('h4');
+    releaseHeading.textContent = 'Release notes';
+    const releaseNotes = document.createElement('p');
+    releaseNotes.className = 'plugin-detail-release-notes';
+    releaseNotes.textContent = plugin.releaseNotes;
+    releaseSection.append(releaseHeading, releaseNotes);
+    sections.append(releaseSection);
+  }
+  const packageSection = document.createElement('section');
+  const packageHeading = document.createElement('h4');
+  packageHeading.textContent = 'Package information';
+  const packageMetadata = document.createElement('dl');
+  packageMetadata.className = 'plugin-detail-metadata';
+  packageSection.append(packageHeading, packageMetadata);
+  sections.append(packageSection);
+
+  const actions = document.createElement('div');
+  actions.className = 'plugin-detail-actions';
+  let installedPlugin = null;
+  try {
+    installedPlugin = _studioPluginManager.list().find((installed) => installed.id === plugin.id) || null;
+  } catch (error) {
+    _setPluginManagerNotice(`Could not read installed plugins: ${error.message}`, 'error');
+  }
+  const isInstalled = Boolean(installedPlugin);
+  const updateAvailable = _marketplacePluginUpdateAvailable(plugin, installedPlugin);
+  const compatible = semver.validRange(plugin.compatibleStudio)
+    && semver.satisfies(STUDIO_VERSION, plugin.compatibleStudio);
+  const install = _pluginManagerButton(
+    !compatible
+      ? 'Not compatible'
+      : updateAvailable
+        ? `Update to v${plugin.version}`
+        : isInstalled
+          ? _marketplaceInstalledVersionIsNewer(plugin, installedPlugin) ? 'Installed newer' : 'Up to date'
+          : 'Install plugin',
+    () => void _installMarketplacePlugin(plugin),
+    isInstalled && !updateAvailable ? 'action-btn action-btn--ghost' : 'action-btn action-btn--primary',
+  );
+  install.disabled = !compatible || (isInstalled && !updateAvailable);
+  actions.append(install);
+  if (isInstalled) {
+    actions.append(_pluginManagerButton('Manage installed plugin', () => {
+      _setPluginManagerView('installed');
+      const search = $('plugin-search');
+      if (search) search.value = plugin.id;
+      _renderStudioPlugins();
+    }));
+  }
+
+  const packageStatus = document.createElement('p');
+  packageStatus.className = 'plugin-detail-package-status';
+  packageStatus.setAttribute('role', 'status');
+  packageStatus.textContent = 'Verifying package details and loading its bundled icon…';
+  detail.append(back, hero, sections, actions, packageStatus);
+
+  void _loadMarketplacePluginDetails(plugin).then(({ manifest, iconDataUrl }) => {
+    if (_studioPluginSelectedId !== plugin.id || catalogRevision !== _studioPluginCatalogRevision) return;
+    _marketplacePluginIcon(icon, iconDataUrl);
+    packageStatus.remove();
+    const manifestFields = [
+      ['Manifest compatibility', manifest.engines?.studio],
+      ['License', manifest.license],
+      ['Homepage', manifest.homepage],
+      ['Repository', manifest.repository],
+      ['Keywords', Array.isArray(manifest.keywords) ? manifest.keywords.join(', ') : manifest.keywords],
+    ];
+    for (const [label, value] of manifestFields) {
+      if (typeof value === 'string') addMetadata(label, value.slice(0, 500), packageMetadata);
+    }
+    if (!packageMetadata.children.length) packageSection.remove();
+  }).catch((error) => {
+    if (_studioPluginSelectedId !== plugin.id || catalogRevision !== _studioPluginCatalogRevision) return;
+    packageStatus.textContent = `Package details could not be verified: ${error.message}`;
+    packageStatus.classList.add('is-error');
+    const retry = _pluginManagerButton('Retry verification', () => _renderMarketplacePluginDetails(plugin));
+    retry.classList.add('plugin-detail-retry');
+    packageStatus.append(' ', retry);
+  });
+}
+
+function _renderMarketplaceStudioPlugins() {
+  const list = $('plugin-marketplace-list');
+  if (!list) return;
+  const detail = $('plugin-marketplace-detail');
+  const caption = $('plugin-marketplace-pane')?.querySelector('.plugin-marketplace-caption');
+  const toolbar = $('plugin-manager-toolbar');
+  const selected = _studioPluginCatalog.find((plugin) => plugin.id === _studioPluginSelectedId);
+  if (selected) {
+    _renderMarketplacePluginDetails(selected);
+    return;
+  }
+  if (detail) {
+    detail.hidden = true;
+    detail.replaceChildren();
+  }
+  list.hidden = false;
+  if (caption) caption.hidden = false;
+  toolbar?.classList.remove('is-detail');
+  list.replaceChildren();
+  const query = ($('plugin-search')?.value || '').trim().toLowerCase();
+  const plugins = _studioPluginCatalog.filter((plugin) => [
+    plugin.name, plugin.id, plugin.publisher, plugin.description,
+  ].some((value) => String(value || '').toLowerCase().includes(query)));
+  if (!_studioPluginCatalogLoaded) {
+    const empty = document.createElement('div');
+    empty.className = 'plugin-empty';
+    empty.textContent = _studioPluginCatalogLoading
+      ? 'Loading the NovaByte plugin catalog…'
+      : 'Marketplace is unavailable. Use Refresh to try again.';
+    list.append(empty);
+    return;
+  }
+  if (!plugins.length) {
+    const empty = document.createElement('div');
+    empty.className = 'plugin-empty';
+    empty.textContent = _studioPluginCatalog.length
+      ? 'No marketplace plugins match your search.'
+      : 'No plugins are currently published.';
+    list.append(empty);
+    return;
+  }
+
+  let installed;
+  try {
+    installed = new Map(_studioPluginManager.list().map((plugin) => [plugin.id, plugin]));
+  } catch (error) {
+    _setPluginManagerNotice(`Could not read installed plugins: ${error.message}`, 'error');
+    const empty = document.createElement('div');
+    empty.className = 'plugin-empty';
+    empty.textContent = 'Installed plugin settings could not be loaded.';
+    list.append(empty);
+    return;
+  }
+  for (const plugin of plugins) {
+    const installedPlugin = installed.get(plugin.id);
+    const isInstalled = Boolean(installedPlugin);
+    const updateAvailable = _marketplacePluginUpdateAvailable(plugin, installedPlugin);
+    const compatible = semver.validRange(plugin.compatibleStudio)
+      && semver.satisfies(STUDIO_VERSION, plugin.compatibleStudio);
+    const card = document.createElement('article');
+    card.className = 'plugin-card plugin-card--marketplace';
+    const icon = document.createElement('div');
+    icon.className = 'plugin-card-icon';
+    const fallback = document.createElement('span');
+    fallback.className = 'plugin-card-icon-fallback';
+    fallback.textContent = (plugin.name || plugin.id).split(/[\s.-]+/).filter(Boolean)
+      .slice(0, 2).map((part) => part[0].toUpperCase()).join('') || 'NB';
+    icon.append(fallback);
+    _marketplacePluginIcon(icon, _studioPluginCatalogDetails.get(plugin.id)?.iconDataUrl);
+    const main = document.createElement('div');
+    main.className = 'plugin-card-main';
+    const heading = document.createElement('div');
+    heading.className = 'plugin-card-heading';
+    const title = document.createElement('button');
+    title.className = 'plugin-card-title';
+    title.textContent = plugin.name;
+    title.type = 'button';
+    title.addEventListener('click', () => {
+      _studioPluginSelectedId = plugin.id;
+      _renderMarketplaceStudioPlugins();
+    });
+    heading.append(title);
+    const signature = document.createElement('span');
+    signature.className = 'plugin-badge plugin-badge--verified';
+    signature.textContent = 'Verified';
+    heading.append(signature);
+    const meta = document.createElement('div');
+    meta.className = 'plugin-card-meta';
+    meta.textContent = `v${plugin.version} · ${plugin.publisher} · ${_formatPluginStudioRequirement(plugin.compatibleStudio)} · Current ${STUDIO_VERSION}`;
+    const description = document.createElement('div');
+    description.className = 'plugin-card-description';
+    description.textContent = plugin.description;
+    main.append(heading, meta, description);
+    if (plugin.releaseNotes) {
+      const releaseNotes = document.createElement('details');
+      releaseNotes.className = 'plugin-release-notes';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Release notes';
+      const content = document.createElement('p');
+      content.textContent = plugin.releaseNotes;
+      releaseNotes.append(summary, content);
+      main.append(releaseNotes);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'plugin-card-actions';
+    actions.append(_pluginManagerButton('View details', () => {
+      _studioPluginSelectedId = plugin.id;
+      _renderMarketplaceStudioPlugins();
+    }));
+    const button = _pluginManagerButton(
+      !compatible
+        ? 'Not compatible'
+        : updateAvailable ? 'Update'
+          : isInstalled
+            ? _marketplaceInstalledVersionIsNewer(plugin, installedPlugin) ? 'Installed newer' : 'Up to date'
+            : 'Install',
+      () => void _installMarketplacePlugin(plugin),
+      isInstalled && !updateAvailable || !compatible
+        ? 'action-btn action-btn--ghost'
+        : 'action-btn action-btn--primary',
+    );
+    button.disabled = !compatible || (isInstalled && !updateAvailable);
+    actions.append(button);
+    if (isInstalled) {
+      actions.append(_pluginManagerButton('Manage', () => {
+        _setPluginManagerView('installed');
+        $('plugin-search').value = plugin.id;
+        _renderStudioPlugins();
+      }));
+    }
+    card.append(icon, main, actions);
+    list.append(card);
+  }
+  const summary = $('plugin-marketplace-summary');
+  if (summary) summary.textContent = `${_studioPluginCatalog.length} plugin${_studioPluginCatalog.length === 1 ? '' : 's'} from NovaByte Trusted Signing.`;
+}
+
+function _renderStudioPlugins() {
+  if (!_studioPluginManager) return;
+  _renderInstalledStudioPlugins();
+  _renderMarketplaceStudioPlugins();
+}
+
+function _setPluginManagerView(view) {
+  const nextView = view === 'installed' ? 'installed' : 'marketplace';
+  if (_studioPluginManagerView !== nextView) {
+    const search = $('plugin-search');
+    if (search) search.value = '';
+    _setPluginManagerNotice('');
+    _studioPluginSelectedId = null;
+  }
+  _studioPluginManagerView = nextView;
+  const marketplace = _studioPluginManagerView === 'marketplace';
+  for (const [tabId, paneId, active] of [
+    ['btn-plugin-marketplace-tab', 'plugin-marketplace-pane', marketplace],
+    ['btn-plugin-installed-tab', 'plugin-installed-pane', !marketplace],
+  ]) {
+    const tab = $(tabId);
+    const pane = $(paneId);
+    tab?.classList.toggle('is-active', active);
+    tab?.setAttribute('aria-selected', String(active));
+    if (pane) {
+      pane.hidden = !active;
+      pane.classList.toggle('hidden', !active);
+    }
+  }
+  $('plugin-manager-toolbar')?.classList.toggle('is-detail', marketplace && Boolean(_studioPluginSelectedId));
+  _renderStudioPlugins();
+}
+
+async function _loadStudioPluginCatalog() {
+  if (_studioPluginCatalogLoading) return;
+  _studioPluginCatalogLoading = true;
+  _renderMarketplaceStudioPlugins();
+  if ($('plugin-store-status')) $('plugin-store-status').textContent = 'Connecting…';
+  try {
+    _studioPluginCatalog = await fetchStudioPluginCatalog();
+    _studioPluginCatalogLoaded = true;
+    if ($('plugin-store-status')) $('plugin-store-status').textContent = 'Store connected';
+    _setPluginManagerNotice('', '');
+  } catch (error) {
+    _studioPluginCatalogLoaded = false;
+    if ($('plugin-store-status')) $('plugin-store-status').textContent = 'Unavailable';
+    _setPluginManagerNotice(`Could not load marketplace: ${error.message}`, 'error');
+  } finally {
+    _studioPluginCatalogLoading = false;
+    _renderMarketplaceStudioPlugins();
+  }
+}
+
+async function _installMarketplacePlugin(plugin) {
+  let temporaryDirectory;
+  try {
+    const installedPlugin = _studioPluginManager.list()
+      .find((installed) => installed.id === plugin.id) || null;
+    const updating = _marketplacePluginUpdateAvailable(plugin, installedPlugin);
+    if (installedPlugin && !updating) {
+      _setPluginManagerNotice(
+        semver.valid(plugin.version) && semver.valid(installedPlugin.version)
+          && semver.lt(plugin.version, installedPlugin.version)
+          ? `${plugin.name} ${installedPlugin.version} is newer than the marketplace version ${plugin.version}.`
+          : `${plugin.name} is already up to date.`,
+        'error',
+      );
+      return;
+    }
+    if (!semver.validRange(plugin.compatibleStudio)
+      || !semver.satisfies(STUDIO_VERSION, plugin.compatibleStudio)) {
+      _setPluginManagerNotice(`${plugin.name} is not compatible with this Studio version.`, 'error');
+      return;
+    }
+    temporaryDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'novabyte-plugin-download-'));
+    const archivePath = path.join(temporaryDirectory, `${plugin.id}.nbplugin`);
+    _setPluginManagerNotice(`${updating ? 'Updating' : 'Downloading'} ${plugin.name}…`);
+    const archive = await downloadStudioPluginArchive(plugin);
+    fs.writeFileSync(archivePath, archive, { flag: 'wx', mode: 0o600 });
+    const inspected = await _studioPluginManager.inspectArchive(archivePath);
+    if (inspected.id !== plugin.id || inspected.version !== plugin.version
+      || inspected.signature !== 'verified') {
+      throw new Error('Downloaded package identity or trusted signature did not match the catalog');
+    }
+    const installed = await _studioPluginManager.installArchive(archivePath);
+    if (installed.signature !== 'verified') {
+      throw new Error('The installed package failed signature verification');
+    }
+    _studioPluginCatalogDetails.delete(plugin.id);
+    if (updating) await _reloadStudioPlugins();
+    _setPluginManagerView('installed');
+    _setPluginManagerNotice(
+      `${installed.name} ${updating ? 'updated' : 'installed'}. Review its publisher and trust prompt before enabling.`,
+      'success',
+    );
+  } catch (error) {
+    _setPluginManagerNotice(`Could not install ${plugin.name}: ${error.message}`, 'error');
+  } finally {
+    if (temporaryDirectory) {
+      try {
+        await fs.promises.rm(temporaryDirectory, { recursive: true, force: true });
+      } catch (error) {
+        console.error('[plugins] Could not clean temporary marketplace download:', error);
+      }
+    }
   }
 }
 
@@ -9665,14 +10272,40 @@ async function _initStudioPlugins() {
     studioVersion: STUDIO_VERSION,
   });
   $('btn-manage-plugins')?.addEventListener('click', () => {
+    _setPluginManagerView(_studioPluginManagerView);
     _renderStudioPlugins();
     $('modal-plugins')?.classList.remove('hidden');
+    if (_studioPluginManagerView === 'marketplace' && !_studioPluginCatalogLoaded) {
+      void _loadStudioPluginCatalog();
+    }
+  });
+  $('btn-plugin-marketplace-tab')?.addEventListener('click', () => _setPluginManagerView('marketplace'));
+  $('btn-plugin-installed-tab')?.addEventListener('click', () => _setPluginManagerView('installed'));
+  $('plugin-search')?.addEventListener('input', _renderStudioPlugins);
+  $('btn-plugin-refresh')?.addEventListener('click', () => {
+    _studioPluginCatalogRevision += 1;
+    _studioPluginCatalogLoaded = false;
+    _studioPluginSelectedId = null;
+    _studioPluginCatalogDetails.clear();
+    _studioPluginCatalogDetailRequests.clear();
+    void _loadStudioPluginCatalog();
+  });
+  $('btn-plugin-reload')?.addEventListener('click', async () => {
+    try {
+      await _reloadStudioPlugins();
+      if (!_studioPluginActivationErrors.size) {
+        _setPluginManagerNotice('Enabled plugins reloaded.', 'success');
+      }
+    } catch (error) {
+      _setPluginManagerNotice(`Could not reload plugins: ${error.message}`, 'error');
+    }
   });
   $('btn-plugin-install-file')?.addEventListener('click', () => {
     pickFile('.nbplugin,.zip', async (filePath) => {
       try {
         const plugin = await _studioPluginManager.installArchive(filePath);
         _setPluginManagerNotice(`Installed ${plugin.name}. Review its publisher and trust prompt before enabling.`, 'success');
+        _setPluginManagerView('installed');
         _renderStudioPlugins();
       } catch (error) {
         _setPluginManagerNotice(`Plugin installation failed: ${error.message}`, 'error');
@@ -9684,18 +10317,12 @@ async function _initStudioPlugins() {
       try {
         const plugin = await _studioPluginManager.installFolder(folderPath);
         _setPluginManagerNotice(`Installed ${plugin.name}. Review its publisher and trust prompt before enabling.`, 'success');
+        _setPluginManagerView('installed');
         _renderStudioPlugins();
       } catch (error) {
         _setPluginManagerNotice(`Plugin installation failed: ${error.message}`, 'error');
       }
     });
-  });
-  $('btn-plugin-marketplace')?.addEventListener('click', () => {
-    try {
-      nw.Shell.openExternal('https://novabyteteam.github.io/novabyte-os/?view=plugins');
-    } catch (error) {
-      _setPluginManagerNotice(`Could not open marketplace: ${error.message}`, 'error');
-    }
   });
   await _reloadStudioPlugins();
 }
@@ -13793,6 +14420,12 @@ function setupReviewWindowInteractions() {
 let _npPlaceholderValues = {};
 let _npSelectedFile = null; // filename currently shown in the preview pane
 let _npActiveTemplateCategory = 'all';
+let _npTemplateSource = 'studio';
+let _npCommunityTemplateCatalog = [];
+let _npCommunityTemplateCatalogLoaded = false;
+let _npCommunityTemplateCatalogLoading = false;
+let _npCommunityTemplateCategory = 'all';
+let _npCommunityTemplateSort = 'recent';
 const USER_TEMPLATES_KEY = 'novapack_user_templates';
 const USER_TEMPLATE_FORMAT = 'novapack-studio-user-template';
 const USER_TEMPLATE_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="16" fill="#15263d"/><path d="M17 20h30v24H17zM17 27h30M25 20v24M39 20v24" fill="none" stroke="#58a6ff" stroke-width="3" stroke-linejoin="round"/></svg>')}`;
@@ -13801,10 +14434,42 @@ function _readUserTemplates() {
   try {
     const entries = JSON.parse(localStorage.getItem(USER_TEMPLATES_KEY) || '[]');
     if (!Array.isArray(entries)) throw new Error('Stored user templates are not a list.');
-    return entries.filter((entry) => entry && typeof entry.id === 'string'
-      && typeof entry.name === 'string' && typeof entry.description === 'string'
-      && entry.manifest && typeof entry.manifest === 'object'
-      && entry.files && typeof entry.files === 'object' && !Array.isArray(entry.files));
+    return entries.flatMap((entry) => {
+      try {
+        if (!entry || typeof entry.id !== 'string') return [];
+        if (entry.communityBundle) {
+          const bundle = validateCommunityTemplateBundle(entry.communityBundle, entry.communityListing);
+          const template = _validateUserTemplate(bundle);
+          if (entry.communityListing && (
+            typeof entry.communityId !== 'string' || typeof entry.communityVersion !== 'string'
+            || entry.communityId !== entry.communityListing.id
+            || entry.communityVersion !== entry.communityListing.version
+          )) {
+            throw new Error('Saved community template catalog identity is invalid.');
+          }
+          return [{
+            ...template,
+            id: entry.id,
+            communityId: entry.communityId,
+            communityVersion: entry.communityVersion,
+            communityListing: entry.communityListing,
+            communityBundle: bundle,
+            verified: true,
+          }];
+        }
+        return [{
+          ..._validateUserTemplate({
+            format: USER_TEMPLATE_FORMAT,
+            version: 1,
+            template: entry,
+          }),
+          id: entry.id,
+        }];
+      } catch (error) {
+        console.error('Ignoring an invalid saved starter template:', error);
+        return [];
+      }
+    });
   } catch (error) {
     console.error('Could not read user templates:', error);
     showToast('Could not read saved user templates');
@@ -13821,6 +14486,7 @@ function _npTemplateEntries() {
     optionalPermissions: entry.manifest.optionalPermissions || [],
     permissionReasons: entry.manifest.permissionReasons || {},
     userTemplate: entry,
+    verified: entry.verified === true,
     files: Object.fromEntries(Object.entries(entry.files).map(([filename, encoded]) =>
       [filename, () => Buffer.from(encoded, 'base64').toString('utf8')]))
   }])];
@@ -13831,12 +14497,16 @@ function _npGetTemplate(id) {
 }
 
 function _userTemplateExport(entry) {
+  if (entry.communityBundle) return JSON.stringify(entry.communityBundle, null, 2);
   return JSON.stringify({
     format: USER_TEMPLATE_FORMAT,
     version: 1,
     template: {
       name: entry.name,
       description: entry.description,
+      author: entry.author || '',
+      releaseVersion: entry.releaseVersion || '1.0.0',
+      category: entry.category || 'custom',
       icon: entry.icon || 'box',
       manifest: entry.manifest,
       files: entry.files,
@@ -13854,9 +14524,13 @@ function _validateUserTemplate(bundle) {
     throw new Error('Invalid NovaByte Studio starter template file.');
   }
   const name = template.name.trim();
-  if (!name || name.length > 80 || template.description.length > 240) {
+  if (!name || name.length > 80 || template.description.length > 240
+    || (template.author != null && (typeof template.author !== 'string' || template.author.length > 80))
+    || (template.category != null && (typeof template.category !== 'string' || template.category.length > 40))) {
     throw new Error('Starter name must be 1–80 characters and description at most 240 characters.');
   }
+  const releaseVersion = template.releaseVersion || '1.0.0';
+  if (!semver.valid(releaseVersion)) throw new Error('Starter release version must be valid SemVer.');
   if (Buffer.byteLength(JSON.stringify(template.manifest), 'utf8') > 256 * 1024) {
     throw new Error('Starter manifest exceeds the 256 KB limit.');
   }
@@ -13865,30 +14539,29 @@ function _validateUserTemplate(bundle) {
   const names = Object.keys(template.files);
   if (names.length > 1000) throw new Error('Starter contains too many files.');
   for (const filename of names) {
-    const normalized = path.normalize(filename);
-    if (typeof filename !== 'string' || path.isAbsolute(filename)
-      || normalized === '..' || normalized.startsWith(`..${path.sep}`)
-      || normalized.split(path.sep).some((part) => !part || part.startsWith('.')
-        || part.toLowerCase() === 'node_modules')
-      || ['manifest.json', 'novaapp.json'].includes(path.basename(normalized))) {
-      throw new Error(`Unsafe starter filename: ${filename}`);
-    }
+    const normalized = validateTemplateFilePath(filename);
     const encoded = template.files[filename];
     if (typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
       throw new Error(`Invalid file data for ${filename}`);
     }
-    totalBytes += Buffer.from(encoded, 'base64').length;
+    const bytes = Buffer.from(encoded, 'base64');
+    if (bytes.toString('base64') !== encoded) throw new Error(`Invalid file data for ${filename}`);
+    totalBytes += bytes.length;
     if (totalBytes > 2 * 1024 * 1024) throw new Error('Starter files exceed the 2 MB import limit.');
-    files[normalized.split(path.sep).join('/')] = encoded;
+    files[normalized] = encoded;
   }
   if (!names.length) throw new Error('Starter must include at least one project file.');
   return {
     id: `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     name,
     description: template.description,
+    author: typeof template.author === 'string' ? template.author.trim() : '',
+    releaseVersion,
+    category: typeof template.category === 'string' ? template.category.trim() : 'custom',
     icon: typeof template.icon === 'string' ? template.icon.slice(0, 100) : 'box',
     manifest: template.manifest,
     files,
+    verified: false,
   };
 }
 
@@ -13948,6 +14621,9 @@ async function _saveOpenProjectAsTemplate() {
       template: {
         name,
         description,
+        author: manifest.author || '',
+        releaseVersion: '1.0.0',
+        category: 'custom',
         icon: manifest.icon || 'box',
         manifest,
         files,
@@ -13972,7 +14648,14 @@ function _importUserTemplate(filePath) {
     if (fs.statSync(filePath).size > 4 * 1024 * 1024) {
       throw new Error('Starter template file exceeds the 4 MB import limit.');
     }
-    const imported = _validateUserTemplate(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+    const bundle = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const imported = bundle?.signature
+      ? {
+        ..._validateUserTemplate(validateCommunityTemplateBundle(bundle)),
+        communityBundle: bundle,
+        verified: true,
+      }
+      : _validateUserTemplate(bundle);
     const templates = _readUserTemplates().filter((entry) => entry.name.toLowerCase() !== imported.name.toLowerCase());
     templates.push(imported);
     localStorage.setItem(USER_TEMPLATES_KEY, JSON.stringify(templates));
@@ -13994,7 +14677,7 @@ function _exportSelectedUserTemplate() {
     return;
   }
   pickFolder((dir) => {
-    const filePath = path.join(dir, `${entry.name.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'starter'}.novapack-template.json`);
+    const filePath = path.join(dir, `${entry.name.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'starter'}.nbtemplate`);
     try {
       fs.writeFileSync(filePath, _userTemplateExport(entry), { flag: 'wx' });
       showToast(`Starter exported to ${filePath}`);
@@ -14017,21 +14700,66 @@ const _npTemplateCategories = [
   { id: 'apps', label: 'App foundations' },
   { id: 'web', label: 'Web & content' },
   { id: 'native', label: 'Games & native' },
+  { id: 'custom', label: 'Custom' },
 ];
 
-function _npGetTemplateCategory(key) {
-  if (key.startsWith('user:')) return 'apps';
+function _npCategoryKey(category) {
+  const normalized = String(category || '').trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+  const aliases = {
+    api: 'api',
+    'novaapp api': 'api',
+    'novaapp apis': 'api',
+    app: 'apps',
+    apps: 'apps',
+    general: 'apps',
+    'app foundations': 'apps',
+    web: 'web',
+    'web content': 'web',
+    'web & content': 'web',
+    native: 'native',
+    'games native': 'native',
+    'games & native': 'native',
+    custom: 'custom',
+  };
+  return Object.hasOwn(aliases, normalized)
+    ? aliases[normalized]
+    : normalized ? `user-category:${normalized}` : 'custom';
+}
+
+function _npGetTemplateCategory(key, template) {
+  if (key.startsWith('user:')) return _npCategoryKey(template?.userTemplate?.category);
   if (_npApiTemplateKeys.has(key)) return 'api';
   if (key === 'native-cpp' || key === 'game') return 'native';
   if (['webapp', 'browser', 'dashboard', 'markdown-viewer', 'chat'].includes(key)) return 'web';
   return 'apps';
 }
 
+function _npGetTemplateCategories(entries) {
+  const categories = [..._npTemplateCategories];
+  const known = new Set(categories.map((category) => category.id));
+  const custom = new Map();
+  for (const [key, template] of entries) {
+    if (!key.startsWith('user:')) continue;
+    const category = typeof template.userTemplate?.category === 'string'
+      ? template.userTemplate.category.trim()
+      : '';
+    const id = _npGetTemplateCategory(key, template);
+    if (!known.has(id) && category) custom.set(id, category);
+  }
+  return categories.concat([...custom]
+    .sort(([, left], [, right]) => left.localeCompare(right))
+    .map(([id, label]) => ({ id, label })));
+}
+
 function _npRenderTemplateCategories() {
   const nav = $('np-categories');
   nav.replaceChildren();
   const entries = _npTemplateEntries();
-  for (const category of _npTemplateCategories) {
+  const categories = _npGetTemplateCategories(entries);
+  if (!categories.some((category) => category.id === _npActiveTemplateCategory)) {
+    _npActiveTemplateCategory = 'all';
+  }
+  for (const category of categories) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'np-category' + (_npActiveTemplateCategory === category.id ? ' active' : '');
@@ -14042,7 +14770,7 @@ function _npRenderTemplateCategories() {
     count.className = 'np-category-count';
     count.textContent = String(category.id === 'all'
       ? entries.length
-      : entries.filter(([key]) => _npGetTemplateCategory(key) === category.id).length);
+      : entries.filter(([key, template]) => _npGetTemplateCategory(key, template) === category.id).length);
     button.append(label, count);
     button.addEventListener('click', () => {
       _npActiveTemplateCategory = category.id;
@@ -14056,16 +14784,19 @@ function _npRenderTemplateCategories() {
 function _npRenderTemplateGallery() {
   const grid = $('template-grid');
   const query = $('np-template-search').value.trim().toLowerCase();
-  const category = _npTemplateCategories.find((item) => item.id === _npActiveTemplateCategory);
+  const allEntries = _npTemplateEntries();
+  const categories = _npGetTemplateCategories(allEntries);
+  const category = categories.find((item) => item.id === _npActiveTemplateCategory);
   $('np-category-title').textContent = category?.label || 'All starters';
   grid.replaceChildren();
 
-  const entries = _npTemplateEntries()
+  const entries = allEntries
     .filter(([key, tpl]) => _npActiveTemplateCategory === 'all'
-      || _npGetTemplateCategory(key) === _npActiveTemplateCategory)
+      || _npGetTemplateCategory(key, tpl) === _npActiveTemplateCategory)
     .filter(([, tpl]) => !query
       || tpl.name.toLowerCase().includes(query)
-      || tpl.description.toLowerCase().includes(query))
+      || tpl.description.toLowerCase().includes(query)
+      || String(tpl.userTemplate?.category || '').toLowerCase().includes(query))
     .sort(([, a], [, b]) => a.name.localeCompare(b.name));
 
   if (entries.length === 0) {
@@ -14100,8 +14831,13 @@ function _npRenderTemplateGallery() {
     desc.textContent = tpl.description;
     const type = document.createElement('span');
     type.className = 'template-card-type';
-    type.textContent = key.startsWith('user:') ? 'MY STARTER'
+    const sourceLabel = tpl.verified ? 'VERIFIED COMMUNITY'
+      : key.startsWith('user:') ? 'MY STARTER'
       : _npApiTemplateKeys.has(key) ? 'NOVAAPP API' : 'STARTER';
+    const userCategory = tpl.userTemplate?.category?.trim();
+    type.textContent = userCategory
+      ? `${sourceLabel} · ${userCategory.toUpperCase()}`
+      : sourceLabel;
     details.append(name, desc, type);
     card.append(art, details);
 
@@ -14111,9 +14847,263 @@ function _npRenderTemplateGallery() {
       _npPlaceholderValues = {};
       _npRenderTemplateGallery();
       _renderNewProjectPreview();
+      _npUpdateCreateProjectAvailability();
     });
     grid.appendChild(card);
   }
+}
+
+function _npSetCommunityTemplateNotice(message, type = '') {
+  const notice = $('np-community-template-notice');
+  if (!notice) return;
+  notice.textContent = message;
+  notice.classList.toggle('is-error', type === 'error');
+  notice.classList.toggle('is-success', type === 'success');
+}
+
+function _npRenderCommunityTemplateCategories() {
+  const filters = $('np-community-template-categories');
+  if (!filters) return;
+  filters.replaceChildren();
+  const categories = new Map();
+  if (_npCommunityTemplateCatalogLoaded) {
+    for (const listing of _npCommunityTemplateCatalog) {
+      const label = String(listing.category || 'General').trim() || 'General';
+      const key = label.toLowerCase();
+      const category = categories.get(key) || { label, count: 0 };
+      category.count += 1;
+      categories.set(key, category);
+    }
+  }
+  if (_npCommunityTemplateCategory !== 'all' && !categories.has(_npCommunityTemplateCategory)) {
+    _npCommunityTemplateCategory = 'all';
+  }
+  const options = [
+    { id: 'all', label: 'All templates', count: _npCommunityTemplateCatalog.length },
+    ...[...categories.entries()]
+      .sort(([, left], [, right]) => left.label.localeCompare(right.label))
+      .map(([id, category]) => ({ id, ...category })),
+  ];
+  for (const category of options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `np-community-category${_npCommunityTemplateCategory === category.id ? ' is-active' : ''}`;
+    button.setAttribute('aria-pressed', String(_npCommunityTemplateCategory === category.id));
+    button.textContent = `${category.label} · ${category.count}`;
+    button.addEventListener('click', () => {
+      _npCommunityTemplateCategory = category.id;
+      _npRenderCommunityTemplateMarketplace();
+    });
+    filters.appendChild(button);
+  }
+}
+
+function _npRenderCommunityTemplateMarketplace() {
+  const grid = $('np-community-template-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+  _npRenderCommunityTemplateCategories();
+  if (!_npCommunityTemplateCatalogLoaded) {
+    $('np-community-template-count').textContent = '';
+    const empty = document.createElement('p');
+    empty.className = 'np-community-template-empty';
+    empty.textContent = _npCommunityTemplateCatalogLoading
+      ? 'Loading reviewed templates…'
+      : 'The community catalog could not be loaded. Check your connection and try again.';
+    grid.appendChild(empty);
+    return;
+  }
+  const query = ($('np-community-template-search')?.value || '').trim().toLowerCase();
+  const listings = _npCommunityTemplateCatalog
+    .filter((listing) => _npCommunityTemplateCategory === 'all'
+      || String(listing.category || 'General').trim().toLowerCase() === _npCommunityTemplateCategory)
+    .filter((listing) => !query || [
+      listing.name, listing.author, listing.description, listing.category, listing.id,
+    ].some((value) => String(value || '').toLowerCase().includes(query)))
+    .sort((left, right) => _npCommunityTemplateSort === 'name'
+      ? left.name.localeCompare(right.name)
+      : (Date.parse(right.publishedAt || '') || 0) - (Date.parse(left.publishedAt || '') || 0)
+        || left.name.localeCompare(right.name));
+  const count = $('np-community-template-count');
+  if (count) {
+    count.textContent = listings.length === _npCommunityTemplateCatalog.length
+      ? `${listings.length} ${listings.length === 1 ? 'template' : 'templates'}`
+      : `${listings.length} of ${_npCommunityTemplateCatalog.length}`;
+  }
+  if (!listings.length) {
+    const empty = document.createElement('p');
+    empty.className = 'np-community-template-empty';
+    empty.textContent = _npCommunityTemplateCatalog.length
+      ? 'No templates match these filters. Try another category or clear your search.'
+      : 'The library is ready for its first community release.';
+    grid.appendChild(empty);
+    return;
+  }
+  const verifiedTemplates = _readUserTemplates().filter((entry) => entry.verified
+    && entry.communityId && entry.communityVersion);
+  for (const listing of listings) {
+    const cached = verifiedTemplates.find((entry) => entry.communityId === listing.id
+      && entry.communityVersion === listing.version
+      && (() => {
+        try {
+          validateCommunityTemplateBundle(entry.communityBundle, listing);
+          return true;
+        } catch {
+          return false;
+        }
+      })());
+    const card = document.createElement('article');
+    card.className = `np-community-template-card${state.selectedTemplate === cached?.id ? ' is-selected' : ''}`;
+    const artwork = document.createElement('div');
+    artwork.className = 'np-community-template-card__art';
+    const icon = document.createElement('span');
+    icon.className = 'np-community-template-card__art-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '✳';
+    const category = document.createElement('span');
+    category.className = 'np-community-template-card__category';
+    category.textContent = listing.category || 'General';
+    artwork.append(icon, category);
+    const heading = document.createElement('div');
+    heading.className = 'np-community-template-card__heading';
+    const name = document.createElement('span');
+    name.className = 'np-community-template-card__name';
+    name.textContent = listing.name;
+    heading.appendChild(name);
+    const badge = document.createElement('span');
+    badge.className = `np-community-template-card__badge${cached ? '' : ' is-pending'}`;
+    badge.textContent = cached ? 'Verified' : 'Ready to verify';
+    heading.appendChild(badge);
+    const description = document.createElement('p');
+    description.className = 'np-community-template-card__description';
+    description.textContent = listing.description;
+    const meta = document.createElement('div');
+    meta.className = 'np-community-template-card__meta';
+    for (const value of [
+      listing.category || 'General',
+      listing.author,
+      `v${listing.version}`,
+      _formatSize(listing.size),
+    ]) {
+      const item = document.createElement('span');
+      item.textContent = value;
+      meta.appendChild(item);
+    }
+    if (listing.publishedAt && Number.isFinite(Date.parse(listing.publishedAt))) {
+      const date = document.createElement('span');
+      date.textContent = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+        .format(new Date(listing.publishedAt));
+      meta.appendChild(date);
+    }
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'action-btn action-btn--primary';
+    action.textContent = cached ? 'Use this template' : 'Verify & preview';
+    action.addEventListener('click', () => void _npSelectCommunityTemplate(listing, cached, action));
+    card.append(artwork, heading, description, meta, action);
+    grid.appendChild(card);
+  }
+}
+
+async function _npLoadCommunityTemplateCatalog({ refresh = false } = {}) {
+  if (_npCommunityTemplateCatalogLoading) return;
+  if (_npCommunityTemplateCatalogLoaded && !refresh) {
+    _npRenderCommunityTemplateMarketplace();
+    return;
+  }
+  _npCommunityTemplateCatalogLoading = true;
+  _npSetCommunityTemplateNotice('');
+  _npRenderCommunityTemplateMarketplace();
+  try {
+    _npCommunityTemplateCatalog = await fetchCommunityTemplateCatalog();
+    _npCommunityTemplateCatalogLoaded = true;
+    _npSetCommunityTemplateNotice(
+      `${_npCommunityTemplateCatalog.length} reviewed template${_npCommunityTemplateCatalog.length === 1 ? '' : 's'}. Bundles are verified before preview.`,
+    );
+  } catch (error) {
+    _npCommunityTemplateCatalogLoaded = false;
+    _npSetCommunityTemplateNotice(`Could not load community templates: ${error.message}`, 'error');
+  } finally {
+    _npCommunityTemplateCatalogLoading = false;
+    _npRenderCommunityTemplateMarketplace();
+  }
+}
+
+async function _npSelectCommunityTemplate(listing, cached, button) {
+  if (cached) {
+    state.selectedTemplate = cached.id;
+    _npSelectedFile = null;
+    _npPlaceholderValues = {};
+    _npRenderCommunityTemplateMarketplace();
+    _renderNewProjectPreview();
+    _npUpdateCreateProjectAvailability();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Downloading & verifying…';
+  _npSetCommunityTemplateNotice(`Downloading and verifying ${listing.name}…`);
+  try {
+    const downloaded = await downloadCommunityTemplate(listing);
+    const template = _validateUserTemplate(downloaded.bundle);
+    const id = `user:community:${listing.id}:${listing.version}`;
+    const entry = {
+      ...template,
+      id,
+      communityId: listing.id,
+      communityVersion: listing.version,
+      communityListing: downloaded.listing,
+      communityBundle: downloaded.bundle,
+      verified: true,
+    };
+    const templates = _readUserTemplates().filter((item) => item.communityId !== listing.id);
+    templates.push(entry);
+    localStorage.setItem(USER_TEMPLATES_KEY, JSON.stringify(templates));
+    state.selectedTemplate = id;
+    _npSelectedFile = null;
+    _npPlaceholderValues = {};
+    _npSetCommunityTemplateNotice(`${listing.name} is Verified. Preview its files and manifest before creating a project.`, 'success');
+    _npRenderCommunityTemplateMarketplace();
+    _renderNewProjectPreview();
+    _npUpdateCreateProjectAvailability();
+  } catch (error) {
+    _npSetCommunityTemplateNotice(`Could not verify ${listing.name}: ${error.message}`, 'error');
+    button.disabled = false;
+    button.textContent = 'Retry verification';
+  }
+}
+
+function _npSetTemplateSource(source) {
+  _npTemplateSource = source === 'community' ? 'community' : 'studio';
+  const community = _npTemplateSource === 'community';
+  const studioTab = $('btn-np-studio-templates');
+  const communityTab = $('btn-np-community-templates');
+  const studioPane = $('np-studio-template-pane');
+  const communityPane = $('np-community-template-pane');
+  studioTab?.classList.toggle('active', !community);
+  studioTab?.setAttribute('aria-selected', String(!community));
+  communityTab?.classList.toggle('active', community);
+  communityTab?.setAttribute('aria-selected', String(community));
+  if (studioPane) studioPane.hidden = community;
+  if (communityPane) communityPane.hidden = !community;
+  $('np-categories')?.classList.toggle('hidden', community);
+  document.querySelector('#modal-new-project .modal-body--new-project')
+    ?.classList.toggle('is-community-template-source', community);
+  _npUpdateCreateProjectAvailability();
+  if (community) {
+    _npRenderCommunityTemplateCategories();
+    _npRenderCommunityTemplateMarketplace();
+    void _npLoadCommunityTemplateCatalog();
+  }
+}
+
+function _npUpdateCreateProjectAvailability() {
+  const button = $('btn-create-project');
+  if (!button) return;
+  const template = _npGetTemplate(state.selectedTemplate);
+  const ready = _npTemplateSource !== 'community'
+    || Boolean(template?.verified && template.userTemplate?.communityId);
+  button.disabled = !ready;
+  button.title = ready ? '' : 'Select and verify a community template before creating a project.';
 }
 
 function openNewProjectModal() {
@@ -14121,15 +15111,21 @@ function openNewProjectModal() {
   $('new-app-id').value = '';
   $('new-app-dir').value = '';
   $('np-template-search').value = '';
+  $('np-community-template-search').value = '';
+  $('np-community-template-sort').value = 'recent';
+  _npCommunityTemplateCategory = 'all';
+  _npCommunityTemplateSort = 'recent';
   _npActiveTemplateCategory = 'all';
   _npPlaceholderValues = {};
   _npSelectedFile = null;
 
   $('modal-new-project').classList.remove('hidden');
+  _npSetTemplateSource(_npTemplateSource);
   $('np-template-search').oninput = _npRenderTemplateGallery;
   _npRenderTemplateCategories();
   _npRenderTemplateGallery();
   _renderNewProjectPreview();
+  _npUpdateCreateProjectAvailability();
   setTimeout(() => $('np-template-search').focus(), 50);
 }
 
@@ -14163,7 +15159,15 @@ function _renderNewProjectPreview() {
     previewIconEl.textContent = tpl.icon;
   }
   $('np-preview-name').textContent = tpl.name;
-  $('np-preview-desc').textContent = tpl.description;
+  $('np-preview-desc').textContent = tpl.userTemplate?.author
+    ? `${tpl.description} · by ${tpl.userTemplate.author}`
+    : tpl.description;
+  const trustBadge = $('np-preview-trust');
+  if (trustBadge) {
+    trustBadge.hidden = !tpl.userTemplate;
+    trustBadge.textContent = tpl.verified ? 'Verified' : 'Imported JSON · not verified';
+    trustBadge.classList.toggle('is-unverified', Boolean(tpl.userTemplate && !tpl.verified));
+  }
 
   // Placeholder fields (e.g. Web App Wrapper's URL) -- rendered as normal
   // labeled inputs in the project details panel, not just inline in the preview, so
@@ -14411,6 +15415,13 @@ async function createProject() {
   let result;
   try {
     const userTemplate = _readUserTemplates().find((entry) => entry.id === state.selectedTemplate);
+    if (_npTemplateSource === 'community'
+      && (!userTemplate?.verified || !userTemplate.communityId)) {
+      await studioAlert('Choose and verify a community template before creating a project.', {
+        title: 'Community template required',
+      });
+      return;
+    }
     if (userTemplate) {
       result = _createProjectFromUserTemplate(dir, userTemplate, { id, name, ..._npPlaceholderValues });
     } else {
@@ -16406,6 +17417,17 @@ function init() {
 
   // New project modal
   _safeInit('new project modal', () => {
+    $('btn-np-studio-templates')?.addEventListener('click', () => _npSetTemplateSource('studio'));
+    $('btn-np-community-templates')?.addEventListener('click', () => _npSetTemplateSource('community'));
+    $('np-community-template-search')?.addEventListener('input', _npRenderCommunityTemplateMarketplace);
+    $('np-community-template-sort')?.addEventListener('change', (event) => {
+      _npCommunityTemplateSort = event.target.value === 'name' ? 'name' : 'recent';
+      _npRenderCommunityTemplateMarketplace();
+    });
+    $('btn-np-community-refresh')?.addEventListener('click', () => {
+      _npCommunityTemplateCatalogLoaded = false;
+      void _npLoadCommunityTemplateCatalog({ refresh: true });
+    });
     $('btn-pick-dir')?.addEventListener('click', () => {
       pickFolder((dir) => {
         const name = $('new-app-name').value.trim();

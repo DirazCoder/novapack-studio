@@ -42,9 +42,11 @@
 
       var data = null;
       var raw = null;
+      var glassEffectsPreference = null;
       try {
         raw = localStorage.getItem('novapack_studio_data');
         data = raw ? JSON.parse(raw) : null;
+        glassEffectsPreference = localStorage.getItem('novapack_studio_disable_glass_effects');
       } catch (e) {}
       if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
       root.setAttribute('data-first-run-setup', String(!raw || data.firstRunSetupComplete === false));
@@ -55,6 +57,10 @@
       if (validThemes.indexOf(theme) === -1) theme = defaultTheme;
       root.setAttribute('data-theme', theme);
       root.setAttribute('data-density', data.uiDensity === 'compact' ? 'compact' : 'comfortable');
+      var disableGlassEffects = glassEffectsPreference === 'true'
+        || (glassEffectsPreference !== 'false' && data.disableGlassEffects === true);
+      if (disableGlassEffects) root.setAttribute('data-glass-effects', 'off');
+      else root.removeAttribute('data-glass-effects');
 
       var sidebarWidth = typeof data.sidebarWidth === 'number' && data.sidebarWidth >= 190 && data.sidebarWidth <= 360
         ? data.sidebarWidth : 238;
@@ -2160,6 +2166,13 @@
               </select>
             </div>
             <div class="settings-row">
+              <label class="settings-label" for="chk-disable-glass-effects">
+                <input type="checkbox" id="chk-disable-glass-effects">
+                Disable blur and glass effects
+              </label>
+              <span class="settings-hint">Use solid surfaces instead of translucent panels and backdrop blur.</span>
+            </div>
+            <div class="settings-row">
               <label class="settings-label">Appearance defaults</label>
               <button class="action-btn action-btn--ghost" id="btn-appearance-reset">Reset appearance</button>
             </div>
@@ -2184,7 +2197,7 @@
               </div>
             </div>
             <div class="settings-hint">
-              Carries your theme, layout, and autosave/editor preferences to another machine.
+              Carries your theme, glass effects, layout, and autosave/editor preferences to another machine.
               Recent projects, workspaces, and build history are machine-specific and are not included.
             </div>
           </div>
@@ -2213,21 +2226,60 @@
         <div>
           <span class="about-modal-eyebrow">EXTEND YOUR WORKFLOW</span>
           <h2 class="modal-title" id="plugins-title">Studio Plugins</h2>
+          <p class="plugins-modal-subtitle">Discover trusted tools or manage your installed extensions.</p>
         </div>
         <button class="modal-close" data-close="modal-plugins" aria-label="Close"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-close" /></svg></button>
       </div>
       <div class="modal-body plugins-modal-body">
         <div class="plugin-trust-notice" role="note">
-          <strong>Plugins have full access to your computer.</strong>
-          <span>They can read and modify files, run programs, and access the network. Only install plugins from publishers you trust. A NovaByte signature confirms package integrity and publisher—not that the code is risk-free.</span>
+          <span class="plugin-trust-notice-icon" aria-hidden="true"><svg class="ui-icon"><use href="#ui-icon-alert" /></svg></span>
+          <div><strong>Plugins have full access to your computer.</strong>
+            <span>They can read and modify files, run programs, and access the network. A NovaByte signature verifies the publisher and package integrity, not that the code is risk-free.</span>
+          </div>
         </div>
-        <div class="plugin-manager-actions">
-          <button class="action-btn action-btn--primary" id="btn-plugin-install-file" type="button">Install .nbplugin</button>
-          <button class="action-btn action-btn--ghost" id="btn-plugin-install-folder" type="button">Install from folder</button>
-          <button class="action-btn action-btn--ghost" id="btn-plugin-marketplace" type="button">Browse marketplace</button>
+        <div class="plugin-manager-shell">
+          <aside class="plugin-manager-sidebar" aria-label="Plugin sections">
+            <span class="plugin-manager-sidebar-label">PLUGINS</span>
+            <div class="plugin-manager-tabs" role="tablist" aria-label="Plugin manager">
+              <button class="plugin-manager-tab is-active" id="btn-plugin-marketplace-tab" type="button"
+                role="tab" aria-selected="true" aria-controls="plugin-marketplace-pane">Marketplace</button>
+              <button class="plugin-manager-tab" id="btn-plugin-installed-tab" type="button"
+                role="tab" aria-selected="false" aria-controls="plugin-installed-pane">Installed <span class="plugin-count" id="plugin-installed-count">0</span></button>
+            </div>
+          </aside>
+          <div class="plugin-manager-content">
+            <div class="plugin-manager-toolbar" id="plugin-manager-toolbar">
+              <div class="plugin-manager-tools">
+                <label class="plugin-search" for="plugin-search">
+                  <svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-search" /></svg>
+                  <input id="plugin-search" type="search" placeholder="Search plugins" autocomplete="off">
+                </label>
+                <button class="action-btn action-btn--ghost plugin-refresh-button" id="btn-plugin-refresh" type="button"
+                  title="Refresh marketplace" aria-label="Refresh marketplace"><svg class="ui-icon" aria-hidden="true"><use href="#ui-icon-refresh" /></svg></button>
+                <button class="action-btn action-btn--ghost" id="btn-plugin-install-folder" type="button">Install folder</button>
+                <button class="action-btn action-btn--ghost" id="btn-plugin-install-file" type="button">Install .nbplugin</button>
+              </div>
+            </div>
+            <p class="plugin-manager-notice" id="plugin-manager-notice" role="status" aria-live="polite"></p>
+            <section class="plugin-manager-pane" id="plugin-marketplace-pane" role="tabpanel"
+              aria-labelledby="btn-plugin-marketplace-tab">
+              <div class="plugin-marketplace-caption">
+                <span id="plugin-marketplace-summary">Community plugins, signed by NovaByte Trusted Signing.</span>
+                <span class="plugin-store-status" id="plugin-store-status">Store</span>
+              </div>
+              <div class="plugin-list" id="plugin-marketplace-list" aria-live="polite"></div>
+              <section class="plugin-detail" id="plugin-marketplace-detail" aria-live="polite" hidden></section>
+            </section>
+            <section class="plugin-manager-pane hidden" id="plugin-installed-pane" role="tabpanel"
+              aria-labelledby="btn-plugin-installed-tab" hidden>
+              <div class="plugin-marketplace-caption">
+                <span id="plugin-installed-summary">Plugins installed on this device.</span>
+                <button class="action-btn action-btn--ghost plugin-reload-button" id="btn-plugin-reload" type="button">Reload enabled plugins</button>
+              </div>
+              <div class="plugin-list" id="plugin-installed-list" aria-live="polite"></div>
+            </section>
+          </div>
         </div>
-        <p class="plugin-manager-notice" id="plugin-manager-notice" role="status" aria-live="polite"></p>
-        <div class="plugin-list" id="plugin-list" aria-live="polite"></div>
       </div>
     </div>
   </div>
@@ -2243,20 +2295,60 @@
       <div class="modal-body modal-body--new-project">
         <aside class="np-categories" id="np-categories" aria-label="Starter categories"></aside>
         <div class="np-left">
-          <div class="np-gallery-heading">
-            <div>
-              <h2 id="np-category-title">All starters</h2>
-              <p>Choose a starting point for your NovaByte app.</p>
+          <div class="np-template-source-tabs" role="tablist" aria-label="Template source">
+            <button class="np-template-source-tab active" id="btn-np-studio-templates" type="button"
+              role="tab" aria-selected="true" aria-controls="np-studio-template-pane">Studio</button>
+            <button class="np-template-source-tab" id="btn-np-community-templates" type="button"
+              role="tab" aria-selected="false" aria-controls="np-community-template-pane">Template Marketplace</button>
+          </div>
+          <section id="np-studio-template-pane" role="tabpanel" aria-labelledby="btn-np-studio-templates">
+            <div class="np-gallery-heading">
+              <div>
+                <h2 id="np-category-title">All starters</h2>
+                <p>Choose a starting point for your NovaByte app.</p>
+              </div>
+              <input id="np-template-search" type="search" placeholder="Search starters" aria-label="Search starters">
             </div>
-            <input id="np-template-search" type="search" placeholder="Search starters" aria-label="Search starters">
-          </div>
-          <div class="np-user-template-actions">
-            <button class="action-btn action-btn--ghost" id="btn-save-user-template" type="button">Save open project as starter</button>
-            <button class="action-btn action-btn--ghost" id="btn-import-user-template" type="button">Import starter</button>
-            <button class="action-btn action-btn--ghost" id="btn-export-user-template" type="button">Export selected starter</button>
-            <input id="user-template-import-file" type="file" accept=".json,application/json" hidden>
-          </div>
-          <div class="template-grid" id="template-grid"></div>
+            <div class="np-user-template-actions">
+              <button class="action-btn action-btn--ghost" id="btn-save-user-template" type="button">Save open project as starter</button>
+              <button class="action-btn action-btn--ghost" id="btn-import-user-template" type="button">Import .nbtemplate</button>
+              <button class="action-btn action-btn--ghost" id="btn-export-user-template" type="button">Export selected</button>
+              <input id="user-template-import-file" type="file" accept=".nbtemplate,.json,application/json" hidden>
+            </div>
+            <div class="template-grid" id="template-grid"></div>
+          </section>
+          <section class="np-community-template-pane" id="np-community-template-pane" role="tabpanel"
+            aria-labelledby="btn-np-community-templates" hidden>
+            <div class="np-community-hero">
+              <div>
+                <span class="np-community-eyebrow">COMMUNITY LIBRARY</span>
+                <h2>Find your next starting point.</h2>
+                <p>Reviewed starter projects, ready to inspect and make your own. Studio verifies each signed template before preview.</p>
+              </div>
+              <button class="action-btn action-btn--ghost np-community-refresh" id="btn-np-community-refresh" type="button" aria-label="Refresh community templates">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2"/></svg>
+                Refresh
+              </button>
+            </div>
+            <div class="np-community-toolbar">
+              <label class="np-community-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg>
+                <input id="np-community-template-search" type="search" placeholder="Search community templates"
+                  aria-label="Search community templates">
+              </label>
+              <label class="np-community-sort-label" for="np-community-template-sort">Sort</label>
+              <select id="np-community-template-sort" class="np-community-sort">
+                <option value="recent">Recently published</option>
+                <option value="name">Name A–Z</option>
+              </select>
+            </div>
+            <div class="np-community-category-row">
+              <div class="np-community-categories" id="np-community-template-categories" role="group" aria-label="Filter templates by category"></div>
+              <span class="np-community-result-count" id="np-community-template-count" aria-live="polite"></span>
+            </div>
+            <p class="np-community-template-notice" id="np-community-template-notice" role="status" aria-live="polite"></p>
+            <div class="np-community-template-grid" id="np-community-template-grid" aria-live="polite"></div>
+          </section>
         </div>
 
         <div class="np-right">
@@ -2265,6 +2357,7 @@
             <div class="np-preview-heading">
               <span class="np-preview-name" id="np-preview-name"></span>
               <span class="np-preview-desc" id="np-preview-desc"></span>
+              <span class="np-preview-trust" id="np-preview-trust" hidden></span>
             </div>
           </div>
 
@@ -2557,7 +2650,7 @@
           <div class="about-identity">
             <div class="about-name">NovaByte Studio</div>
             <p class="about-tagline">Build, package, and ship apps for NovaByte OS.</p>
-            <div class="about-version" id="about-version">Version 1.2.31</div>
+            <div class="about-version" id="about-version">Version 1.2.32</div>
           </div>
         </section>
         <div class="about-details">
@@ -2725,7 +2818,7 @@
             </ol>
             <h4>Pick a starting point</h4>
             <p>Use a focused template such as <code>blank</code>, <code>webapp</code>, <code>browser</code>, <code>utility</code>, <code>game</code>, <code>dashboard</code>, <code>form</code>, <code>markdown-viewer</code>, or <code>chat</code>. If none fits, start blank and add only the files and permissions your app needs. Open an existing project by selecting its project folder, not the generated <code>dist</code> folder.</p>
-            <p>Studio remembers your theme, compact/comfortable density, autosave choice, pane widths, dock sides, and collapsed panes on this device. Change them in Settings or by resizing the pane handles; they are applied as the window opens.</p>
+            <p>Studio remembers your theme, compact/comfortable density, blur and glass preference, autosave choice, pane widths, dock sides, and collapsed panes on this device. Change them in Settings or by resizing the pane handles; they are applied as the window opens.</p>
             <p class="help-note"><svg class="ui-icon help-note-icon" aria-hidden="true"><use href="#ui-icon-alert" /></svg> Keep working files in the project folder. Before sharing a project or exporting a starter, check it for credentials and private data; build filters are not a substitute for reviewing what you ship.</p>
           </div>
 

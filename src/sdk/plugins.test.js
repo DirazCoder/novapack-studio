@@ -8,6 +8,9 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   _canonicalJson,
+  downloadStudioPluginArchive,
+  fetchStudioPluginCatalog,
+  getPluginIconDataUrl,
   isPluginDomNode,
   listProjectFiles,
   NOVABYTE_TRUSTED_SIGNING_PUBLIC_KEY,
@@ -84,11 +87,114 @@ test('plugin manifest requires a valid entry point and compatible Studio range',
     engines: { studio: '>=1.0.0 <2.0.0' },
   };
   assert.equal(_validatePluginManifest(manifest, new Set(['index.js']), studioVersion), manifest);
+  assert.equal(_validatePluginManifest({
+    ...manifest,
+    engines: { studio: '>=9.0.0' },
+  }, new Set(['index.js']), studioVersion, { allowIncompatible: true }).engines.studio, '>=9.0.0');
   assert.throws(() => _validatePluginManifest(manifest, new Set(), studioVersion), /entry point does not exist/);
   assert.throws(() => _validatePluginManifest({
     ...manifest,
     engines: { studio: '>=9.0.0' },
   }, new Set(['index.js']), studioVersion), /requires Studio/);
+  assert.throws(() => _validatePluginManifest({
+    ...manifest,
+    icon: '../icon.png',
+  }, new Set(['index.js']), studioVersion), /Invalid plugin path/);
+  assert.throws(() => _validatePluginManifest({
+    ...manifest,
+    icon: 'icon.svg',
+  }, new Set(['index.js', 'icon.svg']), studioVersion), /PNG, JPEG, or WebP/);
+  assert.equal(_validatePluginManifest({
+    ...manifest,
+    icon: 'assets/icon.png',
+  }, new Set(['index.js', path.join('assets', 'icon.png')]), studioVersion).icon, 'assets/icon.png');
+});
+
+test('marketplace catalog validates and normalizes published plugin rows', async () => {
+  const fetcher = async (url, options) => {
+    assert.match(url.toString(), /publisher_catalog_plugins/);
+    assert.equal(options.headers.Accept, 'application/json');
+    return {
+      ok: true,
+      json: async () => [{
+        plugin_id: 'example.plugin',
+        name: 'Example',
+        version: '1.2.3',
+        publisher: 'NovaByte',
+        description: 'A plugin.',
+        compatible_studio: '>=1.2.31 <2.0.0',
+        file: 'https://jcrptxtmieveoijdbtqa.supabase.co/storage/v1/object/public/published-packages/example.nbplugin',
+        size: '1234',
+        release_notes: 'Fixes.',
+        published_at: '2025-01-01T00:00:00Z',
+      }],
+    };
+  };
+  const [plugin] = await fetchStudioPluginCatalog(fetcher);
+  assert.deepEqual(plugin, {
+    id: 'example.plugin',
+    name: 'Example',
+    version: '1.2.3',
+    publisher: 'NovaByte',
+    description: 'A plugin.',
+    compatibleStudio: '>=1.2.31 <2.0.0',
+    file: 'https://jcrptxtmieveoijdbtqa.supabase.co/storage/v1/object/public/published-packages/example.nbplugin',
+    size: 1234,
+    releaseNotes: 'Fixes.',
+    publishedAt: '2025-01-01T00:00:00Z',
+  });
+  await assert.rejects(fetchStudioPluginCatalog(async () => ({
+    ok: true,
+    json: async () => [{ plugin_id: 'bad id' }],
+  })), /invalid catalog entry/);
+});
+
+test('marketplace downloads reject URLs outside the trusted public package bucket', async () => {
+  let requested = false;
+  const fetcher = async () => { requested = true; throw new Error('unexpected network request'); };
+  await assert.rejects(downloadStudioPluginArchive({
+    file: 'https://example.com/plugin.nbplugin',
+  }, fetcher), /not from the trusted plugin store/);
+  await assert.rejects(downloadStudioPluginArchive({
+    file: 'https://jcrptxtmieveoijdbtqa.supabase.co/storage/v1/object/public/other/plugin.nbplugin',
+  }, fetcher), /not from the trusted plugin store/);
+  assert.equal(requested, false);
+
+  const chunks = [Buffer.from('plugin'), Buffer.from('archive')];
+  let index = 0;
+  const download = await downloadStudioPluginArchive({
+    file: 'https://jcrptxtmieveoijdbtqa.supabase.co/storage/v1/object/public/published-packages/example.nbplugin',
+  }, async () => ({
+    ok: true,
+    headers: { get: () => String(Buffer.concat(chunks).length) },
+    body: {
+      getReader: () => ({
+        async read() {
+          if (index >= chunks.length) return { done: true };
+          return { done: false, value: chunks[index++] };
+        },
+        releaseLock() {},
+      }),
+    },
+  }));
+  assert.deepEqual(download, Buffer.concat(chunks));
+});
+
+test('plugin icons produce data URLs only for bounded supported raster files', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-plugin-icon-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const bytes = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    Buffer.from('test'),
+  ]);
+  fs.writeFileSync(path.join(directory, 'icon.png'), bytes);
+  assert.equal(
+    getPluginIconDataUrl({ icon: 'icon.png', path: directory }),
+    `data:image/png;base64,${bytes.toString('base64')}`,
+  );
+  assert.equal(getPluginIconDataUrl({ icon: '../outside.png', path: directory }), null);
+  fs.writeFileSync(path.join(directory, 'fake.png'), 'not an image');
+  assert.equal(getPluginIconDataUrl({ icon: 'fake.png', path: directory }), null);
 });
 
 test('plugin signatures verify the canonical file digest map and detect tampering', (t) => {
@@ -149,6 +255,21 @@ test('local plugin installation requires trust before activation and supports un
   assert.equal(api.started, true);
   assert.deepEqual(await deactivatePlugins(result.active), []);
   assert.equal(api.stopped, true);
+
+  const replacement = path.join(root, 'replacement');
+  fs.mkdirSync(replacement);
+  fs.writeFileSync(path.join(replacement, 'plugin.json'), JSON.stringify({
+    id: 'example.plugin',
+    name: 'Example Plugin',
+    version: '1.1.0',
+    main: 'index.js',
+    engines: { studio: '>=1.0.0 <2.0.0' },
+  }));
+  fs.writeFileSync(path.join(replacement, 'index.js'), 'module.exports = {};');
+  const updated = await manager.installFolder(replacement);
+  assert.equal(updated.version, '1.1.0');
+  assert.equal(updated.enabled, false);
+  assert.equal(updated.trusted, false);
 
   await manager.uninstall(installed.id);
   assert.equal(manager.list().length, 0);

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { pipeline } = require('stream/promises');
 const semver = require('semver');
 const yauzl = require('yauzl-promise');
@@ -13,6 +14,10 @@ const MAX_MANIFEST_BYTES = 256 * 1024;
 const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9.-]{2,127}$/;
 const PUBLIC_KEY_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const NOVABYTE_TRUSTED_SIGNING_PUBLIC_KEY = 'Id_PakcUqjCM2k3i7mSkQy7LadrM_PwVz9S1ikYAzEY';
+const PLUGIN_MARKETPLACE_URL = 'https://jcrptxtmieveoijdbtqa.supabase.co';
+const PLUGIN_MARKETPLACE_PUBLIC_KEY = 'sb_publishable_K_MKjtuMcwlXJyB67Bmu3A_2vFQ2PGX';
+const MAX_MARKETPLACE_PACKAGE_BYTES = 25 * 1024 * 1024;
+const PLUGIN_ICON_MAX_BYTES = 1024 * 1024;
 
 function _validatePluginRelativePath(relativePath) {
   if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0')
@@ -90,7 +95,7 @@ function isPluginDomNode(value) {
     && typeof value.cloneNode === 'function';
 }
 
-function _validatePluginManifest(manifest, files, studioVersion) {
+function _validatePluginManifest(manifest, files, studioVersion, { allowIncompatible = false } = {}) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new Error('plugin.json must contain a JSON object');
   }
@@ -108,14 +113,145 @@ function _validatePluginManifest(manifest, files, studioVersion) {
   if (!engines || typeof engines.studio !== 'string' || !semver.validRange(engines.studio)) {
     throw new Error('Plugin must declare a valid engines.studio SemVer range');
   }
-  if (!semver.satisfies(studioVersion, engines.studio)) {
+  if (!allowIncompatible && !semver.satisfies(studioVersion, engines.studio)) {
     throw new Error(`Plugin requires Studio ${engines.studio}; this version is ${studioVersion}`);
   }
   if (manifest.description != null
     && (typeof manifest.description !== 'string' || manifest.description.length > 500)) {
     throw new Error('Plugin description must be 500 characters or fewer');
   }
+  if (manifest.icon != null) {
+    if (typeof manifest.icon !== 'string') throw new Error('Plugin icon must be a relative PNG, JPEG, or WebP path');
+    const iconPath = _validatePluginRelativePath(manifest.icon);
+    if (!files.has(iconPath)) throw new Error(`Plugin icon file does not exist: ${manifest.icon}`);
+    if (!/\.(?:png|jpe?g|webp)$/i.test(manifest.icon)) {
+      throw new Error('Plugin icons must use PNG, JPEG, or WebP format');
+    }
+  }
   return manifest;
+}
+
+function getPluginIconDataUrl(plugin) {
+  if (typeof plugin?.icon !== 'string' || typeof plugin.path !== 'string') return null;
+  const extension = path.extname(plugin.icon).toLowerCase();
+  const mimeType = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+  }[extension];
+  if (!mimeType) return null;
+  try {
+    const relativePath = _validatePluginRelativePath(plugin.icon);
+    const root = fs.realpathSync(plugin.path);
+    const iconPath = path.resolve(root, relativePath);
+    const target = fs.realpathSync(iconPath);
+    const relativeTarget = path.relative(root, target);
+    if (!relativeTarget || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeTarget)) return null;
+    const stat = fs.lstatSync(target);
+    if (!stat.isFile() || stat.size > PLUGIN_ICON_MAX_BYTES) return null;
+    const bytes = fs.readFileSync(target);
+    const isPng = extension === '.png' && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const isJpeg = ['.jpg', '.jpeg'].includes(extension)
+      && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    const isWebp = extension === '.webp'
+      && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+      && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+    if (!isPng && !isJpeg && !isWebp) return null;
+    return `data:${mimeType};base64,${bytes.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchStudioPluginCatalog(fetcher = globalThis.fetch) {
+  if (typeof fetcher !== 'function') throw new Error('Network requests are unavailable in this Studio runtime');
+  const url = new URL('/rest/v1/publisher_catalog_plugins', PLUGIN_MARKETPLACE_URL);
+  url.search = new URLSearchParams({
+    select: 'plugin_id,name,version,publisher,description,compatible_studio,file,size,release_notes,published_at',
+    order: 'published_at.desc',
+    limit: '100',
+  }).toString();
+  const response = await fetcher(url, {
+    headers: {
+      apikey: PLUGIN_MARKETPLACE_PUBLIC_KEY,
+      Accept: 'application/json',
+    },
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw new Error(`Plugin store request failed (${response.status} ${response.statusText || 'HTTP error'})`);
+  }
+  const rows = await response.json();
+  if (!Array.isArray(rows)) throw new Error('The plugin store returned an invalid catalog');
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object'
+      || typeof row.plugin_id !== 'string' || !PLUGIN_ID_RE.test(row.plugin_id)
+      || typeof row.name !== 'string' || typeof row.version !== 'string'
+      || typeof row.publisher !== 'string' || typeof row.description !== 'string'
+      || typeof row.compatible_studio !== 'string' || typeof row.file !== 'string') {
+      throw new Error('The plugin store contains an invalid catalog entry');
+    }
+    return {
+      id: row.plugin_id,
+      name: row.name,
+      version: row.version,
+      publisher: row.publisher,
+      description: row.description,
+      compatibleStudio: row.compatible_studio,
+      file: row.file,
+      size: Number.isFinite(Number(row.size)) ? Number(row.size) : 0,
+      releaseNotes: typeof row.release_notes === 'string' ? row.release_notes : '',
+      publishedAt: typeof row.published_at === 'string' ? row.published_at : '',
+    };
+  });
+}
+
+async function downloadStudioPluginArchive(plugin, fetcher = globalThis.fetch) {
+  if (typeof fetcher !== 'function') throw new Error('Network requests are unavailable in this Studio runtime');
+  let url;
+  try {
+    url = new URL(plugin.file);
+  } catch {
+    throw new Error('The catalog entry has an invalid download URL');
+  }
+  if (url.protocol !== 'https:' || url.hostname !== new URL(PLUGIN_MARKETPLACE_URL).hostname
+    || url.port || url.username || url.password
+    || !url.pathname.startsWith('/storage/v1/object/public/published-packages/')) {
+    throw new Error('The catalog download URL is not from the trusted plugin store');
+  }
+  const response = await fetcher(url, {
+    headers: { apikey: PLUGIN_MARKETPLACE_PUBLIC_KEY },
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw new Error(`Plugin download failed (${response.status} ${response.statusText || 'HTTP error'})`);
+  }
+  const declaredSize = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_MARKETPLACE_PACKAGE_BYTES) {
+    throw new Error('Plugin package exceeds the 25 MiB store download limit');
+  }
+  if (!response.body?.getReader) throw new Error('Plugin download did not provide a readable response');
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_MARKETPLACE_PACKAGE_BYTES) {
+        await reader.cancel();
+        throw new Error('Plugin package exceeds the 25 MiB store download limit');
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!size) throw new Error('The plugin store returned an empty package');
+  return Buffer.concat(chunks, size);
 }
 
 function _canonicalJson(value) {
@@ -174,7 +310,7 @@ function verifyPluginSignature(directory, trustedPublicKey = NOVABYTE_TRUSTED_SI
   }
 }
 
-function _readManifest(directory) {
+function _readManifest(directory, options) {
   const manifestPath = path.join(directory, 'plugin.json');
   const stat = fs.statSync(manifestPath);
   if (!stat.isFile() || stat.size > MAX_MANIFEST_BYTES) {
@@ -192,7 +328,7 @@ function _readManifest(directory) {
     }
   };
   visit(directory);
-  _validatePluginManifest(manifest, files, require('../../package.json').version);
+  _validatePluginManifest(manifest, files, require('../../package.json').version, options);
   return manifest;
 }
 
@@ -303,6 +439,28 @@ function createPluginManager({ rootDirectory, studioVersion }) {
     return plugins.sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  async function inspectArchive(archivePath, { allowIncompatible = false } = {}) {
+    _ensurePaths();
+    const stagingPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'studio-plugin-inspect-'));
+    try {
+      await _extractArchive(archivePath, stagingPath);
+      const manifest = _readManifest(stagingPath, { allowIncompatible });
+      const signature = verifyPluginSignature(stagingPath);
+      if (signature.status === 'invalid') {
+        throw new Error('Plugin signature is invalid or does not match the trusted marketplace key');
+      }
+      return {
+        ...manifest,
+        signature: signature.status,
+        iconDataUrl: manifest.icon
+          ? getPluginIconDataUrl({ icon: manifest.icon, path: stagingPath })
+          : null,
+      };
+    } finally {
+      await fs.promises.rm(stagingPath, { recursive: true, force: true });
+    }
+  }
+
   async function _install(prepare) {
     _ensurePaths();
     const stagingPath = path.join(pluginsDirectory, `.install-${crypto.randomUUID()}`);
@@ -393,7 +551,7 @@ function createPluginManager({ rootDirectory, studioVersion }) {
     _writeRegistry(registry);
   }
 
-  return { list, installArchive, installFolder, setEnabled, uninstall, pluginsDirectory };
+  return { list, inspectArchive, installArchive, installFolder, setEnabled, uninstall, pluginsDirectory };
 }
 
 async function activatePlugins(manager, createApi) {
@@ -440,6 +598,9 @@ module.exports = {
   MAX_ARCHIVE_ENTRIES,
   NOVABYTE_TRUSTED_SIGNING_PUBLIC_KEY,
   _canonicalJson,
+  fetchStudioPluginCatalog,
+  downloadStudioPluginArchive,
+  getPluginIconDataUrl,
   isPluginDomNode,
   listProjectFiles,
   resolveProjectPath,

@@ -2,7 +2,7 @@
 
 <div><img src="./logo.svg" width="100" height="100" alt="NovaByte Logo" /></div>
 
-<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.31-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
+<div><img src="https://img.shields.io/badge/NovaByte_Studio-v1.2.32-22c55e?style=for-the-badge" alt="NovaByte Studio"/></div>
 
 # NovaByte Studio
 
@@ -18,7 +18,7 @@
 
 <br>
 
-[**Getting Started**](#getting-started) · [**Templates**](#available-templates) · [**Build from source**](#build-from-source) · [**.novaapp Guide**](./NOVAAPP.md)
+[**Getting Started**](#getting-started) · [**Templates**](#available-templates) · [**Create a template**](./STUDIO_TEMPLATES.md) · [**Build from source**](#build-from-source) · [**.novaapp Guide**](./NOVAAPP.md)
 
 </div>
 
@@ -108,6 +108,9 @@ NovaApp API starters use the v2 `window.novaOS` facade. Sensitive integrations a
 
 Template artwork is embedded as SVG data in both the project picker and the generated app's `manifest.json`; no external icon files or network fetches are needed.
 
+To save, export, import, or publish your own `.nbtemplate` starter, see the
+[Studio template authoring guide](./STUDIO_TEMPLATES.md).
+
 ### Bundled external dependencies (`vendor/`)
 
 Every new project includes a `vendor/` directory. Drop single-file libraries there (JS or CSS) and they are bundled automatically when you Build — no CDN required.
@@ -190,6 +193,8 @@ NovaByte Studio includes a full-featured CodeMirror 6 editor with:
 ### Themes
 
 Eight total themes: seven built-in presets — NovaByte Dark, NovaByte Light, Legacy Green, Amber, Nightshade, High Contrast, and Forest — plus a fully custom theme editor with per-CSS-variable color pickers and JSON import/export. Legacy Midnight Blue settings are migrated to Legacy Green.
+
+In **Settings → Appearance**, enable **Disable blur and glass effects** to replace translucent panels with solid surfaces and remove backdrop blur. This preference is saved locally and included in settings export/import.
 
 ### Autosave
 

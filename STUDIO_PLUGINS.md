@@ -18,6 +18,13 @@ confirmation the first time it is enabled. A trusted plugin can be disabled or
 uninstalled in **Settings → Plugins**. Updating/reinstalling a package resets
 its enable and trust choices.
 
+The Studio Plugins manager includes an in-app marketplace backed by the
+NovaByte public plugin catalog. Marketplace packages are downloaded from the
+official package store and must match the pinned NovaByte signing key before
+installation; they remain disabled until you review and enable them. The
+manager also supports searching, refreshing the catalog, installing local
+`.nbplugin` archives or folders, and managing installed plugins.
+
 The **Verified signature** badge means the package matches a signature made
 with NovaByte Trusted Signing's pinned Ed25519 public key. It proves integrity
 and signing-key identity, not that the plugin is safe or benign. An unsigned
@@ -36,6 +43,7 @@ Create a folder containing `plugin.json` and `index.js`.
   "version": "1.0.0",
   "description": "Adds a greeting command.",
   "publisher": "Example Studio",
+  "icon": "assets/icon.png",
   "main": "index.js",
   "engines": {
     "studio": ">=1.2.31 <2.0.0"
@@ -84,10 +92,23 @@ During reload/shutdown, plugins are deactivated in reverse activation order.
 | `engines.studio` | Yes | Valid SemVer range that includes the running Studio version. |
 | `description` | No | String of at most 500 characters. |
 | `publisher` | No | Publisher label shown in plugin settings. |
+| `icon` | No | Relative path to an included PNG, JPEG, or WebP icon. Keep it at or below 1 MiB; SVG and external URLs are not supported. |
 
 Use forward slashes in `main` paths on every platform. Do not use absolute
 paths, `..`, backslashes, colon-containing segments, or reserved path segments
 such as `constructor`, `prototype`, and `__proto__`.
+
+The plugin manager displays a bundled `icon` in its Installed view and on a
+marketplace plugin's detail page. Marketplace details are loaded from the
+signed package when opened; after a detail page has been viewed, its icon is
+also cached for that listing in the current session. If the icon is missing or
+invalid, Studio displays a monogram fallback. The detail page shows catalog
+metadata and supported manifest fields as text; it does not display screenshots
+or execute the plugin.
+
+When a newer compatible marketplace version is available, the Marketplace
+offers an Update action. Updating replaces the installed package and disables
+it until you explicitly enable and trust the updated version.
 
 ## Complete `api` reference
 
