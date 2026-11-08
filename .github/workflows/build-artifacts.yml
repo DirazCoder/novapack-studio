@@ -66,6 +66,7 @@ jobs:
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             echo "EMSDK_PATH=$RUNNER_TEMP\emsdk" >> $GITHUB_ENV
+            echo "EMSDK_ARCH=x86_64" >> $GITHUB_ENV
           else
             echo "EMSDK_PATH=$RUNNER_TEMP/emsdk" >> $GITHUB_ENV
           fi
@@ -87,7 +88,6 @@ jobs:
         if: runner.os == 'Windows' && steps.cache-emsdk.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $env:EMSDK_ARCH = 'x86_64'
           & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') install latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') activate latest
