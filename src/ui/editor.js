@@ -407,6 +407,74 @@ window.CM = {
   getValue() {
     return _view ? _view.state.doc.toString() : '';
   },
+  getState() {
+    if (!_view) return null;
+    const selection = _view.state.selection.main;
+    const line = _view.state.doc.lineAt(selection.head);
+    return {
+      length: _view.state.doc.length,
+      lines: _view.state.doc.lines,
+      selection: {
+        anchor: selection.anchor,
+        head: selection.head,
+        from: selection.from,
+        to: selection.to,
+        text: _view.state.sliceDoc(selection.from, selection.to),
+      },
+      cursor: { line: line.number, column: selection.head - line.from + 1 },
+    };
+  },
+  getSelection() {
+    const state = this.getState();
+    return state?.selection ?? null;
+  },
+  setSelection({ anchor, head = anchor } = {}) {
+    if (!_view) return false;
+    const length = _view.state.doc.length;
+    if (!Number.isInteger(anchor) || !Number.isInteger(head)
+      || anchor < 0 || head < 0 || anchor > length || head > length) {
+      throw new RangeError('Selection positions must be valid document offsets');
+    }
+    _view.dispatch({ selection: { anchor, head } });
+    _view.focus();
+    return true;
+  },
+  getCursor() {
+    return this.getState()?.cursor ?? null;
+  },
+  setCursor(position) {
+    if (!_view) return false;
+    let offset = position;
+    if (position && typeof position === 'object') {
+      const { line, column = 1 } = position;
+      if (!Number.isInteger(line) || line < 1 || line > _view.state.doc.lines
+        || !Number.isInteger(column) || column < 1) {
+        throw new RangeError('Cursor line and column are out of range');
+      }
+      const lineInfo = _view.state.doc.line(line);
+      offset = lineInfo.from + Math.min(column - 1, lineInfo.length);
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > _view.state.doc.length) {
+      throw new RangeError('Cursor position must be a valid document offset or { line, column }');
+    }
+    _view.dispatch({ selection: { anchor: offset, head: offset } });
+    _view.focus();
+    return true;
+  },
+  replaceRange(text, { from, to } = {}) {
+    if (!_view) return false;
+    if (typeof text !== 'string' || !Number.isInteger(from) || !Number.isInteger(to)
+      || from < 0 || to < from || to > _view.state.doc.length) {
+      throw new TypeError('replaceRange requires text and a valid { from, to } range');
+    }
+    const cursor = from + text.length;
+    _view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: cursor, head: cursor },
+    });
+    _view.focus();
+    return true;
+  },
 
   setPermissionHoverHandler(handler) {
     _permissionHoverHandler = typeof handler === 'function' ? handler : null;

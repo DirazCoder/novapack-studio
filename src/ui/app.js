@@ -86,12 +86,41 @@ const _studioPluginCatalogDetailRequests = new Map();
 const _studioPluginCommands = new Map();
 const _studioPluginViews = new Map();
 const _studioPluginThemes = new Map();
+const _studioPluginStatusItems = new Map();
+const _studioPluginContextItems = new Map();
 const _studioPluginActivationErrors = new Map();
 const _studioPluginEventTarget = new EventTarget();
 const _studioPluginDisposers = new Map();
 
 function _emitStudioPluginEvent(name, detail) {
   _studioPluginEventTarget.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function _getEditorSelectionSnapshot() {
+  const view = window.CM?.view;
+  const selection = view?.state.selection.main;
+  if (!view || !selection) return null;
+  const line = view.state.doc.lineAt(selection.head);
+  return {
+    anchor: selection.anchor,
+    head: selection.head,
+    from: selection.from,
+    to: selection.to,
+    text: view.state.sliceDoc(selection.from, selection.to),
+    cursor: { line: line.number, column: selection.head - line.from + 1 },
+  };
+}
+
+function _emitEditorSelectionChange() {
+  const tab = _getActiveTab();
+  const selection = _getEditorSelectionSnapshot();
+  if (!selection) return;
+  _emitStudioPluginEvent('editor:selectionChange', {
+    path: state.projectDir && tab
+      ? path.relative(state.projectDir, tab.filePath).split(path.sep).join('/')
+      : tab?.filePath || null,
+    ...selection,
+  });
 }
 
 function _ownStudioPluginResource(pluginId, dispose) {
@@ -752,6 +781,8 @@ let _fileTreeWatcher = null;
 let _fileTreeWatcherTimer = null;
 let _fileTreeDragAbort = null; // AbortController for the tree's drag/drop listeners
 let _gitStatusRefreshId = 0;
+let _studioBuildProgress = 0;
+let _studioPluginContextMenuListenersInstalled = false;
 
 let _manifestWatcher = null;
 let _manifestWatcherTimer = null;
@@ -2238,6 +2269,13 @@ async function loadProject(dir) {
     manifest = { ...manifest, ...parsed };
   }
 
+  const previousProjectDirectory = state.projectDir;
+  if (previousProjectDirectory && previousProjectDirectory !== dir) {
+    _emitStudioPluginEvent('project:close', {
+      directory: previousProjectDirectory,
+      name: state.projectName,
+    });
+  }
   state.projectDir = dir;
   state.projectName = manifest.name || path.basename(dir);
   if (_fileTreeFilterTimer) clearTimeout(_fileTreeFilterTimer);
@@ -2286,6 +2324,11 @@ async function loadProject(dir) {
     _fileTreeWatcher = fs.watch(dir, { persistent: false }, (eventType, filename) => {
       if (!filename) return;
       if (_isOwnWrite(filename)) return;
+      const relativePath = String(filename).split(path.sep).join('/');
+      _emitStudioPluginEvent('project:file-change', {
+        path: relativePath,
+        eventType,
+      });
       if (_fileTreeWatcherTimer) clearTimeout(_fileTreeWatcherTimer);
       _fileTreeWatcherTimer = setTimeout(() => {
         if (state.projectDir === dir) {
@@ -2315,6 +2358,13 @@ async function loadProject(dir) {
   _updateEditorToolbar();
   window._nbproOnProjectLoaded?.(dir);
   switchTab('editor');
+  if (previousProjectDirectory && previousProjectDirectory !== dir) {
+    _emitStudioPluginEvent('project:change', {
+      previousDirectory: previousProjectDirectory,
+      directory: dir,
+      name: state.projectName,
+    });
+  }
   _emitStudioPluginEvent('project:open', { directory: dir, name: state.projectName });
 }
 
@@ -3084,6 +3134,11 @@ async function saveManifest() {
     const savedJson = JSON.stringify(manifest, null, 2);
     fs.writeFileSync(outPath, savedJson);
     _markOwnWrite(outPath);
+    _emitStudioPluginEvent('project:manifest-save', {
+      directory: state.projectDir,
+      manifest: { ...manifest },
+      path: 'manifest.json',
+    });
     state.projectName = manifest.name;
     $('project-breadcrumb').textContent = state.projectName + '  \u00b7  ' + state.projectDir;
     addRecent(state.projectDir, state.projectName);
@@ -6782,6 +6837,7 @@ function _refreshGitStatus(dir) {
       state.gitNumstat = null;
       _applyGitStatusToTree();
       _updateSidebarQuickAccess();
+      _emitStudioPluginEvent('git:status', { root: null, files: [], isRepository: false });
       if (state.activeTab === 'git') refreshGitPanel();
       return;
     }
@@ -6812,6 +6868,14 @@ function _refreshGitStatus(dir) {
         state.gitStatus = statusMap;
         _applyGitStatusToTree();
         _updateSidebarQuickAccess();
+        _emitStudioPluginEvent('git:status', {
+          root,
+          isRepository: true,
+          files: [...statusMap].map(([absolutePath, code]) => ({
+            path: path.relative(root, absolutePath).split(path.sep).join('/'),
+            code,
+          })),
+        });
 
         // +/- line counts per file, best-effort -- used only for the small
         // stat badges in the Changes list. Failure here (e.g. binary files,
@@ -8522,8 +8586,12 @@ function _loadTabIntoEditor(tab) {
     $('file-preview-image').classList.add('hidden');
     if (window.CM) {
       const content = (tab.liveContent !== undefined) ? tab.liveContent : tab.originalContent;
-      window.CM.mount(content, ext, tab.filePath, state.projectDir, _onCmChange, saveOpenFile, _updateStatusBar).then(() => {
+      window.CM.mount(content, ext, tab.filePath, state.projectDir, _onCmChange, saveOpenFile, () => {
         _updateStatusBar();
+        _emitEditorSelectionChange();
+      }).then(() => {
+        _updateStatusBar();
+        _emitEditorSelectionChange();
         window.CM?.focus();
         // Run the live permission scan immediately on open/switch, not just
         // on the next keystroke -- otherwise switching to a file that
@@ -9849,6 +9917,16 @@ async function _installMarketplacePlugin(plugin) {
 
 function _createStudioPluginApi(plugin) {
   const pluginStoragePrefix = `novabyte-studio:plugin:${encodeURIComponent(plugin.id)}:`;
+  const emitProjectChange = (relativePath, eventType) => {
+    const projectDirectory = state.projectDir;
+    if (!projectDirectory) return;
+    _emitStudioPluginEvent('project:file-change', {
+      path: String(relativePath).split(path.sep).join('/'),
+      eventType,
+      source: plugin.id,
+    });
+    populateFileTree(projectDirectory);
+  };
   const validateStorageKey = (key) => {
     if (typeof key !== 'string' || !key.trim() || key.length > 128 || key.includes('\0')) {
       throw new TypeError('Storage keys must be non-empty strings of at most 128 characters');
@@ -9856,6 +9934,23 @@ function _createStudioPluginApi(plugin) {
     return `${pluginStoragePrefix}${key}`;
   };
   const commands = {
+    getCommands() {
+      return _buildCommandRegistry()
+        .filter((entry) => {
+          try { return typeof entry.when !== 'function' || entry.when(); } catch { return false; }
+        })
+        .map(({ id, label, description = '', category, shortcut }) => ({
+          id, label, description, category, shortcut: shortcut || null,
+        }));
+    },
+    async execute(id) {
+      if (typeof id !== 'string' || !id) throw new TypeError('commands.execute requires a command ID');
+      const command = _buildCommandRegistry().find((entry) => entry.id === id);
+      if (!command) throw new Error(`Unknown Studio command: ${id}`);
+      if (typeof command.when === 'function' && !command.when()) return false;
+      await command.action();
+      return true;
+    },
     registerCommand(id, label, action, options = {}) {
       if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
         || typeof label !== 'string' || !label.trim() || label.length > 100
@@ -9908,17 +10003,25 @@ function _createStudioPluginApi(plugin) {
     on(name, listener) {
       const supported = new Set([
         'project:open',
+        'project:close',
+        'project:change',
+        'project:file-change',
+        'project:manifest-save',
         'tab:change',
         'view:change',
         'file:open',
         'file:save',
         'file:close',
         'editor:change',
+        'editor:selectionChange',
         'theme:change',
+        'settings:change',
         'build:start',
+        'build:progress',
         'build:log',
         'build:complete',
         'build:error',
+        'git:status',
       ]);
       if (!supported.has(name) || typeof listener !== 'function') {
         throw new TypeError('events.on requires a supported Studio event and listener function');
@@ -10092,12 +10195,14 @@ function _createStudioPluginApi(plugin) {
     };
     _studioPluginThemes.set(themeId, theme);
     if (state.theme === themeId) applyTheme(themeId);
+    _refreshStudioPluginCommands();
     renderThemePicker();
     const settingsList = $('theme-picker-list-settings');
     const settingsMenu = $('theme-picker-menu-settings');
     if (settingsList && settingsMenu) _renderSettingsThemeList(settingsList, settingsMenu);
     return _ownStudioPluginResource(plugin.id, () => {
       _studioPluginThemes.delete(themeId);
+      _refreshStudioPluginCommands();
       if (state.theme === themeId) {
         setTheme(DEFAULT_THEME);
       } else {
@@ -10108,6 +10213,190 @@ function _createStudioPluginApi(plugin) {
           _renderSettingsThemeList(settingsThemeList, settingsThemeMenu);
         }
       }
+    });
+  };
+  const disposables = {
+    create() {
+      const entries = new Set();
+      let disposed = false;
+      const group = {
+        add(dispose) {
+          if (typeof dispose !== 'function') throw new TypeError('Disposable groups accept functions only');
+          if (disposed) {
+            dispose();
+            return dispose;
+          }
+          entries.add(dispose);
+          return () => {
+            if (!entries.delete(dispose)) return;
+            dispose();
+          };
+        },
+        clear() {
+          const errors = [];
+          for (const dispose of [...entries].reverse()) {
+            entries.delete(dispose);
+            try { dispose(); } catch (error) { errors.push(error); }
+          }
+          if (errors.length) throw new AggregateError(errors, 'One or more plugin disposers failed');
+        },
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          group.clear();
+        },
+        get size() { return entries.size; },
+      };
+      _ownStudioPluginResource(plugin.id, group.dispose);
+      return group;
+    },
+  };
+  const statusBar = {
+    registerItem({ id, text, tooltip = '', onClick, priority = 0 } = {}) {
+      if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+        || typeof text !== 'string' || text.length > 100
+        || typeof tooltip !== 'string' || typeof priority !== 'number' || !Number.isFinite(priority)
+        || (onClick !== undefined && typeof onClick !== 'function')) {
+        throw new TypeError('statusBar.registerItem requires a valid ID and text');
+      }
+      const key = `${plugin.id}:${id}`;
+      if (_studioPluginStatusItems.has(key)) throw new Error(`Plugin status item already exists: ${id}`);
+      const host = $('status-bar');
+      if (!host) throw new Error('Studio status bar is not available');
+      const element = document.createElement(onClick ? 'button' : 'span');
+      element.className = 'status-bar-item status-bar-item--plugin';
+      if (onClick) element.type = 'button';
+      element.textContent = text;
+      element.title = tooltip;
+      element.dataset.pluginId = plugin.id;
+      element.style.order = String(Math.round(priority));
+      const click = onClick ? () => {
+        try {
+          Promise.resolve(onClick(api)).catch((error) => console.error(`[plugins] Status item failed in ${plugin.id} (${id}):`, error));
+        } catch (error) {
+          console.error(`[plugins] Status item failed in ${plugin.id} (${id}):`, error);
+        }
+      } : null;
+      if (click) element.addEventListener('click', click);
+      host.append(element);
+      const item = {
+        element,
+        update(next = {}) {
+          if (next.text !== undefined) {
+            if (typeof next.text !== 'string' || next.text.length > 100) throw new TypeError('Status text must be at most 100 characters');
+            element.textContent = next.text;
+          }
+          if (next.tooltip !== undefined) {
+            if (typeof next.tooltip !== 'string') throw new TypeError('Status tooltip must be a string');
+            element.title = next.tooltip;
+          }
+        },
+        dispose: () => {
+          _studioPluginStatusItems.delete(key);
+          element.remove();
+        },
+      };
+      _studioPluginStatusItems.set(key, item);
+      return Object.assign(item, { dispose: _ownStudioPluginResource(plugin.id, item.dispose) });
+    },
+  };
+  const contextMenus = {
+    registerItem(target, { id, label, when, action } = {}) {
+      const selectors = {
+        editor: '#cm-editor-host',
+        'file-tree': '#file-tree',
+        'editor-tabs': '#editor-tabs',
+        workspace: '#project-main',
+      };
+      if (!Object.hasOwn(selectors, target)
+        || typeof id !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/i.test(id)
+        || typeof label !== 'string' || !label.trim() || label.length > 80
+        || (when !== undefined && typeof when !== 'function')
+        || typeof action !== 'function') {
+        throw new TypeError('contextMenus.registerItem requires a supported target, ID, label, and action');
+      }
+      const key = `${plugin.id}:${id}`;
+      if (_studioPluginContextItems.has(key)) throw new Error(`Plugin context item already exists: ${id}`);
+      if (!_studioPluginContextMenuListenersInstalled) {
+        document.addEventListener('contextmenu', (event) => {
+          const targetElement = event.target instanceof Element ? event.target : null;
+          const x = event.clientX;
+          const y = event.clientY;
+          const matched = [..._studioPluginContextItems.values()].filter((item) =>
+            targetElement?.closest(item.selector));
+          if (!matched.length) return;
+          event.preventDefault();
+          requestAnimationFrame(() => {
+            const menu = targetElement?.closest('#cm-editor-host, #editor-tabs')
+              ? $('editor-context-menu')
+              : $('context-menu');
+            if (!menu || menu.classList.contains('hidden')) return;
+            menu.querySelectorAll('[data-plugin-context-item]').forEach((item) => item.remove());
+            const visibleItems = matched.filter((item) => {
+              try { return !item.when || item.when(); } catch (error) {
+                console.error(`[plugins] Context menu visibility failed in ${item.pluginId} (${item.id}):`, error);
+                return false;
+              }
+            });
+            if (!visibleItems.length) return;
+            const separator = document.createElement('div');
+            separator.className = 'context-menu-sep';
+            separator.dataset.pluginContextItem = 'true';
+            menu.append(separator);
+            for (const item of visibleItems) {
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'context-menu-item';
+              button.textContent = item.label;
+              button.dataset.pluginContextItem = 'true';
+              button.addEventListener('click', () => {
+                menu.classList.add('hidden');
+                const context = {
+                  x,
+                  y,
+                  targetPath: _contextTarget,
+                  activeFile: _getActiveTab()?.filePath || null,
+                };
+                try {
+                  Promise.resolve(item.action(context, item.api))
+                    .catch((error) => console.error(`[plugins] Context action failed in ${item.pluginId} (${item.id}):`, error));
+                } catch (error) {
+                  console.error(`[plugins] Context action failed in ${item.pluginId} (${item.id}):`, error);
+                }
+              }, { once: true });
+              menu.append(button);
+            }
+          });
+        }, true);
+        _studioPluginContextMenuListenersInstalled = true;
+      }
+      _studioPluginContextItems.set(key, {
+        pluginId: plugin.id,
+        id,
+        api,
+        selector: selectors[target],
+        label: label.trim(),
+        when,
+        action,
+      });
+      return _ownStudioPluginResource(plugin.id, () => {
+        _studioPluginContextItems.delete(key);
+      });
+    },
+  };
+  const runGit = (args, options = {}) => {
+    if (!state.gitRoot) throw new Error('No Git repository is open');
+    return new Promise((resolve, reject) => {
+      execFile('git', args, {
+        cwd: state.gitRoot,
+        maxBuffer: 10 * 1024 * 1024,
+        ...options,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          error.stderr = stderr;
+          reject(error);
+        } else resolve(stdout);
+      });
     });
   };
   const api = {
@@ -10131,13 +10420,70 @@ function _createStudioPluginApi(plugin) {
     project: {
       getDirectory: () => state.projectDir,
       getName: () => state.projectName,
+      getRoot: () => state.projectDir,
       getManifest() {
         if (!state.projectDir) throw new Error('No project is open');
         return _readManifest(state.projectDir);
       },
+      async saveManifest() {
+        if (!state.projectDir) throw new Error('No project is open');
+        return saveManifest();
+      },
+      async close() {
+        if (!state.projectDir) return false;
+        if (tabs.some((tab) => tab.isDirty)
+          && !await studioConfirm('Discard unsaved editor changes and close this project?', {
+            title: 'Close project',
+            confirmLabel: 'Discard and close',
+            danger: true,
+          })) return false;
+        const closed = { directory: state.projectDir, name: state.projectName };
+        _emitStudioPluginEvent('project:close', closed);
+        _teardownProjectHandlers();
+        state.projectDir = null;
+        state.projectName = null;
+        state.gitRoot = null;
+        state.gitStatus = null;
+        tabs.length = 0;
+        activeTabIndex = -1;
+        window.CM?.destroy();
+        _renderTabs();
+        showScreen('welcome');
+        return true;
+      },
       listFiles() {
         if (!state.projectDir) throw new Error('No project is open');
         return listProjectFiles(state.projectDir);
+      },
+      findFiles({ include = ['**/*'], exclude = [] } = {}) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const toRegex = (glob) => {
+          if (typeof glob !== 'string' || !glob || glob.includes('\0')) {
+            throw new TypeError('File search patterns must be non-empty strings');
+          }
+          let pattern = '^';
+          for (let index = 0; index < glob.length; index += 1) {
+            const char = glob[index];
+            if (char === '*' && glob[index + 1] === '*') {
+              index += 1;
+              if (glob[index + 1] === '/') {
+                index += 1;
+                pattern += '(?:.*/)?';
+              } else pattern += '.*';
+            } else if (char === '*') pattern += '[^/]*';
+            else if (char === '?') pattern += '[^/]';
+            else pattern += /[\\^$+?.()|[\]{}]/.test(char) ? `\\${char}` : char;
+          }
+          return new RegExp(`${pattern}$`);
+        };
+        if (!Array.isArray(include) || !Array.isArray(exclude)) {
+          throw new TypeError('findFiles expects include and exclude arrays');
+        }
+        const includes = include.map(toRegex);
+        const excludes = exclude.map(toRegex);
+        return listProjectFiles(state.projectDir).filter((filename) =>
+          includes.some((pattern) => pattern.test(filename))
+          && !excludes.some((pattern) => pattern.test(filename)));
       },
       exists(relativePath) {
         if (!state.projectDir) throw new Error('No project is open');
@@ -10165,22 +10511,122 @@ function _createStudioPluginApi(plugin) {
         const target = resolveProjectPath(state.projectDir, relativePath);
         return fs.readFileSync(target, encoding);
       },
+      readText(relativePath) {
+        return api.project.readFile(relativePath, 'utf8');
+      },
+      readBuffer(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        return fs.readFileSync(resolveProjectPath(state.projectDir, relativePath));
+      },
       writeFile(relativePath, contents, encoding = 'utf8') {
         if (!state.projectDir) throw new Error('No project is open');
         const target = resolveProjectPath(state.projectDir, relativePath);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, contents, encoding);
+        _markOwnWrite(target);
+        emitProjectChange(relativePath, 'change');
+      },
+      writeText(relativePath, contents) {
+        if (typeof contents !== 'string') throw new TypeError('writeText requires a string');
+        api.project.writeFile(relativePath, contents, 'utf8');
+      },
+      writeBuffer(relativePath, contents) {
+        if (!Buffer.isBuffer(contents) && !(contents instanceof Uint8Array)) {
+          throw new TypeError('writeBuffer requires a Buffer or Uint8Array');
+        }
+        api.project.writeFile(relativePath, contents);
       },
       createDirectory(relativePath) {
         if (!state.projectDir) throw new Error('No project is open');
         fs.mkdirSync(resolveProjectPath(state.projectDir, relativePath), { recursive: true });
+        emitProjectChange(relativePath, 'rename');
       },
+      createFile(relativePath, contents = '') {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof contents !== 'string' && !Buffer.isBuffer(contents) && !(contents instanceof Uint8Array)) {
+          throw new TypeError('createFile contents must be a string, Buffer, or Uint8Array');
+        }
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, contents, { flag: 'wx' });
+        emitProjectChange(relativePath, 'rename');
+        return path.relative(state.projectDir, target).split(path.sep).join('/');
+      },
+      copy(sourcePath, destinationPath, { overwrite = false } = {}) {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof overwrite !== 'boolean') throw new TypeError('overwrite must be a boolean');
+        const source = resolveProjectPath(state.projectDir, sourcePath);
+        const destination = resolveProjectPath(state.projectDir, destinationPath);
+        if (source === destination || _isDescendantOf(source, destination)) {
+          throw new Error('Cannot copy a directory into itself');
+        }
+        if (!overwrite && fs.existsSync(destination)) throw new Error('Destination already exists');
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.cpSync(source, destination, { recursive: true, force: overwrite, errorOnExist: !overwrite });
+        emitProjectChange(destinationPath, 'rename');
+        return path.relative(state.projectDir, destination).split(path.sep).join('/');
+      },
+      move(sourcePath, destinationPath, { overwrite = false } = {}) {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof overwrite !== 'boolean') throw new TypeError('overwrite must be a boolean');
+        const source = resolveProjectPath(state.projectDir, sourcePath);
+        const destination = resolveProjectPath(state.projectDir, destinationPath);
+        if (source === destination || _isDescendantOf(source, destination)) {
+          throw new Error('Cannot move a directory into itself');
+        }
+        if (!overwrite && fs.existsSync(destination)) throw new Error('Destination already exists');
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        if (overwrite && fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
+        fs.renameSync(source, destination);
+        emitProjectChange(sourcePath, 'rename');
+        emitProjectChange(destinationPath, 'rename');
+        return path.relative(state.projectDir, destination).split(path.sep).join('/');
+      },
+      rename(relativePath, newName) {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof newName !== 'string' || !newName.trim() || /[\\/]/.test(newName)) {
+          throw new TypeError('rename requires a new file or folder name without path separators');
+        }
+        const source = resolveProjectPath(state.projectDir, relativePath);
+        const destination = resolveProjectPath(state.projectDir, path.join(path.dirname(relativePath), newName.trim()));
+        if (fs.existsSync(destination)) throw new Error('Destination already exists');
+        fs.renameSync(source, destination);
+        emitProjectChange(relativePath, 'rename');
+        emitProjectChange(path.relative(state.projectDir, destination).split(path.sep).join('/'), 'rename');
+        return path.relative(state.projectDir, destination).split(path.sep).join('/');
+      },
+      watch(relativePath, listener) {
+        if (!state.projectDir) throw new Error('No project is open');
+        if (typeof listener !== 'function') throw new TypeError('watch requires a listener function');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        const root = path.resolve(state.projectDir);
+        const watchingDirectory = fs.statSync(target).isDirectory();
+        const watcher = fs.watch(target, (eventType, filename) => {
+          const changedPath = filename == null
+            ? path.relative(root, target).split(path.sep).join('/')
+            : path.relative(root, watchingDirectory ? path.join(target, String(filename)) : target)
+              .split(path.sep).join('/');
+          try {
+            const result = listener({ path: changedPath, eventType });
+            if (result && typeof result.then === 'function') {
+              result.catch((error) => console.error(`[plugins] Project watcher failed in ${plugin.id}:`, error));
+            }
+          } catch (error) {
+            console.error(`[plugins] Project watcher failed in ${plugin.id}:`, error);
+          }
+        });
+        return _ownStudioPluginResource(plugin.id, () => watcher.close());
+      },
+      onOpen: (listener) => api.events.on('project:open', listener),
+      onClose: (listener) => api.events.on('project:close', listener),
+      onChange: (listener) => api.events.on('project:file-change', listener),
       remove(relativePath) {
         if (!state.projectDir) throw new Error('No project is open');
         const target = path.resolve(state.projectDir, relativePath);
         resolveProjectPath(state.projectDir, relativePath);
         if (target === path.resolve(state.projectDir)) throw new Error('Cannot remove the open project root');
         fs.rmSync(target, { recursive: true });
+        emitProjectChange(relativePath, 'rename');
       },
       openFile(relativePath) {
         if (!state.projectDir) throw new Error('No project is open');
@@ -10301,11 +10747,112 @@ function _createStudioPluginApi(plugin) {
         if (!['comfortable', 'compact'].includes(density)) {
           throw new TypeError(`Unsupported Studio density: ${density}`);
         }
+        const previous = state.uiDensity;
         state.uiDensity = density;
         _applyUiDensity();
         saveStorage();
+        if (previous !== density) _emitStudioPluginEvent('settings:change', { uiDensity: density, previous });
         return state.uiDensity;
       },
+      getSettings: () => ({
+        theme: state.theme,
+        density: state.uiDensity,
+        glassEffects: !state.disableGlassEffects,
+      }),
+      setSettings(settings) {
+        if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+          throw new TypeError('ui.setSettings requires a settings object');
+        }
+        const allowed = new Set(['theme', 'density', 'glassEffects']);
+        for (const key of Object.keys(settings)) {
+          if (!allowed.has(key)) throw new TypeError(`Unsupported Studio setting: ${key}`);
+        }
+        const previous = api.ui.getSettings();
+        if (settings.theme !== undefined) api.ui.setTheme(settings.theme);
+        if (settings.density !== undefined) api.ui.setDensity(settings.density);
+        if (settings.glassEffects !== undefined) {
+          if (typeof settings.glassEffects !== 'boolean') throw new TypeError('glassEffects must be a boolean');
+          state.disableGlassEffects = !settings.glassEffects;
+          _applyGlassEffects();
+          saveStorage();
+        }
+        const current = api.ui.getSettings();
+        _emitStudioPluginEvent('settings:change', { previous, current });
+        return current;
+      },
+      async showMessage({ title = plugin.name, message, actions = [] } = {}) {
+        if (typeof title !== 'string' || !title.trim() || typeof message !== 'string'
+          || !Array.isArray(actions) || actions.length > 4
+          || actions.some((item) => !item || typeof item.id !== 'string'
+            || typeof item.label !== 'string' || !item.label.trim())) {
+          throw new TypeError('ui.showMessage requires a title, message, and up to four { id, label } actions');
+        }
+        if (!actions.length) {
+          await studioAlert(message, { title });
+          return null;
+        }
+        const content = document.createElement('div');
+        const text = document.createElement('p');
+        text.textContent = message;
+        const buttons = document.createElement('div');
+        buttons.className = 'plugin-message-actions';
+        content.append(text, buttons);
+        const panel = api.panels.create({
+          id: `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          title,
+          content,
+        });
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            panel.dispose();
+            resolve(result);
+          };
+          for (const action of actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = action.label;
+            button.addEventListener('click', () => finish(action.id), { once: true });
+            buttons.append(button);
+          }
+          panel.element.querySelector('.studio-plugin-panel__close')
+            ?.addEventListener('click', () => finish(null), { once: true });
+          panel.element.parentElement?.addEventListener('click', (event) => {
+            if (event.target === panel.element.parentElement) finish(null);
+          }, { once: true });
+          panel.show();
+        });
+      },
+      createProgress({ title = plugin.name, message = '', percentage = null } = {}) {
+        const status = statusBar.registerItem({
+          id: `progress-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text: `${title}: ${message || 'Working…'}`,
+          tooltip: message || title,
+        });
+        const update = (next = {}) => {
+          if (next.percentage !== undefined
+            && (typeof next.percentage !== 'number' || !Number.isFinite(next.percentage)
+              || next.percentage < 0 || next.percentage > 100)) {
+            throw new TypeError('Progress percentage must be between 0 and 100');
+          }
+          const label = next.title ?? title;
+          const detail = next.message ?? message;
+          const progressValue = next.percentage ?? percentage;
+          status.update({
+            text: `${label}: ${progressValue == null ? '' : `${progressValue}%`}${detail ? ` ${detail}` : ''}`.trim(),
+            tooltip: detail || label,
+          });
+          if (next.title !== undefined) title = next.title;
+          if (next.message !== undefined) message = next.message;
+          if (next.percentage !== undefined) percentage = next.percentage;
+        };
+        update({ title, message, percentage });
+        return { update, dispose: status.dispose };
+      },
+      registerStatusBarItem: (options) => statusBar.registerItem(options),
+      registerContextMenuItem: (target, options) => contextMenus.registerItem(target, options),
       getViews: () => [
         'editor', 'manifest', 'design', 'permissions', 'build', 'sign', 'git', 'review',
         ..._studioPluginViews.keys(),
@@ -10363,10 +10910,33 @@ function _createStudioPluginApi(plugin) {
         }
         pickFile(options.accept || null, callback);
       },
+      openFiles(options = {}, callback) {
+        if (typeof options === 'function') {
+          callback = options;
+          options = {};
+        }
+        if (!options || typeof options !== 'object' || Array.isArray(options)
+          || (options.accept !== undefined && typeof options.accept !== 'string')
+          || typeof callback !== 'function') {
+          throw new TypeError('dialogs.openFiles requires an options object and callback');
+        }
+        pickMultipleFiles(options.accept || null, callback);
+      },
       openFolder(callback) {
         if (typeof callback !== 'function') throw new TypeError('dialogs.openFolder requires a callback');
         pickFolder(callback);
       },
+      saveFile(options, callback) {
+        if (!options || typeof options !== 'object' || Array.isArray(options)
+          || (options.defaultPath !== undefined && typeof options.defaultPath !== 'string')
+          || (options.accept !== undefined && typeof options.accept !== 'string')
+          || typeof callback !== 'function') {
+          throw new TypeError('dialogs.saveFile requires an options object and callback');
+        }
+        pickSaveFile(options, callback);
+      },
+      confirm: (message, options) => studioConfirm(message, options),
+      prompt: (message, defaultValue, options) => studioPrompt(message, defaultValue, options),
     },
     clipboard: {
       async readText() {
@@ -10391,6 +10961,34 @@ function _createStudioPluginApi(plugin) {
         studioVersion: STUDIO_VERSION,
         nodeVersion: process.versions.node,
       }),
+      getPaths: () => ({
+        dataDirectory: _pluginDataDirectory(),
+        pluginDirectory: path.join(_pluginDataDirectory(), 'plugins', plugin.id),
+        cacheDirectory: path.join(_pluginDataDirectory(), 'cache'),
+        projectDirectory: state.projectDir,
+      }),
+      async openExternal(url) {
+        if (typeof url !== 'string') throw new TypeError('openExternal requires a URL string');
+        let parsed;
+        try { parsed = new URL(url); } catch { throw new TypeError('openExternal requires a valid URL'); }
+        if (!['https:', 'http:', 'mailto:'].includes(parsed.protocol)) {
+          throw new TypeError(`Unsupported external URL protocol: ${parsed.protocol}`);
+        }
+        if (typeof nw === 'undefined' || typeof nw.Shell?.openExternal !== 'function') {
+          throw new Error('Opening external URLs is unavailable in this Studio runtime');
+        }
+        nw.Shell.openExternal(parsed.toString());
+      },
+      revealPath(targetPath) {
+        if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath)) {
+          throw new TypeError('revealPath requires an absolute path');
+        }
+        if (!fs.existsSync(targetPath)) throw new Error('Path does not exist');
+        if (typeof nw === 'undefined' || typeof nw.Shell?.showItemInFolder !== 'function') {
+          throw new Error('Revealing paths is unavailable in this Studio runtime');
+        }
+        nw.Shell.showItemInFolder(targetPath);
+      },
     },
     workspace: {
       getState: () => ({
@@ -10401,21 +10999,91 @@ function _createStudioPluginApi(plugin) {
       }),
       switchView: (viewId) => api.ui.switchView(viewId),
       openFile: (relativePath) => api.project.openFile(relativePath),
+      closeFile: (relativePath) => api.files.close(relativePath),
       saveAll: () => api.files.saveAll(),
+      getActiveView: () => state.activeTab,
+      getViews: () => api.ui.getViews(),
+      getTabs: () => api.files.getOpenFiles(),
+      getActiveTab: () => api.files.getActiveFile(),
+      revealFile(relativePath) {
+        if (!state.projectDir) throw new Error('No project is open');
+        const target = resolveProjectPath(state.projectDir, relativePath);
+        if (!fs.existsSync(target)) throw new Error('Project file does not exist');
+        const row = document.querySelector(`.file-item[data-path="${CSS.escape(target)}"]`);
+        row?.scrollIntoView({ block: 'nearest' });
+        return !!row;
+      },
+      refreshExplorer() {
+        if (!state.projectDir) throw new Error('No project is open');
+        populateFileTree(state.projectDir);
+      },
+      onViewChange: (listener) => api.events.on('view:change', listener),
+      onTabChange: (listener) => api.events.on('tab:change', listener),
       focusEditor() {
         if (typeof window !== 'undefined') window.CM?.focus();
       },
     },
+    disposables,
+    statusBar,
+    contextMenus,
     build: {
-      run: () => runBuild(),
+      run: (options) => runBuild(options),
+      getState: () => ({
+        building: state.building,
+        progress: _studioBuildProgress,
+        projectDirectory: state.projectDir,
+      }),
+      getHistory: () => _loadBuildHistory().map((entry) => ({ ...entry })),
+      onProgress: (listener) => api.events.on('build:progress', listener),
     },
     templates: {
-      list: () => Object.entries(TEMPLATES).map(([id, template]) => ({
-        id,
-        name: template.name,
-        description: template.description,
-      })),
-      create: (options) => create(options),
+      list({ includeUser = false, includeCommunity = false } = {}) {
+        const result = Object.entries(TEMPLATES).map(([id, template]) => ({
+          id,
+          name: template.name,
+          description: template.description,
+          source: 'built-in',
+        }));
+        if (includeUser || includeCommunity) {
+          for (const template of _readUserTemplates()) {
+            const isCommunity = template.verified === true && !!template.communityId;
+            if ((isCommunity && includeCommunity) || (!isCommunity && includeUser)) {
+              result.push({
+                id: template.id,
+                name: template.name,
+                description: template.description,
+                source: isCommunity ? 'community' : 'user',
+              });
+            }
+          }
+        }
+        return result;
+      },
+      create(options) {
+        if (!options || typeof options !== 'object' || Array.isArray(options)) {
+          throw new TypeError('templates.create requires an options object');
+        }
+        const userTemplate = _readUserTemplates().find((template) => template.id === options.template);
+        if (!userTemplate) return create(options);
+        if (typeof options.targetDir !== 'string' || !options.targetDir) {
+          throw new TypeError('targetDir is required');
+        }
+        if (options.manifest !== undefined
+          && (!options.manifest || typeof options.manifest !== 'object' || Array.isArray(options.manifest))) {
+          throw new TypeError('manifest must be an object');
+        }
+        if (options.appsRoot !== undefined) {
+          if (typeof options.appsRoot !== 'string' || !options.appsRoot) {
+            throw new TypeError('appsRoot must be a non-empty path string');
+          }
+          const appsRoot = path.resolve(options.appsRoot);
+          const target = path.resolve(options.targetDir);
+          if (target !== appsRoot && !_isDescendantOf(appsRoot, target)) {
+            throw new Error('targetDir must be inside appsRoot');
+          }
+        }
+        return _createProjectFromUserTemplate(options.targetDir, userTemplate, options.manifest || {});
+      },
     },
     permissions: {
       list: () => PERMISSIONS.map((permission) => ({ ...permission })),
@@ -10429,8 +11097,82 @@ function _createStudioPluginApi(plugin) {
       inspect: (packagePath) => inspect(packagePath),
       verify: (packagePath, trustStore = []) => verify(packagePath, trustStore),
       listActions: (packagePath) => listActions(packagePath),
+      validate(packagePath) {
+        const inspected = inspect(packagePath);
+        const validation = AppPackage.validateManifest(inspected.manifest);
+        return { ...validation, format: inspected.format, manifest: inspected.manifest };
+      },
+      getManifest(packagePath) {
+        return inspect(packagePath).manifest;
+      },
+      listFiles(packagePath) {
+        return inspect(packagePath).files;
+      },
     },
-    get editor() { return window.CM; },
+    git: {
+      async getStatus() {
+        if (!state.gitRoot) throw new Error('No Git repository is open');
+        return {
+          root: state.gitRoot,
+          files: [...(state.gitStatus || new Map())].map(([absolutePath, code]) => ({
+            path: path.relative(state.gitRoot, absolutePath).split(path.sep).join('/'),
+            code,
+          })),
+        };
+      },
+      async getDiff({ path: relativePath, staged = false } = {}) {
+        const args = ['diff', ...(staged ? ['--cached'] : [])];
+        if (relativePath !== undefined) {
+          if (!state.projectDir) throw new Error('No project is open');
+          if (typeof relativePath !== 'string') throw new TypeError('Git diff path must be a string');
+          const safePath = resolveProjectPath(state.projectDir, relativePath);
+          args.push('--', path.relative(state.gitRoot, safePath));
+        }
+        return runGit(args);
+      },
+      async getBranches() {
+        if (!state.gitRoot) throw new Error('No Git repository is open');
+        return new Promise((resolve, reject) => {
+          _loadGitBranches((error, branches) => error ? reject(error) : resolve(branches));
+        });
+      },
+      async getHistory({ limit = 50 } = {}) {
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+          throw new TypeError('Git history limit must be an integer from 1 to 200');
+        }
+        const output = await runGit([
+          'log',
+          `--pretty=format:%H%x1f%s%x1f%an%x1f%aI%x00`,
+          '-n',
+          String(limit),
+        ]);
+        return output.split('\0').filter(Boolean).map((record) => {
+          const [hash, subject, author, date] = record.split('\x1f');
+          return { hash, subject, author, date };
+        });
+      },
+      onStatusChange(listener) {
+        return api.events.on('git:status', listener);
+      },
+    },
+    settings: {
+      get: () => api.ui.getSettings(),
+      set: (values) => api.ui.setSettings(values),
+    },
+    get editor() {
+      const editor = window.CM;
+      if (!editor) return editor;
+      return new Proxy(editor, {
+        get(target, property) {
+          if (property === 'format') return () => _formatActiveFile();
+          if (property === 'onChange') return (listener) => api.events.on('editor:change', listener);
+          if (property === 'onSelectionChange') return (listener) => api.events.on('editor:selectionChange', listener);
+          if (property === 'showDiagnostics') return (diagnostics) => target.setSyntaxDiagnostics(diagnostics);
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    },
     get design() { return window.NBPro; },
     node: { fs, path, os, process, require },
   };
@@ -11216,11 +11958,27 @@ function _readProjectVersion() {
   }
 }
 
-async function runBuild() {
+async function runBuild(options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('build.run requires an options object');
+  }
+  const allowedOptions = new Set(['outDir', 'clean']);
+  for (const key of Object.keys(options)) {
+    if (!allowedOptions.has(key)) throw new TypeError(`Unsupported build option: ${key}`);
+  }
+  if (options.outDir !== undefined && (typeof options.outDir !== 'string' || !options.outDir.trim())) {
+    throw new TypeError('build outDir must be a non-empty path string');
+  }
+  if (options.clean !== undefined && typeof options.clean !== 'boolean') {
+    throw new TypeError('build clean option must be a boolean');
+  }
   if (state.building) return { success: false, error: 'A build is already in progress.' };
   if (!state.projectDir) return { success: false, error: 'No project is open.' };
-  const outDir = _getBuildOutDir();
-  if ($('build-clean')?.checked && _buildOutputContainsProject(outDir)) {
+  const outDir = options.outDir
+    ? path.resolve(state.projectDir, options.outDir)
+    : _getBuildOutDir();
+  const shouldClean = options.clean ?? !!$('build-clean')?.checked;
+  if (shouldClean && _buildOutputContainsProject(outDir)) {
     const message = 'Refusing to clean this output directory because it contains the project folder.';
     clearLog();
     appendLog('error', message);
@@ -11233,6 +11991,7 @@ async function runBuild() {
 
   if (!await saveManifest()) return { success: false, error: 'Could not save the project manifest.' };
   state.building = true;
+  _studioBuildProgress = 0;
   _emitStudioPluginEvent('build:start', { projectDirectory: state.projectDir, outputDirectory: outDir });
   clearLog();
 
@@ -11244,10 +12003,16 @@ async function runBuild() {
   let progress = 0;
   _buildInterval = setInterval(() => {
     progress = Math.min(progress + (Math.random() * 3), 85);
+    _studioBuildProgress = Math.round(progress);
     fill.style.width = progress + '%';
+    _emitStudioPluginEvent('build:progress', {
+      projectDirectory: state.projectDir,
+      progress: _studioBuildProgress,
+      phase: 'building',
+    });
   }, 80);
 
-  if ($('build-clean').checked && fs.existsSync(outDir)) {
+  if (shouldClean && fs.existsSync(outDir)) {
     try {
       fs.rmSync(outDir, { recursive: true, force: true });
       appendLog('info', `Cleaned output directory: ${outDir}`);
@@ -11322,6 +12087,12 @@ async function runBuild() {
   }
 
   if (result.success) {
+    _studioBuildProgress = 100;
+    _emitStudioPluginEvent('build:progress', {
+      projectDirectory: state.projectDir,
+      progress: 100,
+      phase: 'complete',
+    });
     _emitStudioPluginEvent('build:complete', {
       projectDirectory: state.projectDir,
       outputFile: result.outFile || null,
@@ -11347,6 +12118,7 @@ async function runBuild() {
     }, 3000);
     return { success: true, outputFile: result.outFile || null };
   } else {
+    _studioBuildProgress = 0;
     _emitStudioPluginEvent('build:error', {
       projectDirectory: state.projectDir,
       error: result.error?.message || 'Build failed',
@@ -12371,6 +13143,13 @@ function _buildCommandRegistry() {
       category: 'Theme',
       action: () => setTheme(t.id),
       _swatch: t.swatch,
+    })),
+    ...[..._studioPluginThemes.values()].map((theme) => ({
+      id: `theme-${theme.id}`,
+      label: `Theme: ${theme.label}`,
+      category: 'Theme',
+      action: () => setTheme(theme.id),
+      _swatch: theme.swatch,
     })),
 
     // Snippets (generated dynamically from PERMISSIONS -- see _PERM_SNIPPETS)
@@ -15726,26 +16505,17 @@ function _openNativePicker(input, callback, expectedKind) {
   };
   input.addEventListener('cancel', cleanup, { once: true });
   input.addEventListener('change', () => {
-    const selectedPath = input.files?.[0]?.path;
+    const selectedPaths = [...(input.files || [])].map((file) => file.path).filter(Boolean);
     cleanup();
-    if (!selectedPath) return;
-    let stats;
+    if (!selectedPaths.length) return;
     try {
-      stats = fs.statSync(selectedPath);
-    } catch (err) {
-      showToast(`Could not access the selected ${expectedKind}: ${err.message}`);
-      return;
-    }
-    if (expectedKind === 'folder' && !stats.isDirectory()) {
-      showToast('The folder picker did not return a folder path.');
-      return;
-    }
-    if (expectedKind === 'file' && !stats.isFile()) {
-      showToast('The file picker did not return a file path.');
-      return;
-    }
-    try {
-      const result = callback(selectedPath);
+      for (const selectedPath of selectedPaths) {
+        const stats = fs.statSync(selectedPath);
+        if (expectedKind === 'folder' ? !stats.isDirectory() : !stats.isFile()) {
+          throw new Error(`The picker did not return a ${expectedKind} path.`);
+        }
+      }
+      const result = callback(input.multiple ? selectedPaths : selectedPaths[0]);
       if (result && typeof result.catch === 'function') {
         result.catch((callbackError) => {
           showToast(`Could not process the selected ${expectedKind}: ${callbackError.message}`);
@@ -15992,6 +16762,187 @@ function pickFile(accept, callback) {
     return;
   }
   _runPosixPicker('file', accept, callback, fallback);
+}
+
+function pickSaveFile({ defaultPath = 'untitled.txt', accept = '' } = {}, callback) {
+  if (typeof callback !== 'function') throw new TypeError('Save-file picker requires a callback');
+  if (typeof defaultPath !== 'string' || !defaultPath.trim()
+    || path.isAbsolute(defaultPath) || defaultPath.split(/[\\/]/).includes('..')) {
+    throw new TypeError('Save-file defaultPath must be a non-empty relative path');
+  }
+  const startDirectory = _pickerStartDirectory();
+  if (!startDirectory) return;
+  if (process.platform !== 'win32') {
+    const suggestedPath = path.resolve(startDirectory, defaultPath);
+    const commands = process.platform === 'darwin'
+      ? [{
+        cmd: 'osascript',
+        args: ['-e', [
+          'on run argv',
+          'set chosenFile to choose file name with prompt "Save file" default location (POSIX file (item 1 of argv)) default name (item 2 of argv)',
+          'return POSIX path of chosenFile',
+          'end run',
+        ].join('\n'), path.dirname(suggestedPath), path.basename(suggestedPath)],
+      }]
+      : [
+        { cmd: 'zenity', args: ['--file-selection', '--save', '--confirm-overwrite', `--filename=${suggestedPath}`, ...(accept ? ['--file-filter', accept] : [])] },
+        { cmd: 'kdialog', args: ['--getsavefilename', suggestedPath, accept] },
+        { cmd: 'yad', args: ['--file-selection', '--save', '--confirm-overwrite', `--filename=${suggestedPath}`] },
+      ];
+    const tryNext = (index) => {
+      if (index >= commands.length) {
+        showToast('No save-file picker is available on this system.');
+        return;
+      }
+      const { cmd, args } = commands[index];
+      execFile(cmd, args, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+        const selectedPath = String(stdout || '').replace(/\r?\n$/, '');
+        if (error) {
+          if (error.code === 1 && !selectedPath) return;
+          if (['ENOENT', 'EACCES'].includes(error.code) && index < commands.length - 1) {
+            tryNext(index + 1);
+            return;
+          }
+          showToast(`Could not open the save-file picker: ${String(stderr || '').trim() || error.message}`);
+          return;
+        }
+        if (!selectedPath) return;
+        try {
+          if (!fs.statSync(path.dirname(selectedPath)).isDirectory()) {
+            throw new Error('The save location parent is not a directory');
+          }
+          const result = callback(selectedPath);
+          if (result && typeof result.catch === 'function') {
+            result.catch((callbackError) => showToast(`Could not process the save location: ${callbackError.message}`));
+          }
+        } catch (callbackError) {
+          showToast(`Could not process the save location: ${callbackError.message}`);
+        }
+      });
+    };
+    tryNext(0);
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.setAttribute('nwworkingdir', startDirectory);
+  input.setAttribute('nwsaveas', path.basename(defaultPath));
+  if (accept) input.accept = accept;
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
+  input.style.cssText = 'position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;';
+  document.body.append(input);
+  let finished = false;
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
+    input.remove();
+  };
+  input.addEventListener('cancel', cleanup, { once: true });
+  input.addEventListener('change', () => {
+    const selectedPath = input.files?.[0]?.path;
+    cleanup();
+    if (!selectedPath) return;
+    try {
+      const result = callback(selectedPath);
+      if (result && typeof result.catch === 'function') {
+        result.catch((error) => showToast(`Could not process the save location: ${error.message}`));
+      }
+    } catch (error) {
+      showToast(`Could not process the save location: ${error.message}`);
+    }
+  }, { once: true });
+  try {
+    input.click();
+  } catch (error) {
+    cleanup();
+    showToast(`Could not open the save-file picker: ${error.message}`);
+  }
+}
+
+function pickMultipleFiles(accept, callback) {
+  if (typeof callback !== 'function') throw new TypeError('Multiple-file picker requires a callback');
+  if (process.platform === 'win32') {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    if (accept) input.accept = accept;
+    _openNativePicker(input, callback, 'file');
+    return;
+  }
+  const startDirectory = _pickerStartDirectory();
+  if (!startDirectory) return;
+  const filters = _acceptToExtensions(accept).map((extension) => `*.${extension}`);
+  const separator = process.platform === 'darwin' ? '\n' : '\x1f';
+  const commands = process.platform === 'darwin'
+    ? [{
+      cmd: 'osascript',
+      args: ['-e', [
+        'on run argv',
+        'set selectedFiles to choose file with prompt "Select files" default location (POSIX file (item 1 of argv)) with multiple selections allowed',
+        "set AppleScript's text item delimiters to linefeed",
+        'set selectedPaths to {}',
+        'repeat with selectedFile in selectedFiles',
+        'set end of selectedPaths to POSIX path of selectedFile',
+        'end repeat',
+        'return selectedPaths as text',
+        'end run',
+      ].join('\n'), startDirectory],
+    }]
+    : [
+      { cmd: 'zenity', args: ['--file-selection', '--multiple', `--separator=${separator}`, `--filename=${path.join(startDirectory, '')}`, ...(filters.length ? ['--file-filter', filters.join(' ')] : [])] },
+      { cmd: 'kdialog', args: ['--getopenfilename', startDirectory, filters.join(' '), '--multiple', '--separate'] },
+      { cmd: 'yad', args: ['--file-selection', '--multiple', `--separator=${separator}`, `--filename=${path.join(startDirectory, '')}`] },
+      {
+        cmd: 'python3',
+        args: ['-c', [
+          'import sys, tkinter as tk',
+          'from tkinter import filedialog',
+          'root = tk.Tk()',
+          'root.withdraw()',
+          'root.wm_attributes("-topmost", True)',
+          'values = filedialog.askopenfilenames(initialdir=sys.argv[1], title="Select files")',
+          'root.destroy()',
+          'print("\\x1f".join(values), end="")',
+        ].join('; '), startDirectory],
+      },
+    ];
+  const tryNext = (index) => {
+    if (index >= commands.length) {
+      showToast('No multiple-file picker is available on this system.');
+      return;
+    }
+    const { cmd, args } = commands[index];
+    execFile(cmd, args, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      const output = String(stdout || '').replace(/\r?\n$/, '');
+      const selectedPaths = output.split(separator).filter(Boolean);
+      if (error) {
+        if (error.code === 1 && !selectedPaths.length) return;
+        if (['ENOENT', 'EACCES'].includes(error.code) && index < commands.length - 1) {
+          tryNext(index + 1);
+          return;
+        }
+        showToast(`Could not open the file picker: ${String(stderr || '').trim() || error.message}`);
+        return;
+      }
+      if (!selectedPaths.length) {
+        if (index < commands.length - 1) tryNext(index + 1);
+        return;
+      }
+      try {
+        for (const selectedPath of selectedPaths) {
+          if (!fs.statSync(selectedPath).isFile()) throw new Error('The picker returned a non-file path');
+        }
+        const result = callback(selectedPaths);
+        if (result && typeof result.catch === 'function') {
+          result.catch((callbackError) => showToast(`Could not process selected files: ${callbackError.message}`));
+        }
+      } catch (callbackError) {
+        showToast(`Could not process selected files: ${callbackError.message}`);
+      }
+    });
+  };
+  tryNext(0);
 }
 
 // Studio-native replacements for Chromium's blocking alert/confirm/prompt.

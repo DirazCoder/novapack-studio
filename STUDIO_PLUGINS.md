@@ -533,7 +533,8 @@ Studio returns to NovaByte Dark. A selected plugin theme is restored when its
 plugin registers it on a later launch.
 
 `api.ui.getThemes()` includes registered plugin themes. Use the returned ID
-with `api.ui.setTheme(themeId)` to select one.
+with `api.ui.setTheme(themeId)` to select one. Registered themes appear in
+Studio's theme pickers and in the Command Palette's **Theme** category.
 
 ### Persistent plugin storage (`api.storage`)
 
@@ -622,6 +623,199 @@ They use the same project boundary checks.
 | `api.project.getRelativePath(absolutePath)` | Returns a slash-separated project-relative path. Rejects non-absolute paths and paths outside the open project. |
 | `api.project.readJson(relativePath)` | Reads and parses a project JSON file; file and parse errors are thrown. |
 | `api.project.writeJson(relativePath, value)` | Writes a JSON-serializable value as two-space-indented JSON with a trailing newline. Creates parent directories as needed. |
+
+### Command discovery and execution (`api.commands`)
+
+| Method | Behavior |
+|---|---|
+| `api.commands.getCommands()` | Returns visible command descriptors `{ id, label, description, category, shortcut }`, including built-in and plugin commands. Visibility predicates are evaluated while listing. |
+| `await api.commands.execute(id)` | Executes a visible registered Studio command and resolves to `true`; returns `false` if its `when` predicate currently hides it. Throws for an unknown command. Plugin command handlers are invoked through Studio's normal command wrapper. |
+
+Use the full ID returned by `getCommands()` when executing a command. Plugin
+commands are namespaced as `plugin:{pluginId}:{commandId}`.
+
+### Project lifecycle and file operations (`api.project`)
+
+In addition to the Level 1 project methods:
+
+| Method | Behavior |
+|---|---|
+| `api.project.getRoot()` | Alias for `getDirectory()`. |
+| `await api.project.saveManifest()` | Saves the current project's manifest using Studio's normal validation and UI flow. Throws if no project is open. |
+| `await api.project.close()` | Closes the current project. If editor tabs are dirty, asks before discarding. Resolves `true` when closed and `false` if canceled or already closed. |
+| `api.project.findFiles({ include = ['**/*'], exclude = [] })` | Returns project-relative files matching any include glob and no exclude glob. `*` matches within a path segment, `?` matches one non-slash character, and `**` spans directories. |
+| `api.project.readText(path)` / `readBuffer(path)` | Convenience UTF-8 string and Buffer readers. |
+| `api.project.writeText(path, text)` / `writeBuffer(path, bytes)` | Convenience writers; create parent directories and emit `project:file-change`. |
+| `api.project.createFile(path, contents = '')` | Creates a new file without overwriting an existing file; returns its project-relative path. |
+| `api.project.createDirectory(path)` | Creates a directory and missing parents. |
+| `api.project.copy(source, destination, { overwrite = false })` | Copies a project file or directory recursively. Rejects copying a directory into itself and an existing destination unless `overwrite` is true. |
+| `api.project.move(source, destination, { overwrite = false })` | Moves a project file or directory. Rejects moving a directory into itself and an existing destination unless `overwrite` is true. |
+| `api.project.rename(path, newName)` | Renames a file or directory within its current parent. `newName` cannot contain path separators, and the destination must not exist. |
+| `api.project.watch(path, listener)` | Watches an existing file or directory. Listener receives `{ path, eventType }`; returns a disposer. Watchers are closed on plugin deactivation. |
+| `api.project.onOpen(listener)` / `onClose(listener)` / `onChange(listener)` | Event-subscription shortcuts for `project:open`, `project:close`, and `project:file-change`. Return unsubscribe functions. |
+
+Project file change details have the shape
+`{ path, eventType, source? }`. `path` is slash-separated and project-relative;
+`source` is the plugin ID for changes made through these API methods and is
+omitted for changes detected by Studio's filesystem watcher. Filesystem watch
+notifications are platform-dependent and may be coalesced or omitted by the
+operating system.
+
+### Workspace and application (`api.workspace`, `api.app`)
+
+`api.workspace.getState()` returns a point-in-time snapshot. Additional
+workspace methods are:
+
+| Method | Behavior |
+|---|---|
+| `api.workspace.getActiveView()` | Returns the current built-in or plugin view ID. |
+| `api.workspace.getViews()` | Returns all built-in and registered plugin view IDs. |
+| `api.workspace.getTabs()` | Alias for `api.files.getOpenFiles()`. |
+| `api.workspace.getActiveTab()` | Alias for `api.files.getActiveFile()`. |
+| `api.workspace.closeFile(relativePath)` | Alias for `api.files.close(relativePath)`. |
+| `api.workspace.revealFile(relativePath)` | Scrolls a project file into view in the explorer and returns whether its row was found. |
+| `api.workspace.refreshExplorer()` | Re-renders the file explorer for the current project. |
+| `api.workspace.onViewChange(listener)` / `onTabChange(listener)` | Subscribe to `view:change` or `tab:change`; return unsubscribe functions. |
+
+`api.app.getState()` returns `{ screen, projectDirectory, projectName,
+activeView, theme, building }`. `await api.app.openProject(directory)` asks
+Studio to open a directory and resolves `true` if it is now the current
+project, or `false` if the request was canceled. Invalid directories throw.
+
+### Settings, dialogs, and UI controls
+
+`api.settings.get()` and `api.settings.set(values)` alias
+`api.ui.getSettings()` and `api.ui.setSettings(values)`. Settings are limited
+to `theme`, `density`, and `glassEffects`; unsupported keys throw.
+
+| Method | Behavior |
+|---|---|
+| `await api.ui.showMessage({ title?, message, actions? })` | Shows a message. Without actions it resolves to `null` after dismissal. With up to four `{ id, label }` actions, resolves to the selected ID or `null` if dismissed. |
+| `api.ui.createProgress({ title?, message?, percentage? })` | Creates a status-bar progress item. Returns `{ update({ title?, message?, percentage? }), dispose() }`; percentage must be from 0 to 100. |
+| `api.ui.registerStatusBarItem(options)` | Alias for `api.statusBar.registerItem(options)`. |
+| `api.ui.registerContextMenuItem(target, options)` | Alias for `api.contextMenus.registerItem(target, options)`. |
+
+`api.statusBar.registerItem({ id, text, tooltip?, onClick?, priority? })`
+adds a status-bar item and returns `{ element, update({ text?, tooltip? }),
+dispose() }`. IDs are unique per plugin; text is limited to 100 characters.
+The optional click handler receives the plugin API. Higher `priority` values
+place items later in the status bar's CSS order.
+
+`api.contextMenus.registerItem(target, { id, label, when?, action })` adds an
+item to the existing Studio context menu and returns a disposer. `target` is
+`editor`, `editor-tabs`, `file-tree`, or `workspace`. The optional synchronous
+`when()` predicate controls visibility. `action(context, api)` receives
+`{ x, y, targetPath, activeFile }`; paths may be `null` when the context is not
+a file. The action may be async; failures are logged. Plugin items are removed
+on deactivation.
+
+### Native dialogs, clipboard, and system integration
+
+| Method | Behavior |
+|---|---|
+| `api.dialogs.openFiles(options, callback)` | Opens a multi-file picker; callback receives an array of selected absolute paths. Optional `options.accept` is a file filter. |
+| `api.dialogs.saveFile({ defaultPath?, accept? }, callback)` | Opens a save picker; callback receives the chosen absolute path. |
+| `await api.dialogs.confirm(message, options?)` | Shows Studio's confirmation dialog and resolves to a boolean. |
+| `await api.dialogs.prompt(message, defaultValue?, options?)` | Shows Studio's prompt and resolves to the entered string or `null` when canceled. |
+| `api.system.getPaths()` | Returns `{ dataDirectory, pluginDirectory, cacheDirectory, projectDirectory }`; the project directory is `null` when no project is open. |
+| `await api.system.openExternal(url)` | Opens only `http:`, `https:`, or `mailto:` URLs in the system handler. Unsupported URLs or unavailable host integration throw. |
+| `api.system.revealPath(absolutePath)` | Reveals an existing absolute path in the system file manager. Throws for missing paths or unavailable host integration. |
+
+Native picker callbacks are not invoked on cancellation. Picker and host
+integration failures are reported by rejection or a thrown error rather than
+returning a fabricated path. `api.clipboard.readText()` and `writeText(text)`
+are asynchronous and may reject if clipboard permissions or user-gesture
+requirements are not met.
+
+### Build progress and history (`api.build`)
+
+`api.build.run({ outDir?, clean? })` accepts only these options. `outDir` is
+resolved relative to the project directory unless absolute; `clean` overrides
+the Build view's clean-output setting. Studio refuses to clean an output
+directory that contains the project. Resolves to `{ success: true,
+outputFile }` or `{ success: false, error }` for build failures and early
+exits.
+
+| Method | Behavior |
+|---|---|
+| `api.build.getState()` | Returns `{ building, progress, projectDirectory }`. |
+| `api.build.getHistory()` | Returns a copy of the Studio build-history entries. |
+| `api.build.onProgress(listener)` | Subscribes to `build:progress`; listener receives `{ projectDirectory, progress, phase }`. Returns an unsubscribe function. |
+
+Progress is approximate during compilation and reaches 100 only on success.
+Lifecycle events are `build:start`, `build:progress`, `build:log`,
+`build:complete`, and `build:error`; see the event table below.
+
+### Templates, permissions, and packages
+
+`api.templates.list({ includeUser = false, includeCommunity = false })`
+returns `{ id, name, description, source }` entries. Built-in templates are
+always included; local user and verified community templates are opt-in.
+`api.templates.create({ targetDir, template = 'blank', manifest?, appsRoot? })`
+creates a project and returns the template creator's result. `targetDir` is
+required; when supplied, `appsRoot` must contain the target. Unknown built-in
+templates return a failure result; invalid option shapes throw.
+
+The permission catalog is read-only:
+
+| Method | Behavior |
+|---|---|
+| `api.permissions.list()` | Returns copies of permission descriptors `{ id, label, risk, description }`. |
+| `api.permissions.get(id)` | Returns a descriptor copy or `null`. |
+| `api.permissions.forAction(action)` | Returns permission IDs for a Nova action/channel, including supported legacy aliases. |
+
+Additional package inspection methods:
+
+| Method | Behavior |
+|---|---|
+| `api.packages.validate(packagePath)` | Inspects a package and validates its manifest; returns validation fields plus `{ format, manifest }`. Inspection errors throw. |
+| `api.packages.getManifest(packagePath)` | Returns the inspected package manifest. |
+| `api.packages.listFiles(packagePath)` | Returns the inspected package's file path list. |
+
+### Git integration (`api.git`)
+
+Git methods operate on the open project's detected repository. They reject
+when no Git repository is open; commands are invoked with argument arrays,
+not through a shell.
+
+| Method | Behavior |
+|---|---|
+| `await api.git.getStatus()` | Returns `{ root, files }`, where each file is `{ path, code }` and paths are repository-relative. |
+| `await api.git.getDiff({ path?, staged? })` | Returns the diff text. `path` is project-relative and boundary-checked; `staged` selects the index diff. |
+| `await api.git.getBranches()` | Returns the branch list loaded by Studio's Git integration. |
+| `await api.git.getHistory({ limit = 50 })` | Returns `{ hash, subject, author, date }` commits; `limit` must be an integer from 1 to 200. |
+| `api.git.onStatusChange(listener)` | Subscribes to `git:status`; returns an unsubscribe function. |
+
+### Events, editor helpers, and disposables
+
+API Level 2 adds these event names to `api.events.on(name, listener)`:
+
+| Event | Detail |
+|---|---|
+| `project:close` | `{ directory, name }` for the project being closed. |
+| `project:change` | `{ previousDirectory, directory, name }`, emitted when switching from one project to another. |
+| `project:file-change` | `{ path, eventType, source }` for changes reported through plugin project APIs. |
+| `project:manifest-save` | `{ directory, manifest, path }` after Studio saves the manifest. |
+| `editor:selectionChange` | `{ path, anchor, head, from, to, text, cursor }`; offsets are zero-based, and `cursor` has 1-based line and column. |
+| `settings:change` | `{ previous, current }` for settings updates, or `{ uiDensity, previous }` when only density changes. |
+| `build:progress` | `{ projectDirectory, progress, phase }`. |
+| `git:status` | `{ root, isRepository, files }`; each file is `{ path, code }`. `root` is `null` and `files` is empty when there is no repository. |
+
+The existing `api.editor` object also gains `format()`, `onChange(listener)`,
+`onSelectionChange(listener)`, and `showDiagnostics(diagnostics)`.
+`onChange` and `onSelectionChange` return unsubscribe functions. The
+underlying `window.CM` wrapper adds `getState()`, `getSelection()`,
+`setSelection({ anchor, head? })`, `getCursor()`, `setCursor(offsetOrPosition)`,
+and `replaceRange(text, { from, to })`. Offsets are zero-based UTF-16 document
+offsets; cursor `{ line, column }` coordinates are one-based. Invalid ranges
+throw; methods that change selection or text return `false` if no editor is
+mounted. `setSelection` and `replaceRange` focus the editor.
+
+`api.disposables.create()` creates a group with `add(dispose)`, `clear()`,
+`dispose()`, and read-only `size`. Cleanup runs in reverse registration order.
+Adding to a disposed group immediately invokes the disposer. `clear()` attempts
+all disposers and throws an `AggregateError` if any fail. Groups are disposed
+automatically when the plugin is deactivated.
 
 ## Resource cleanup
 
