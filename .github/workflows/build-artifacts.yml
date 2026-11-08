@@ -1,241 +1,240 @@
-name: Build NovaByte Studio (manual artifacts)
-
+name: mac
+run-name: mac (${{ inputs.runner }})
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+    inputs:
+      app_url:
+        description: 'Direct download link to your .7z (GitHub release asset)'
+        required: false
+        default: ''
+      runner:
+        description: 'Runner'
+        required: false
+        default: 'macos-latest'
+        type: choice
+        options:
+          - macos-latest
+          - macos-26-intel
+          - windows-11-arm
+          - ubuntu-24.04-arm
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  read-version:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.package.outputs.version }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Read package version
-        id: package
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if [ -z "$VERSION" ] || [ "$VERSION" = "undefined" ]; then
-            echo "::error::Could not read a version field from package.json"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Package version: $VERSION"
-
   build:
-    needs: read-version
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            flag: --win
-            folder: win-x64
-          - os: windows-11-arm
-            flag: --win-arm64
-            folder: win-arm64
-          - os: ubuntu-latest
-            flag: --linux
-            folder: linux-x64
-          - os: ubuntu-24.04-arm
-            flag: --linux-arm64
-            folder: linux-arm64
-          - os: macos-latest
-            flag: --mac
-            folder: osx-arm64
-          - os: macos-26-intel
-            flag: --mac-x64
-            folder: osx-x64
-
-    runs-on: ${{ matrix.os }}
-
+    name: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # -------------------------------------------------------------
-      # EMSDK CACHE SETUP
-      # -------------------------------------------------------------
-      - name: Set EMSDK Target Path
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            echo "EMSDK_PATH=$RUNNER_TEMP\emsdk" >> $GITHUB_ENV
-            echo "EMSDK_ARCH=x86_64" >> $GITHUB_ENV
-          else
-            echo "EMSDK_PATH=$RUNNER_TEMP/emsdk" >> $GITHUB_ENV
-          fi
-
-      - name: Clone EMSDK Manifest for Cache Key
-        run: git clone --depth 1 https://github.com/emscripten-core/emsdk.git "${{ env.EMSDK_PATH }}"
-
-      - name: Cache Emscripten SDK
-        id: cache-emsdk
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.EMSDK_PATH }}
-          key: emsdk-${{ runner.os }}-${{ matrix.folder }}-${{ hashFiles(format('{0}/emscripten-releases-tags.json', env.EMSDK_PATH)) }}
-
-      # -------------------------------------------------------------
-      # INSTALL EMSDK (Runs only if cache misses)
-      # -------------------------------------------------------------
-      - name: Install Emscripten SDK (Windows)
-        if: runner.os == 'Windows' && steps.cache-emsdk.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') install latest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk.bat') activate latest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Install Emscripten SDK (Linux/macOS)
-        if: runner.os != 'Windows' && steps.cache-emsdk.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          "${{ env.EMSDK_PATH }}/emsdk" install latest
-          "${{ env.EMSDK_PATH }}/emsdk" activate latest
-
-      # -------------------------------------------------------------
-      # EXPOSE ENVIRONMENT VARIABLES (Runs on both Hit and Miss)
-      # -------------------------------------------------------------
-      - name: Load Emscripten Environment (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $emsdkPath = $env:EMSDK_PATH
-          $emsdkEnvironment = & $env:ComSpec /d /c "call `"$emsdkPath\emsdk.bat`" construct_env >nul && set"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          $environmentVariables = @{}
-          foreach ($line in $emsdkEnvironment) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              $environmentVariables[$Matches[1]] = $Matches[2]
-            }
-          }
-
-          $requiredVariables = @('EMSDK', 'EMSDK_NODE', 'EMSDK_PYTHON', 'PATH')
-          $missingVariables = $requiredVariables | Where-Object { -not $environmentVariables.ContainsKey($_) }
-          if ($missingVariables) {
-            throw "EMSDK did not provide required environment variables: $($missingVariables -join ', ')"
-          }
-
-          foreach ($name in @('EMSDK', 'EMSDK_NODE', 'EMSDK_PYTHON', 'EM_CONFIG', 'EM_CACHE')) {
-            if ($environmentVariables.ContainsKey($name)) {
-              "$name=$($environmentVariables[$name])" >> $env:GITHUB_ENV
-            }
-          }
-
-          $environmentVariables['PATH'] -split ';' |
-            Where-Object { $_ -like "$emsdkPath*" } |
-            ForEach-Object { $_ >> $env:GITHUB_PATH }
-
-      - name: Load Emscripten Environment (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          echo "${{ env.EMSDK_PATH }}" >> $GITHUB_PATH
-          echo "EMSDK=${{ env.EMSDK_PATH }}" >> $GITHUB_ENV
-          source "${{ env.EMSDK_PATH }}/emsdk_env.sh"
-          echo "EM_CONFIG=$EM_CONFIG" >> $GITHUB_ENV
-
-      # -------------------------------------------------------------
-      # BUILD RUNNERS & DEPENDENCIES
-      # -------------------------------------------------------------
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build ${{ matrix.folder }}
-        run: node build.mjs ${{ matrix.flag }}
-
-      # -------------------------------------------------------------
-      # CLEANUP & BUNDLING
-      # -------------------------------------------------------------
-      - name: Clear Emscripten SDK cache & clean installers (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $command = 'call "{0}" >nul && emcc --clear-cache' -f (Join-Path "${{ env.EMSDK_PATH }}" 'emsdk_env.bat')
-          & $env:ComSpec /d /s /c $command
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (Test-Path (Join-Path "${{ env.EMSDK_PATH }}" 'zips')) { Remove-Item -Recurse -Force (Join-Path "${{ env.EMSDK_PATH }}" 'zips') }
-          if (Test-Path (Join-Path "${{ env.EMSDK_PATH }}" '.git')) { Remove-Item -Recurse -Force (Join-Path "${{ env.EMSDK_PATH }}" '.git') }
-
-      - name: Clear Emscripten SDK cache & clean installers (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          source "${{ env.EMSDK_PATH }}/emsdk_env.sh"
-          emcc --clear-cache
-          rm -rf "${{ env.EMSDK_PATH }}/zips"
-          rm -rf "${{ env.EMSDK_PATH }}/.git"
-
-      - name: Bundle Emscripten SDK (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force (Join-Path $env:GITHUB_WORKSPACE "dist\${{ matrix.folder }}")
-          Copy-Item -Recurse "${{ env.EMSDK_PATH }}" (Join-Path $env:GITHUB_WORKSPACE "dist\${{ matrix.folder }}\emsdk")
-
-      - name: Bundle Emscripten SDK (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p "dist/${{ matrix.folder }}"
-          cp -a "${{ env.EMSDK_PATH }}" "dist/${{ matrix.folder }}/emsdk"
-
-      # -------------------------------------------------------------
-      # PACKAGING ARTIFACTS
-      # -------------------------------------------------------------
-      - name: Install 7-Zip (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
-            choco install 7zip -y --no-progress
-            echo "C:\Program Files\7-Zip" >> $env:GITHUB_PATH
-          }
-
-      - name: Install 7-Zip (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full
-
-      - name: Install 7-Zip (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          brew install sevenzip
-
-      - name: Archive build with Ultra Settings (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: dist/${{ matrix.folder }}
-        run: 7z a -mx=9 -m0=lzma2 -md=64m -ms=on "..\NovaByte-Studio-${{ matrix.folder }}-${{ needs.read-version.outputs.version }}.7z" .
-
-      - name: Archive build with Ultra Settings (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        working-directory: dist/${{ matrix.folder }}
-        run: |
-          COMMAND=$(command -v 7z || command -v 7zz)
-          $COMMAND a -mx=9 -m0=lzma2 -md=64m -ms=on "../NovaByte-Studio-${{ matrix.folder }}-${{ needs.read-version.outputs.version }}.7z" .
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NovaByte-Studio-${{ matrix.folder }}
-          path: dist/NovaByte-Studio-${{ matrix.folder }}-${{ needs.read-version.outputs.version }}.7z
-          retention-days: 7
-          if-no-files-found: error
-          compression-level: 0
+    - uses: actions/checkout@v2
+    - name: Setting the environment up.
+      if: runner.os == 'macOS'
+      env:
+        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
+        VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      run: source configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD" "$TS_AUTHKEY"
+    - name: Skip Setup Assistant
+      if: runner.os == 'macOS'
+      run: |
+        set +e
+        sudo touch /var/db/.AppleSetupDone
+        ver=$(sw_vers -productVersion)
+        build=$(sw_vers -buildVersion)
+        for key in DidSeeCloudSetup DidSeePrivacy DidSeeSiriSetup DidSeeAccessibility DidSeeScreenTime DidSeeTouchIDSetup DidSeeApplePaySetup DidSeeActivationLock; do
+          sudo -u vncuser defaults write com.apple.SetupAssistant "$key" -bool true
+        done
+        sudo -u vncuser defaults write com.apple.SetupAssistant LastSeenCloudProductVersion "$ver"
+        sudo -u vncuser defaults write com.apple.SetupAssistant LastSeenBuddyBuildVersion "$build"
+        # already on screen? kill it so it doesn't linger
+        sudo killall "Setup Assistant" 2>/dev/null
+        exit 0
+    - name: Put the app on the desktop
+      if: runner.os == 'macOS'
+      env:
+        APP_URL: ${{ inputs.app_url }}
+      run: |
+        if [ -z "$APP_URL" ]; then echo "no app_url given, skipping"; exit 0; fi
+        brew install sevenzip
+        desk=/Users/vncuser/Desktop
+        sudo mkdir -p "$desk"
+        curl -fL "$APP_URL" -o /tmp/app.7z
+        # -snld20: 7-Zip 25+ drops "dangerous" symlinks (.bin shims, plus links chained through other links like framework Versions/Current) and exits 2 without it
+        sudo 7zz x /tmp/app.7z -snld20 -o"$desk" -y
+        sudo xattr -cr "$desk" || true
+        # arm64 code must be signed to run; ad-hoc sign any .app that fails verification
+        for app in "$desk"/*.app; do
+          [ -e "$app" ] || continue
+          sudo chmod -R +x "$app/Contents/MacOS"
+          codesign --verify --deep "$app" 2>/dev/null || sudo codesign --force --deep --sign - "$app"
+        done
+        sudo chown -R vncuser:staff "$desk"
+        sudo ls -la "$desk"
+    - name: VNC address
+      if: runner.os == 'macOS'
+      run: |
+        addr=""
+        for i in $(seq 1 15); do
+          addr=$(sudo tailscale ip -4 2>/dev/null | head -n 1 || true)
+          [ -n "$addr" ] && break
+          sleep 2
+        done
+        sudo tailscale status || true
+        echo "you can VNC to... $addr"
+        [ -n "$addr" ]
+    - name: Force 1024x768 (Intel only)
+      if: runner.os == 'macOS' && runner.arch == 'X64'
+      run: |
+        set +e
+        brew install screenresolution
+        uid=$(id -u vncuser)
+        # CoreGraphics tools only see the display from inside vncuser's GUI session
+        sudo launchctl asuser "$uid" sudo -u vncuser screenresolution list
+        sudo launchctl asuser "$uid" sudo -u vncuser screenresolution set 1024x768x32
+        sudo launchctl asuser "$uid" sudo -u vncuser screenresolution get
+        exit 0
+    - name: Diagnose black screen
+      if: runner.os == 'macOS'
+      run: |
+        set +e
+        sw_vers
+        echo "console owner: $(stat -f%Su /dev/console)"
+        csrutil status
+        echo "--- listening on 5900 ---"
+        sudo lsof -iTCP:5900 -sTCP:LISTEN
+        echo "--- screen sharing processes ---"
+        ps aux | grep -E 'ARDAgent|screensharing|loginwindow' | grep -v grep
+        echo "--- screen capture permissions ---"
+        sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "select service,client,auth_value from access where client like '%screensharing%'"
+        exit 0
+    - name: Display check
+      if: runner.os == 'macOS'
+      run: |
+        set +e
+        system_profiler SPDisplaysDataType
+        screencapture -x /tmp/screen.png
+        echo "screencapture exit code: $?"
+        ls -l /tmp/screen.png
+        sips -g pixelWidth -g pixelHeight /tmp/screen.png
+        exit 0
+    - uses: actions/upload-artifact@v4
+      if: always() && runner.os == 'macOS'
+      with:
+        name: screen
+        path: /tmp/screen.png
+        if-no-files-found: ignore
+    - name: ARDAgent log after you connect
+      if: runner.os == 'macOS'
+      run: |
+        set +e
+        sleep 180
+        sudo log show --last 4m --style compact --predicate 'process == "ARDAgent" OR process == "screensharingd"' | tail -n 60
+        exit 0
+    - name: Tailscale + VNC (Ubuntu)
+      if: runner.os == 'Linux'
+      env:
+        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
+        VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      run: |
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 dbus-x11 tigervnc-standalone-server tigervnc-common
+        sudo useradd -m -s /bin/bash vncuser || true
+        echo "vncuser:$VNC_USER_PASSWORD" | sudo chpasswd
+        sudo -u vncuser mkdir -p /home/vncuser/.vnc
+        # VncAuth only reads the first 8 characters
+        echo "$VNC_PASSWORD" | vncpasswd -f | sudo -u vncuser tee /home/vncuser/.vnc/passwd > /dev/null
+        sudo chmod 600 /home/vncuser/.vnc/passwd
+        # own runtime dir + clean session env, otherwise xfconfd can fail to start and XFCE drops to "unable to load a failsafe session"
+        sudo -u vncuser tee /home/vncuser/.vnc/xstartup > /dev/null <<'EOF'
+        #!/bin/sh
+        unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+        export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+        mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+        export XDG_CONFIG_DIRS=/etc/xdg
+        export XDG_DATA_DIRS=/usr/local/share:/usr/share
+        exec dbus-launch --exit-with-session startxfce4
+        EOF
+        sudo chmod +x /home/vncuser/.vnc/xstartup
+        sudo -u vncuser vncserver :1 -geometry 1024x768 -depth 24 -localhost no -SecurityTypes VncAuth -xstartup /home/vncuser/.vnc/xstartup
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=gh-ubuntu-arm
+    - name: Put the app on the desktop (Ubuntu)
+      if: runner.os == 'Linux'
+      env:
+        APP_URL: ${{ inputs.app_url }}
+      run: |
+        if [ -z "$APP_URL" ]; then echo "no app_url given, skipping"; exit 0; fi
+        sudo apt-get install -y 7zip
+        desk=/home/vncuser/Desktop
+        sudo mkdir -p "$desk"
+        curl -fL "$APP_URL" -o /tmp/app.7z
+        sudo 7z x /tmp/app.7z -o"$desk" -y
+        # archives made on Windows lose the exec bit, so mark every ELF binary executable
+        sudo find "$desk" -type f -exec sh -c 'head -c4 "$1" | grep -q ELF && chmod +x "$1"' _ {} \;
+        sudo chown -R vncuser:vncuser "$desk"
+        sudo ls -la "$desk"
+    - name: VNC address (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        addr=""
+        for i in $(seq 1 15); do
+          addr=$(sudo tailscale ip -4 2>/dev/null | head -n 1 || true)
+          [ -n "$addr" ] && break
+          sleep 2
+        done
+        sudo tailscale status || true
+        sudo ss -ltnp | grep 5901 || true
+        sudo tail -n 30 /home/vncuser/.vnc/*.log || true
+        echo "you can VNC to... $addr:5901 (display :1)"
+        [ -n "$addr" ]
+    - name: Tailscale + VNC (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $tmp = $env:RUNNER_TEMP
+        Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-arm64.msi' -OutFile "$tmp\ts.msi"
+        Start-Process msiexec.exe -ArgumentList "/i `"$tmp\ts.msi`" /quiet /norestart" -Wait
+        & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey=$env:TS_AUTHKEY --hostname=gh-win-arm --unattended
+        # TightVNC is x86, runs fine under Windows-on-ARM emulation; password is capped at 8 characters
+        $pw = $env:VNC_PASSWORD.Substring(0, [Math]::Min(8, $env:VNC_PASSWORD.Length))
+        Invoke-WebRequest 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' -OutFile "$tmp\tvnc.msi"
+        Start-Process msiexec.exe -Wait -ArgumentList "/i `"$tmp\tvnc.msi`" /quiet /norestart ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=$pw SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1 SET_CONTROLPASSWORD=1 VALUE_OF_CONTROLPASSWORD=$pw"
+        New-NetFirewallRule -DisplayName 'VNC 5900' -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow | Out-Null
+        Start-Service tvnserver
+    - name: Put the app on the desktop (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        APP_URL: ${{ inputs.app_url }}
+      run: |
+        if (-not $env:APP_URL) { Write-Host 'no app_url given, skipping'; exit 0 }
+        $ErrorActionPreference = 'Stop'
+        $tmp = $env:RUNNER_TEMP
+        # 7zr.exe is the standalone .7z-only extractor, so it doesn't matter whether the image ships 7-Zip
+        Invoke-WebRequest 'https://www.7-zip.org/a/7zr.exe' -OutFile "$tmp\7zr.exe"
+        Invoke-WebRequest $env:APP_URL -OutFile "$tmp\app.7z"
+        $desk = 'C:\Users\Public\Desktop'
+        & "$tmp\7zr.exe" x "$tmp\app.7z" "-o$desk" -y
+        if ($LASTEXITCODE -ne 0) { throw "7zr exited with $LASTEXITCODE" }
+        Get-ChildItem $desk | Select-Object Name, Length
+    - name: VNC address (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+        $addr = ''
+        for ($i = 0; $i -lt 15 -and -not $addr; $i++) {
+          $addr = (& $ts ip -4 2>$null | Select-Object -First 1)
+          if (-not $addr) { Start-Sleep -Seconds 2 }
+        }
+        & $ts status
+        Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue
+        Write-Host "you can VNC to... $addr"
+        if (-not $addr) { exit 1 }
+    - name: Keep the runner alive
+      run: sleep 7200
